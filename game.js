@@ -3226,79 +3226,155 @@ canvas.addEventListener("pointerup",   (e) => dispatchMinigamePointer("up",   e)
 canvas.addEventListener("pointercancel",(e) => dispatchMinigamePointer("up",  e));
 
 //----------------------------------------------------------
-// FIELD GOAL KICK
+// FIRST-PERSON FLICK PROJECTION HELPERS
+//----------------------------------------------------------
+// World coords: x = lateral, y = height (positive = up), z = depth into
+// the screen (positive = away from camera). Camera at origin, looking +z.
+const FP_FOCAL = 700;
+function fpHorizonY() { return H * 0.55; }
+function fpProject(x, y, z) {
+  const zz = Math.max(0.5, z);
+  return {
+    sx: W / 2 + x * FP_FOCAL / zz,
+    sy: fpHorizonY() - y * FP_FOCAL / zz,
+    scale: FP_FOCAL / zz / 30, // baseline so stuff at z=23 reads at ~1x
+  };
+}
+function fpDrawSky(top1, top2, bot) {
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, top1); sky.addColorStop(0.55, top2); sky.addColorStop(1, bot);
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+}
+function fpDrawField(grass, dirt, lineColor) {
+  const horizon = fpHorizonY();
+  ctx.fillStyle = grass;
+  ctx.fillRect(0, horizon, W, H - horizon);
+  // Ground grid — perspective lines converging to the vanishing point.
+  ctx.strokeStyle = lineColor || "rgba(255,255,255,0.30)";
+  ctx.lineWidth = 1.5;
+  // Lateral lines
+  for (let i = 1; i <= 7; i++) {
+    const z = i * 6;
+    const sy = horizon + (H - horizon) * (1 - 1 / (1 + z * 0.10));
+    ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+  }
+  // Forward lines (rails)
+  for (let lane = -3; lane <= 3; lane++) {
+    if (lane === 0) continue;
+    const near = fpProject(lane * 2, 0, 1);
+    const far  = fpProject(lane * 2, 0, 80);
+    ctx.beginPath(); ctx.moveTo(near.sx, near.sy); ctx.lineTo(far.sx, far.sy); ctx.stroke();
+  }
+}
+
+// Standard input handler that records drag start/now and returns a flick
+// vector on release. Returns { vec, power, lateral } or null.
+function fpProcessFlick(state, kind, x, y) {
+  if (kind === "down") { state.dragStart = { x, y, t: performance.now() }; state.dragNow = { x, y }; return null; }
+  if (kind === "move" && state.dragStart) { state.dragNow = { x, y }; return null; }
+  if (kind === "up" && state.dragStart) {
+    const sx = state.dragStart.x, sy = state.dragStart.y;
+    const ex = (state.dragNow ? state.dragNow.x : x);
+    const ey = (state.dragNow ? state.dragNow.y : y);
+    state.dragStart = null; state.dragNow = null;
+    const dx = ex - sx;
+    const dy = ey - sy; // up = negative
+    const dist = Math.hypot(dx, dy);
+    if (dy > -25 || dist < 60) return null; // need a real upward flick
+    const power = Math.min(1, dist / 360);
+    const lateral = Math.max(-1, Math.min(1, dx / Math.max(60, -dy)));
+    const upward = -dy / dist;
+    return { dx, dy, dist, power, lateral, upward };
+  }
+  return null;
+}
+
+function fpDrawAimArc(state, originSX, originSY, color) {
+  if (!state.dragStart || !state.dragNow) return;
+  const dx = state.dragNow.x - state.dragStart.x;
+  const dy = state.dragNow.y - state.dragStart.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 8) return;
+  const power = Math.min(1, dist / 360);
+  // Preview as an arc going up-and-toward.
+  ctx.strokeStyle = color || `rgba(255, 220, 80, ${0.5 + power * 0.5})`;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  for (let t = 0; t <= 1; t += 0.05) {
+    const px = originSX + (-dx) * t * 0.6;
+    const py = originSY + (-dy) * t - 600 * t * (1 - t) * power * 0.4;
+    if (t === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  // Power bar
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(W - 130, 20, 110, 10);
+  ctx.fillStyle = color || "#ffb020";
+  ctx.fillRect(W - 130, 20, 110 * power, 10);
+}
+
+//----------------------------------------------------------
+// FIELD GOAL KICK (first-person flick)
 //----------------------------------------------------------
 const FieldGoal = {
   name: "Field Goal Kick",
-  desc: "Flick the football through the uprights. Mind the wind. 5 attempts.",
+  desc: "Flick UP from the ball to kick. Curve with the angle. Mind the wind. 5 attempts.",
   icon: "🏈",
   color: "#4ddc8c",
   init() {
     return {
-      ball: null, posts: null, attempts: 5, kicked: 0, made: 0, score: 0,
+      ball: null,
+      posts: { z: 60, gap: 8, height: 7 },  // world units (meters-ish)
+      attempts: 5, kicked: 0, made: 0, score: 0,
       wind: 0, dragStart: null, dragNow: null,
       message: "", messageTimer: 0, finished: false,
     };
   },
-  payout(g) { return Math.floor(g.score * 1.0); },
+  payout(g) { return Math.floor((g.score || 0) * 1.0); },
   reset(g) {
-    g.ball = { x: W * 0.18, y: H * 0.78, vx: 0, vy: 0, kicked: false, gone: false, t: 0 };
-    g.posts = { x: W * 0.78, baseY: H * 0.78, gap: 110, height: 220 };
-    g.wind = (Math.random() - 0.5) * 80;
+    g.ball = { x: 0, y: 0.4, z: 1.5, vx: 0, vy: 0, vz: 0, spin: 0, kicked: false, scored: false, gone: false, t: 0 };
+    g.wind = (Math.random() - 0.5) * 6;
     g.message = ""; g.messageTimer = 0;
-    g.dragStart = null; g.dragNow = null;
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
     if (!g.ball) FieldGoal.reset(g);
-    const ball = g.ball;
-    if (ball.kicked) return;
-    if (kind === "down") {
-      g.dragStart = { x, y };
-      g.dragNow = { x, y };
-    } else if (kind === "move" && g.dragStart) {
-      g.dragNow = { x, y };
-    } else if (kind === "up" && g.dragStart) {
-      const dx = (g.dragStart.x - x);
-      const dy = (g.dragStart.y - y);
-      const dist = Math.hypot(dx, dy);
-      if (dist > 30) {
-        const power = Math.min(1, dist / 280);
-        ball.vx = dx * power * 6;
-        ball.vy = dy * power * 6;
-        ball.kicked = true;
-        Sound.boostHit && Sound.boostHit();
-      }
-      g.dragStart = null; g.dragNow = null;
-    }
+    if (g.ball.kicked) return;
+    const flick = fpProcessFlick(g, kind, x, y);
+    if (!flick) return;
+    const { power, lateral, upward } = flick;
+    g.ball.vz = 22 + power * 24;
+    g.ball.vy = 6 + power * 18 * upward;
+    g.ball.vx = lateral * 8 * power;
+    g.ball.spin = lateral * 1.8;
+    g.ball.kicked = true;
+    Sound.boostHit && Sound.boostHit();
   },
   update(g, dt) {
     if (!g.ball) FieldGoal.reset(g);
     const b = g.ball, p = g.posts;
     if (b.kicked && !b.gone) {
       b.t += dt;
-      b.vy += 1100 * dt;        // gravity
-      b.vx += g.wind * dt;      // wind drift
+      b.vy -= 11 * dt;          // gravity in world units
+      b.vx += g.wind * dt + b.spin * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      // Goal detection — when ball crosses post x going right.
-      if (b.x >= p.x && !b.scored) {
+      b.z += b.vz * dt;
+      // Check goal plane
+      if (b.z >= p.z && !b.scored) {
         b.scored = true;
-        const aboveCrossbar = b.y < p.baseY && b.y > p.baseY - p.height;
-        if (aboveCrossbar) {
+        const through = Math.abs(b.x) < p.gap / 2 && b.y > 1.0 && b.y < p.height + 4;
+        if (through) {
           g.made++; g.score += 7;
           g.message = "GOOD!"; g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
         } else {
-          g.message = "MISSED!"; g.messageTimer = 1.4;
+          g.message = b.y < 1.0 ? "Short!" : (Math.abs(b.x) < p.gap ? "Doinked!" : "Wide!");
+          g.messageTimer = 1.4;
           Sound.crash && Sound.crash();
         }
       }
-      // Land or off-screen.
-      if (b.y >= H * 0.85 || b.x > W + 60 || b.x < -40) {
-        b.gone = true;
-        if (!b.scored) { g.message = "Short!"; g.messageTimer = 1.4; }
-      }
+      if (b.y < 0 || b.z > p.z + 12) b.gone = true;
     }
     if ((b.gone || b.scored) && !g.finished) {
       g.messageTimer -= dt;
@@ -3311,71 +3387,65 @@ const FieldGoal = {
   },
   render(g) {
     if (!g.ball) FieldGoal.reset(g);
-    // Sky → field gradient
-    const sky = ctx.createLinearGradient(0, 0, 0, H);
-    sky.addColorStop(0, "#7fbcff");
-    sky.addColorStop(0.55, "#cfeaff");
-    sky.addColorStop(1, "#3c7c2a");
-    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
-    // Field
-    const fieldY = H * 0.78;
-    ctx.fillStyle = "#3a7a1f";
-    ctx.fillRect(0, fieldY, W, H - fieldY);
-    // Yard lines
-    ctx.strokeStyle = "rgba(255,255,255,0.55)";
-    ctx.lineWidth = 2;
-    for (let x = W * 0.05; x < W; x += W * 0.1) {
-      ctx.beginPath(); ctx.moveTo(x, fieldY); ctx.lineTo(x, H); ctx.stroke();
-    }
-    // Goalposts
+    fpDrawSky("#7fbcff", "#cfeaff", "#3c7c2a");
+    fpDrawField("#3a7a1f", "#2a5414");
+    // Posts in perspective
     const p = g.posts;
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(p.x - 4, p.baseY - p.height, 8, p.height);             // left upright (yes, single post style)
-    ctx.fillRect(p.x - 4 + p.gap, p.baseY - p.height, 8, p.height);     // right upright
-    ctx.fillRect(p.x - 4, p.baseY, 8 + p.gap + 0, 6);                   // base
-    ctx.fillRect(p.x - 4, p.baseY - p.height + 6, 8 + p.gap + 0, 4);    // crossbar shadow line near top? actually crossbar is at top
-    // The crossbar is a horizontal bar at p.baseY - p.height
-    ctx.fillRect(p.x - 4, p.baseY - p.height, 8 + p.gap + 0, 6);
-    // Wind indicator
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    const baseL = fpProject(-p.gap / 2, 0, p.z);
+    const baseR = fpProject( p.gap / 2, 0, p.z);
+    const topL  = fpProject(-p.gap / 2, p.height, p.z);
+    const topR  = fpProject( p.gap / 2, p.height, p.z);
+    // Single base coming up from the field, then a horizontal crossbar that
+    // splits into two uprights that rise out of frame.
+    const baseStem = fpProject(0, 0, p.z);
+    const stemTop  = fpProject(0, p.height * 0.55, p.z);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = Math.max(2, 6 * baseStem.scale);
+    // stem
+    ctx.beginPath(); ctx.moveTo(baseStem.sx, baseStem.sy); ctx.lineTo(stemTop.sx, stemTop.sy); ctx.stroke();
+    // crossbar — between baseL.x level at stemTop.y
+    const crossL = fpProject(-p.gap / 2, p.height * 0.55, p.z);
+    const crossR = fpProject( p.gap / 2, p.height * 0.55, p.z);
+    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(crossR.sx, crossR.sy); ctx.stroke();
+    // uprights from crossbar to top
+    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(topL.sx, topL.sy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(crossR.sx, crossR.sy); ctx.lineTo(topR.sx, topR.sy); ctx.stroke();
+
+    // Wind / score / attempts HUD
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
     ctx.font = "bold 16px ui-monospace, monospace";
-    const dir = g.wind > 4 ? "→" : g.wind < -4 ? "←" : "·";
-    ctx.fillText(`Wind: ${dir} ${Math.abs(Math.round(g.wind))}`, 16, 26);
-    // Score / attempts
-    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    const dir = g.wind > 0.5 ? "→" : g.wind < -0.5 ? "←" : "·";
+    ctx.fillText(`Wind: ${dir} ${Math.abs(Math.round(g.wind * 4))}`, 16, 26);
     ctx.font = "bold 18px ui-monospace, monospace";
-    ctx.fillText(`Made: ${g.made} / ${Math.max(g.kicked, 0)}    Score: ${g.score}`, 16, 50);
+    ctx.fillText(`Made: ${g.made}/${g.kicked}    Score: ${g.score}`, 16, 50);
     ctx.fillText(`Kicks left: ${Math.max(0, g.attempts - g.kicked)}`, 16, 72);
 
-    // Aim line preview
-    if (g.dragStart && g.dragNow) {
-      const dx = g.dragStart.x - g.dragNow.x;
-      const dy = g.dragStart.y - g.dragNow.y;
-      const len = Math.hypot(dx, dy);
-      const power = Math.min(1, len / 280);
-      ctx.strokeStyle = `rgba(255, 230, 80, ${0.4 + power * 0.5})`;
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(g.ball.x, g.ball.y);
-      ctx.lineTo(g.ball.x + dx * 0.6, g.ball.y + dy * 0.6);
-      ctx.stroke();
-      // Power bar
-      ctx.fillStyle = "rgba(0,0,0,0.4)";
-      ctx.fillRect(W - 130, 20, 110, 10);
-      ctx.fillStyle = "#ffb020";
-      ctx.fillRect(W - 130, 20, 110 * power, 10);
+    // Aim preview when dragging — drawn from where the ball is on screen.
+    if (!g.ball.kicked) {
+      const ballProj = fpProject(g.ball.x, g.ball.y, g.ball.z);
+      fpDrawAimArc(g, ballProj.sx, ballProj.sy);
     }
-    // Ball
+
+    // Ball in perspective
     const b = g.ball;
+    const proj = fpProject(b.x, b.y, b.z);
+    const r = Math.max(3, 16 * proj.scale);
     ctx.save();
-    ctx.translate(b.x, b.y);
-    ctx.rotate(b.t * 6);
+    ctx.translate(proj.sx, proj.sy);
+    ctx.rotate(b.t * 8);
     ctx.fillStyle = "#7a3c14";
-    ctx.beginPath(); ctx.ellipse(0, 0, 12, 8, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.stroke();
-    for (let i = -3; i <= 3; i++) { ctx.beginPath(); ctx.moveTo(i*1.5, -2); ctx.lineTo(i*1.5, 2); ctx.stroke(); }
+    ctx.beginPath(); ctx.ellipse(0, 0, r * 0.95, r * 0.65, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = Math.max(1, 1.2 * proj.scale);
+    ctx.beginPath(); ctx.moveTo(-r * 0.5, 0); ctx.lineTo(r * 0.5, 0); ctx.stroke();
+    for (let i = -2; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * r * 0.18, -r * 0.18);
+      ctx.lineTo(i * r * 0.18,  r * 0.18);
+      ctx.stroke();
+    }
     ctx.restore();
+
     // Message
     if (g.message && g.messageTimer > 0) {
       ctx.font = "bold 56px ui-monospace, monospace";
@@ -3389,114 +3459,119 @@ const FieldGoal = {
     // Hint
     if (!b.kicked && !g.dragStart) {
       ctx.fillStyle = "rgba(0,0,0,0.55)";
-      ctx.font = "bold 16px ui-monospace, monospace";
+      ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Drag back from the ball and release to kick", W/2, H * 0.92);
+      ctx.fillText("Flick UP toward the goal — angle curves the ball", W/2, H * 0.94);
       ctx.textAlign = "start";
     }
-    // Finished overlay handled by main loop.
   },
 };
 
 //----------------------------------------------------------
-// CAN BASH
+// CAN BASH (first-person flick)
 //----------------------------------------------------------
 const CanBash = {
   name: "Can Bash",
-  desc: "Flick a baseball at the stack. Knock 'em all down. 3 throws.",
+  desc: "Flick UP at the can stack. Knock 'em all down. 3 throws.",
   icon: "🥎",
   color: "#ff5a3a",
   init() {
+    // Pyramid of cans positioned on a table at depth z = 18.
     const cans = [];
-    // Pyramid of cans on a table
-    const baseX = W * 0.78, baseY = H * 0.74;
+    const tableZ = 18;
+    const tableY = 0.5;       // height of table top above ground
+    const canHeight = 0.7;
+    const canWidth = 0.6;
     const rows = 4;
-    for (let r = 0; r < rows; r++) {
-      const count = rows - r;
-      const yy = baseY - r * 36;
+    for (let row = 0; row < rows; row++) {
+      const count = rows - row;
+      const yy = tableY + row * canHeight + canHeight / 2;
       for (let i = 0; i < count; i++) {
-        const xx = baseX - (count - 1) * 18 + i * 36;
-        cans.push({ x: xx, y: yy, vx: 0, vy: 0, angle: 0, angVel: 0, hit: false });
+        const xx = (i - (count - 1) / 2) * canWidth;
+        cans.push({
+          x: xx, y: yy, z: tableZ, w: canWidth, h: canHeight,
+          // Knockdown state — once hit, animate falling on screen.
+          hit: false, fallT: 0, fallVx: 0, fallVy: 0, fallAngle: 0,
+        });
       }
     }
     return {
       cans, ball: null, throws: 3, thrown: 0, score: 0, knocked: 0,
+      tableZ, tableY,
       message: "", messageTimer: 0, finished: false,
       dragStart: null, dragNow: null,
     };
   },
   payout(g) {
-    // 30 cash per can knocked, plus 50 bonus for clearing.
     const cleared = g.cans.every(c => c.hit);
     return g.knocked * 30 + (cleared ? 100 : 0);
   },
   resetBall(g) {
-    g.ball = { x: W * 0.15, y: H * 0.55, vx: 0, vy: 0, thrown: false, gone: false };
+    g.ball = { x: 0, y: 0.4, z: 1.2, vx: 0, vy: 0, vz: 0, spin: 0, thrown: false, gone: false, t: 0 };
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
     if (!g.ball) CanBash.resetBall(g);
-    const ball = g.ball;
-    if (ball.thrown) return;
-    if (kind === "down") { g.dragStart = { x, y }; g.dragNow = { x, y }; }
-    else if (kind === "move" && g.dragStart) g.dragNow = { x, y };
-    else if (kind === "up" && g.dragStart) {
-      const dx = g.dragStart.x - x;
-      const dy = g.dragStart.y - y;
-      const dist = Math.hypot(dx, dy);
-      if (dist > 25) {
-        const power = Math.min(1, dist / 260);
-        ball.vx = dx * power * 7;
-        ball.vy = dy * power * 7;
-        ball.thrown = true;
-        g.thrown++;
-        Sound.boostHit && Sound.boostHit();
-      }
-      g.dragStart = null; g.dragNow = null;
-    }
+    if (g.ball.thrown) return;
+    const flick = fpProcessFlick(g, kind, x, y);
+    if (!flick) return;
+    const { power, lateral, upward } = flick;
+    g.ball.vz = 18 + power * 22;
+    g.ball.vy = 3 + power * 12 * upward;
+    g.ball.vx = lateral * 6 * power;
+    g.ball.spin = lateral * 1.0;
+    g.ball.thrown = true;
+    g.thrown++;
+    Sound.boostHit && Sound.boostHit();
   },
   update(g, dt) {
     if (!g.ball) CanBash.resetBall(g);
     const b = g.ball;
     if (b.thrown && !b.gone) {
-      b.vy += 1000 * dt;
+      b.t += dt;
+      b.vy -= 11 * dt;
+      b.vx += b.spin * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      // Ball vs cans
-      for (const c of g.cans) {
-        if (c.hit) continue;
-        const dx = b.x - c.x;
-        const dy = b.y - c.y;
-        if (dx*dx + dy*dy < 22*22) {
-          c.hit = true;
-          c.vx = b.vx * 0.4 + (Math.random() - 0.5) * 80;
-          c.vy = -160 - Math.random() * 80;
-          c.angVel = (Math.random() - 0.5) * 8;
-          // Ball loses energy
-          b.vx *= 0.55; b.vy *= 0.55;
-          g.knocked++;
-          g.score += 10;
-          Sound.pickup && Sound.pickup();
-          if (g.shake) g.shake.mag = 6;
+      b.z += b.vz * dt;
+      // Collision with cans when ball reaches the table depth.
+      if (b.z >= g.tableZ - 0.5 && !b.didHit) {
+        for (const c of g.cans) {
+          if (c.hit) continue;
+          const dx = b.x - c.x;
+          const dy = b.y - c.y;
+          if (Math.abs(dx) < c.w * 0.6 + 0.25 && Math.abs(dy) < c.h * 0.6 + 0.25) {
+            c.hit = true;
+            c.fallVx = b.vx * 0.3 + dx * 4;
+            c.fallVy = -b.vy * 0.5 + 1;
+            c.fallAngle = (Math.random() - 0.5) * 1.0;
+            g.knocked++;
+            g.score += 10;
+            Sound.pickup && Sound.pickup();
+            b.vx *= 0.5; b.vy *= 0.5; b.vz *= 0.4;
+          }
         }
+        b.didHit = true;
       }
-      if (b.y > H + 40 || b.x > W + 60 || b.x < -40) b.gone = true;
+      if (b.z > g.tableZ + 4 || b.y < -1) b.gone = true;
     }
-    // Cans physics
+    // Tumbling cans
     for (const c of g.cans) {
       if (!c.hit) continue;
-      c.vy += 1100 * dt;
-      c.x += c.vx * dt;
-      c.y += c.vy * dt;
-      c.angle += c.angVel * dt;
-      if (c.y > H * 0.86) { c.y = H * 0.86; c.vy *= -0.2; c.vx *= 0.6; c.angVel *= 0.8; }
+      c.fallT += dt;
+      c.fallVy -= 14 * dt;
+      c.x += c.fallVx * dt;
+      c.y += c.fallVy * dt;
+      c.fallAngle += dt * 4;
+      if (c.y < 0) c.y = 0;
     }
-    if ((b.gone || (b.thrown && Math.abs(b.vx) < 30 && b.y > H * 0.85)) && !g.finished) {
-      // Settle, then next throw or finish.
-      g.message = "";
+    // Move on after the throw is over.
+    if ((b.gone || (b.thrown && b.didHit && b.t > 0.6)) && !g.finished) {
       if (g.thrown >= g.throws || g.cans.every(c => c.hit)) {
-        g.finished = true;
-        if (g.cans.every(c => c.hit)) g.score += 50;  // clear bonus
+        if (!g.finished) {
+          if (g.cans.every(c => c.hit)) g.score += 50;
+          g.finished = true;
+        }
       } else {
         CanBash.resetBall(g);
       }
@@ -3504,63 +3579,73 @@ const CanBash = {
   },
   render(g) {
     if (!g.ball) CanBash.resetBall(g);
-    // Sky + ground
-    const sky = ctx.createLinearGradient(0, 0, 0, H);
-    sky.addColorStop(0, "#3a3050"); sky.addColorStop(1, "#5a3340");
-    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "#3a2516";
-    ctx.fillRect(0, H * 0.86, W, H * 0.14);
+    fpDrawSky("#3a3050", "#5a3340", "#3a2516");
+    fpDrawField("#5a3818", "#3a2516");
+
     // Table
+    const tFrontTL = fpProject(-2.5, g.tableY, g.tableZ - 1);
+    const tFrontTR = fpProject( 2.5, g.tableY, g.tableZ - 1);
+    const tFrontBL = fpProject(-2.5, 0, g.tableZ - 1);
+    const tFrontBR = fpProject( 2.5, 0, g.tableZ - 1);
+    const tBackTL  = fpProject(-2.5, g.tableY, g.tableZ + 1);
+    const tBackTR  = fpProject( 2.5, g.tableY, g.tableZ + 1);
     ctx.fillStyle = "#6b3b1d";
-    ctx.fillRect(W * 0.62, H * 0.78, W * 0.32, H * 0.10);
+    ctx.beginPath();
+    ctx.moveTo(tFrontTL.sx, tFrontTL.sy);
+    ctx.lineTo(tFrontTR.sx, tFrontTR.sy);
+    ctx.lineTo(tBackTR.sx, tBackTR.sy);
+    ctx.lineTo(tBackTL.sx, tBackTL.sy);
+    ctx.closePath(); ctx.fill();
     ctx.fillStyle = "#3a2010";
-    ctx.fillRect(W * 0.62, H * 0.78, W * 0.32, 4);
-    // Cans
-    for (const c of g.cans) {
+    ctx.beginPath();
+    ctx.moveTo(tFrontTL.sx, tFrontTL.sy);
+    ctx.lineTo(tFrontTR.sx, tFrontTR.sy);
+    ctx.lineTo(tFrontBR.sx, tFrontBR.sy);
+    ctx.lineTo(tFrontBL.sx, tFrontBL.sy);
+    ctx.closePath(); ctx.fill();
+
+    // Cans — sort back-to-front for correct overlap.
+    const sorted = g.cans.slice().sort((a, b) => b.y - a.y);
+    for (const c of sorted) {
+      const proj = fpProject(c.x, c.y, c.z);
+      const w = Math.max(6, 28 * proj.scale);
+      const h = Math.max(8, 36 * proj.scale);
       ctx.save();
-      ctx.translate(c.x, c.y);
-      ctx.rotate(c.angle);
-      // Body
+      ctx.translate(proj.sx, proj.sy);
+      if (c.hit) ctx.rotate(c.fallAngle);
       ctx.fillStyle = "#cccccc";
-      ctx.fillRect(-12, -16, 24, 32);
-      // Label
+      ctx.fillRect(-w / 2, -h / 2, w, h);
       ctx.fillStyle = "#e94c3a";
-      ctx.fillRect(-12, -8, 24, 14);
-      // Shine
+      ctx.fillRect(-w / 2, -h * 0.18, w, h * 0.45);
       ctx.fillStyle = "rgba(255,255,255,0.4)";
-      ctx.fillRect(-10, -16, 3, 32);
+      ctx.fillRect(-w / 2 + 1, -h / 2, 2, h);
       ctx.restore();
     }
-    // Aim line
-    if (g.dragStart && g.dragNow) {
-      const dx = g.dragStart.x - g.dragNow.x;
-      const dy = g.dragStart.y - g.dragNow.y;
-      const len = Math.hypot(dx, dy);
-      const power = Math.min(1, len / 260);
-      ctx.strokeStyle = `rgba(255, 80, 80, ${0.4 + power * 0.5})`;
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(g.ball.x, g.ball.y);
-      ctx.lineTo(g.ball.x + dx * 0.6, g.ball.y + dy * 0.6);
-      ctx.stroke();
+
+    // Aim preview
+    if (!g.ball.thrown) {
+      const ballProj = fpProject(g.ball.x, g.ball.y, g.ball.z);
+      fpDrawAimArc(g, ballProj.sx, ballProj.sy, "rgba(255, 90, 80, ");
     }
+
     // Ball
     const b = g.ball;
-    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#aa0000"; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(b.x, b.y, 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    // Stitches
-    ctx.beginPath(); ctx.arc(b.x, b.y, 7, -0.4, 0.4); ctx.stroke();
-    ctx.beginPath(); ctx.arc(b.x, b.y, 7, Math.PI - 0.4, Math.PI + 0.4); ctx.stroke();
+    const bp = fpProject(b.x, b.y, b.z);
+    const br = Math.max(3, 14 * bp.scale);
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#aa0000"; ctx.lineWidth = Math.max(1, 1.4 * bp.scale);
+    ctx.beginPath(); ctx.arc(bp.sx, bp.sy, br, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(bp.sx, bp.sy, br * 0.7, -0.4, 0.4); ctx.stroke();
+    ctx.beginPath(); ctx.arc(bp.sx, bp.sy, br * 0.7, Math.PI - 0.4, Math.PI + 0.4); ctx.stroke();
 
     // HUD
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(`Knocked: ${g.knocked} / ${g.cans.length}    Score: ${g.score}`, 16, 28);
     ctx.fillText(`Throws left: ${Math.max(0, g.throws - g.thrown)}`, 16, 52);
     if (!b.thrown && !g.dragStart) {
-      ctx.font = "bold 16px ui-monospace, monospace";
+      ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Drag back from the ball and release to throw", W/2, H * 0.95);
+      ctx.fillText("Flick UP at the cans — angle to bend the throw", W/2, H * 0.94);
       ctx.textAlign = "start";
     }
   },
