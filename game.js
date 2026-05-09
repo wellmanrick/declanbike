@@ -3,38 +3,10 @@
  * No external libraries.
  */
 
-// On-screen diagnostic banner — ALWAYS visible until init succeeds. Lets us
-// see from a phone whether the script is loading and where it crashes.
-(function () {
-  function ensureBanner() {
-    var d = document.getElementById("__diag");
-    if (d) return d;
-    d = document.createElement("div");
-    d.id = "__diag";
-    d.style.cssText = "position:fixed;left:8px;right:8px;top:8px;background:rgba(255,90,58,0.92);color:#1a0606;padding:6px 10px;font:bold 11px ui-monospace,monospace;z-index:99999;white-space:pre-wrap;max-height:36vh;overflow:auto;border-radius:6px;line-height:1.4;";
-    if (document.body) document.body.appendChild(d);
-    else document.addEventListener("DOMContentLoaded", function () { document.body.appendChild(d); });
-    return d;
-  }
-  window.__diag = function (msg) {
-    try {
-      var d = ensureBanner();
-      d.textContent += msg + "\n";
-    } catch (e) { /* swallow */ }
-  };
-  window.__diagClear = function () {
-    var d = document.getElementById("__diag");
-    if (d) d.parentNode.removeChild(d);
-  };
-  window.addEventListener("error", function (e) {
-    window.__diag("[ERROR] " + (e.message || (e.error && e.error.message) || "?") +
-                  " @ " + (e.filename || "?") + ":" + (e.lineno || "?"));
-  });
-  window.addEventListener("unhandledrejection", function (e) {
-    window.__diag("[REJ] " + (e.reason && e.reason.message ? e.reason.message : e.reason));
-  });
-  window.__diag("[boot] script loaded");
-})();
+// Silent error stub — kept around so existing window.__diag() calls below
+// remain harmless. Real errors still go to the console; we just don't draw
+// a banner over the menu anymore.
+window.__diag = function () {};
 
 // Polyfill structuredClone for older iOS / Safari builds. Without this the
 // script throws on the very first load and nothing else runs.
