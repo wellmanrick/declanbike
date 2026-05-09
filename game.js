@@ -772,30 +772,8 @@ function buildTerrain(level) {
   const lastSamples = Math.floor(level.length / TERRAIN_DX);
   for (let i = lastSamples - 30; i <= lastSamples + 60 && i < samples; i++) heights[i] = GROUND_BASE - 20;
 
-  // place ramps (positive bumps) & gaps (negative dips)
-  const ramCount = Math.floor(level.length / 350 * level.gaps + 4);
-  for (let n = 0; n < ramCount; n++) {
-    const cx = 350 + rand() * (level.length - 700);
-    const w = 80 + rand() * 80;
-    const h = 60 + rand() * 70 * level.gaps;
-    const ci = Math.floor(cx / TERRAIN_DX);
-    const halfSamples = Math.ceil(w / TERRAIN_DX);
-    for (let k = -halfSamples; k <= halfSamples; k++) {
-      const idx = ci + k;
-      if (idx < 30 || idx >= lastSamples - 30) continue;
-      const t = k / halfSamples; // -1..1
-      // ramp curve: slow rise, sharp drop after peak (or symmetric)
-      const profile = Math.cos(t * Math.PI * 0.5);
-      heights[idx] -= h * Math.max(0, profile);
-    }
-    ramps.push({ x: cx, y: GROUND_BASE - h, w, h });
-  }
-
-  // gaps (lower ground)
-  const gapCount = Math.floor(level.gaps * 4);
-  for (let n = 0; n < gapCount; n++) {
-    const cx = 600 + rand() * (level.length - 1100);
-    const w = 50 + rand() * 80 * level.gaps;
+  // Helper to deform the terrain by a profile across a window.
+  function deform(cx, w, peak) {
     const ci = Math.floor(cx / TERRAIN_DX);
     const halfSamples = Math.ceil(w / TERRAIN_DX);
     for (let k = -halfSamples; k <= halfSamples; k++) {
@@ -803,33 +781,61 @@ function buildTerrain(level) {
       if (idx < 30 || idx >= lastSamples - 30) continue;
       const t = k / halfSamples;
       const profile = Math.cos(t * Math.PI * 0.5);
-      heights[idx] += 90 * profile;
+      heights[idx] -= peak * Math.max(0, profile);
     }
   }
 
-  // obstacles — placed with minimum spacing so the player always has a
-  // window to react. Skip spots near ramps (tough landing zones).
-  const obsCount = Math.floor(level.length / 300 * level.obstacles);
-  for (let n = 0; n < obsCount; n++) {
-    const x = 400 + rand() * (level.length - 800);
-    // Reject if too close to another obstacle or a ramp peak.
-    let bad = false;
-    for (const other of obstacles) {
-      if (Math.abs(other.x - x) < 110) { bad = true; break; }
-    }
-    if (!bad) for (const ramp of ramps) {
-      if (Math.abs(ramp.x - x) < 130) { bad = true; break; }
-    }
-    if (bad) continue;
-    const i = Math.floor(x / TERRAIN_DX);
-    const y = heights[i];
-    const r = rand();
-    let type;
-    if (r < 0.5) type = "rock";
-    else if (r < 0.85) type = "tire";
-    else type = "log";
-    obstacles.push({ x, y, type, r: 14 + rand() * 8, hit: false });
+  // Big ramps — the headline jumps. Roughly 1 every 220m on a difficulty-1
+  // trail, more on harder ones. Heights scale with level.gaps.
+  const bigRampCount = Math.floor(level.length / 220 * Math.max(0.6, level.gaps) + 6);
+  for (let n = 0; n < bigRampCount; n++) {
+    const cx = 280 + rand() * (level.length - 560);
+    const w = 80 + rand() * 90;
+    const h = 70 + rand() * (90 * level.gaps);
+    deform(cx, w, h);
+    ramps.push({ x: cx, y: GROUND_BASE - h, w, h });
   }
+
+  // Small bumps — frequent, low. Adds rolling-hill texture and gives you
+  // little micro-airs while just driving.
+  const bumpCount = Math.floor(level.length / 90);
+  for (let n = 0; n < bumpCount; n++) {
+    const cx = 200 + rand() * (level.length - 400);
+    const w = 30 + rand() * 50;
+    const h = 10 + rand() * 22;
+    deform(cx, w, h);
+  }
+
+  // Roller doubles — pairs of close ramps for table-top jumps and combos.
+  const doubleCount = Math.floor(level.length / 700 + 2);
+  for (let n = 0; n < doubleCount; n++) {
+    const cx = 400 + rand() * (level.length - 900);
+    const w = 70 + rand() * 30;
+    const h = 60 + rand() * 50;
+    deform(cx, w, h);
+    deform(cx + w * 2 + 20, w, h * (0.7 + rand() * 0.5));
+    ramps.push({ x: cx, y: GROUND_BASE - h, w, h });
+  }
+
+  // Gaps — negative dips. Generous count so you regularly catch air.
+  const gapCount = Math.floor(level.gaps * 8 + 4);
+  for (let n = 0; n < gapCount; n++) {
+    const cx = 600 + rand() * (level.length - 1100);
+    const w = 50 + rand() * (90 * level.gaps);
+    const depth = 70 + rand() * 70;
+    const ci = Math.floor(cx / TERRAIN_DX);
+    const halfSamples = Math.ceil(w / TERRAIN_DX);
+    for (let k = -halfSamples; k <= halfSamples; k++) {
+      const idx = ci + k;
+      if (idx < 30 || idx >= lastSamples - 30) continue;
+      const t = k / halfSamples;
+      const profile = Math.cos(t * Math.PI * 0.5);
+      heights[idx] += depth * profile;
+    }
+  }
+
+  // (Hard obstacles removed — they were ending runs in unfair spots.
+  // The trails now lean entirely on ramps, gaps, and rolling hills.)
 
   // collectibles — gold bolts above peaks and over gaps
   const collectCount = Math.floor(level.length / 180);
@@ -883,20 +889,12 @@ function buildTerrain(level) {
     }
   }
 
-  // Hazards: spring ramps, oil slicks, mud, fire pits.
+  // Springs only — no more fire / oil / mud (they kept ending runs unfairly).
   const hazards = [];
-  const hazardCount = Math.floor(level.length / 700) + 2;
-  for (let n = 0; n < hazardCount; n++) {
+  const springCount = Math.floor(level.length / 480) + 3;
+  for (let n = 0; n < springCount; n++) {
     const cx = 500 + rand() * (level.length - 800);
-    const r = rand();
-    let type, w;
-    const themeName = level.theme || "dusk";
-    if (themeName === "desert")     type = r < 0.55 ? "spring" : (r < 0.85 ? "fire" : "oil");
-    else if (themeName === "night") type = r < 0.45 ? "oil" : (r < 0.75 ? "spring" : "fire");
-    else if (themeName === "sunset")type = r < 0.45 ? "spring" : (r < 0.7 ? "oil" : (r < 0.9 ? "mud" : "fire"));
-    else                            type = r < 0.4 ? "oil" : (r < 0.65 ? "mud" : (r < 0.9 ? "spring" : "fire"));
-    w = type === "spring" ? 32 : 60 + rand() * 50;
-    hazards.push({ x: cx, w, type, fired: false });
+    hazards.push({ x: cx, w: 32, type: "spring", fired: false });
   }
 
   return { heights, obstacles, collectibles, ramps, checkpoints, props, hazards };
