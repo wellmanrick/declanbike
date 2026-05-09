@@ -14,6 +14,7 @@ const DEFAULT_SAVE = {
   ownedParts: {                   // partId -> true for owned
     engine_stock: true, tire_stock: true, suspension_stock: true,
     frame_stock: true, paint_red: true,
+    char_declan: true,
   },
   equipped: {
     engine: "engine_stock",
@@ -21,7 +22,9 @@ const DEFAULT_SAVE = {
     suspension: "suspension_stock",
     frame: "frame_stock",
     paint: "paint_red",
+    character: "char_declan",
   },
+  tutorialsSeen: {},
   quests: {},                     // questId -> { progress, done, claimed }
   unlockedLevels: { trail_01: true },
   totals: { distance: 0, flips: 0, airtime: 0, crashes: 0, runs: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, gems: 0, cleanRuns: 0 },
@@ -115,6 +118,21 @@ const PARTS = {
   ],
 };
 
+// Selectable rider characters — modify base stats and visual accents.
+const CHARACTERS = [
+  { id: "char_declan", name: "Declan",  cost: 0,    desc: "All-around. Reliable.",
+    stats: {}, accent: "#ffb020", boots: "#0a0a0e" },
+  { id: "char_maya",   name: "Maya",    cost: 600,  desc: "Lightweight speedster. Fast but fragile.",
+    stats: { topSpeed: 8, accel: 0.08, durability: -25 }, accent: "#ff5a3a", boots: "#1d2030" },
+  { id: "char_brick",  name: "Brick",   cost: 800,  desc: "Heavy. Tank-spec. Slower off the line.",
+    stats: { durability: 50, weight: 0.10, accel: -0.05 }, accent: "#888", boots: "#3a3a3a" },
+  { id: "char_pixie",  name: "Pixie",   cost: 1200, desc: "Acrobat. Spins fast, lands soft.",
+    stats: { weight: -0.18, suspension: 0.10 }, accent: "#c2ff3a", boots: "#0a0a0e" },
+  { id: "char_ace",    name: "Ace",     cost: 1800, desc: "Pro rider. Boost regen + grip bonus.",
+    stats: { boostRegen: 4, grip: 0.06 }, accent: "#6ee7ff", boots: "#1a1a1a" },
+];
+function characterById(id) { return CHARACTERS.find(c => c.id === id); }
+
 function partById(id) {
   for (const cat of Object.keys(PARTS)) {
     const p = PARTS[cat].find(p => p.id === id);
@@ -141,6 +159,21 @@ function getEquippedStats() {
     if (s.durability != null) base.durability = s.durability;
     if (s.weight != null) base.weight = s.weight;
     if (s.paint) base.paint = s.paint;
+  }
+  // Character modifiers — additive on top of bike parts.
+  const ch = characterById(save.equipped.character || "char_declan");
+  if (ch) {
+    const cs = ch.stats || {};
+    if (cs.topSpeed)   base.topSpeed += cs.topSpeed;
+    if (cs.accel)      base.accel += cs.accel;
+    if (cs.grip)       base.grip = clamp(base.grip + cs.grip, 0.1, 1);
+    if (cs.suspension) base.suspension = clamp(base.suspension + cs.suspension, 0.1, 1);
+    if (cs.boostRegen) base.boostRegen += cs.boostRegen;
+    if (cs.durability) base.durability += cs.durability;
+    if (cs.weight)     base.weight = Math.max(0.6, base.weight + cs.weight);
+    base.charAccent = ch.accent || "#ffb020";
+    base.charBoots = ch.boots || "#0a0a0e";
+    base.charName = ch.name;
   }
   return base;
 }
@@ -201,26 +234,46 @@ const THEMES = {
 //==========================================================
 const LEVELS = [
   { id: "trail_01", name: "Backyard Trail",   length: 2200, seed: 11,  difficulty: 1, hills: 0.6, gaps: 0.2, obstacles: 0.3, theme: "day",
+    medals: { gold: 35, silver: 50, bronze: 70 },
     desc: "An easy warm-up loop. Learn the controls." },
   { id: "trail_02", name: "Pine Ridge",       length: 2800, seed: 23,  difficulty: 2, hills: 1.0, gaps: 0.5, obstacles: 0.5, theme: "day",
+    medals: { gold: 45, silver: 65, bronze: 90 },
     desc: "Rolling hills with the first real ramps.", unlockAfter: "trail_01" },
   { id: "trail_03", name: "Quarry Run",       length: 3400, seed: 47,  difficulty: 3, hills: 1.4, gaps: 0.8, obstacles: 0.8, theme: "sunset",
+    medals: { gold: 55, silver: 80, bronze: 110 },
     desc: "Big gaps. Bring boost.", unlockAfter: "trail_02" },
   { id: "trail_04", name: "Dunes",            length: 3000, seed: 71,  difficulty: 3, hills: 2.0, gaps: 0.4, obstacles: 0.4, theme: "desert",
+    medals: { gold: 50, silver: 70, bronze: 95 },
     desc: "Smooth and rolling. Catch air on every crest.", unlockAfter: "trail_02" },
   { id: "trail_05", name: "Industrial Yard",  length: 3600, seed: 91,  difficulty: 4, hills: 1.0, gaps: 1.0, obstacles: 1.4, theme: "dusk",
+    medals: { gold: 60, silver: 85, bronze: 115 },
     desc: "Tight obstacles, sharp jumps. Reflex test.", unlockAfter: "trail_03" },
   { id: "trail_06", name: "Coastal Cliffs",   length: 3200, seed: 113, difficulty: 4, hills: 1.6, gaps: 1.0, obstacles: 0.6, theme: "sunset",
+    medals: { gold: 55, silver: 75, bronze: 105 },
     desc: "Long airtime over coastal gaps. Beautiful and scary.", unlockAfter: "trail_04" },
   { id: "trail_07", name: "Lunar Loop",       length: 3800, seed: 131, difficulty: 4, hills: 2.4, gaps: 1.2, obstacles: 0.5, theme: "night",
+    medals: { gold: 65, silver: 90, bronze: 125 },
     desc: "Low gravity feel. Big floaty jumps under starlight.", unlockAfter: "trail_05", lowGravity: true },
   { id: "trail_08", name: "Canyon Run",       length: 3600, seed: 157, difficulty: 5, hills: 1.8, gaps: 1.6, obstacles: 1.0, theme: "desert",
+    medals: { gold: 65, silver: 90, bronze: 120 },
     desc: "Long red canyons. Time it right or eat sand.", unlockAfter: "trail_06" },
   { id: "trail_09", name: "Midnight Mile",    length: 4000, seed: 179, difficulty: 5, hills: 1.0, gaps: 1.8, obstacles: 1.4, theme: "night",
+    medals: { gold: 70, silver: 95, bronze: 130 },
     desc: "Visibility is rough. Speed is reckless. Send.", unlockAfter: "trail_07" },
   { id: "trail_10", name: "Mt. Send-It",      length: 4400, seed: 137, difficulty: 5, hills: 2.2, gaps: 1.4, obstacles: 1.0, theme: "dusk",
+    medals: { gold: 75, silver: 105, bronze: 145 },
     desc: "Final boss. Don't blink.", unlockAfter: "trail_08" },
 ];
+
+function medalForTime(level, time) {
+  if (!level.medals) return null;
+  if (time <= level.medals.gold) return "gold";
+  if (time <= level.medals.silver) return "silver";
+  if (time <= level.medals.bronze) return "bronze";
+  return null;
+}
+function medalRank(m) { return m === "gold" ? 3 : m === "silver" ? 2 : m === "bronze" ? 1 : 0; }
+function medalIcon(m) { return m === "gold" ? "🥇" : m === "silver" ? "🥈" : m === "bronze" ? "🥉" : "—"; }
 
 function levelUnlocked(lvl) {
   if (!lvl.unlockAfter) return true;
@@ -440,6 +493,94 @@ const Sound = (() => {
   function boostHit()  { noise(0.20, 0.18, 3000); sweep(800, 1600, 0.18, "sine", 0.10); }
   function click()     { blip(900, 0.04, "square", 0.10); }
 
+  // Background music — chip-style scheduler. Two patterns rotate.
+  let musicTimer = null;
+  let musicMode = "menu";
+  let musicBeat = 0;
+  // semitones offset from a base frequency
+  const PATTERN_GAME = {
+    bass: [0, null, 0, null, -3, null, 0, null, -5, null, -5, null, -7, null, -3, null],
+    arp:  [12, 7, 12, 15, 12, 7, 19, 15, 12, 7, 12, 15, 14, 10, 17, 19],
+    kick: [1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0],
+    snare:[0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+  };
+  const PATTERN_MENU = {
+    bass: [0, null, null, null, -3, null, null, null, -5, null, null, null, -7, null, null, null],
+    arp:  [12, null, 14, null, 17, null, 14, null, 12, null, 14, null, 17, null, 19, null],
+    kick: [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    snare:[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  };
+  const ROOT_HZ = 110; // A2
+  const semi = (n) => ROOT_HZ * Math.pow(2, n / 12);
+
+  function tick() {
+    if (!ensure()) return;
+    const pat = musicMode === "menu" ? PATTERN_MENU : PATTERN_GAME;
+    const i = musicBeat % pat.bass.length;
+    const t = audio.currentTime + 0.02;
+    // Bass — triangle wave through low-pass
+    if (pat.bass[i] != null) {
+      const o = audio.createOscillator();
+      const g = audio.createGain();
+      const f = audio.createBiquadFilter();
+      f.type = "lowpass"; f.frequency.value = 600;
+      o.type = "triangle"; o.frequency.setValueAtTime(semi(pat.bass[i]), t);
+      g.gain.setValueAtTime(0.06, t);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 0.28);
+      o.connect(f); f.connect(g); g.connect(master);
+      o.start(t); o.stop(t + 0.32);
+    }
+    // Arp — square pluck
+    if (pat.arp[i] != null) {
+      const o = audio.createOscillator();
+      const g = audio.createGain();
+      o.type = "square"; o.frequency.setValueAtTime(semi(pat.arp[i]), t);
+      g.gain.setValueAtTime(0.025, t);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 0.15);
+      o.connect(g); g.connect(master);
+      o.start(t); o.stop(t + 0.18);
+    }
+    // Kick
+    if (pat.kick[i]) {
+      const o = audio.createOscillator();
+      const g = audio.createGain();
+      o.type = "sine"; o.frequency.setValueAtTime(110, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.10);
+      g.gain.setValueAtTime(0.16, t);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 0.14);
+      o.connect(g); g.connect(master);
+      o.start(t); o.stop(t + 0.16);
+    }
+    // Snare via noise
+    if (pat.snare[i]) {
+      const len = Math.floor(audio.sampleRate * 0.10);
+      const buf = audio.createBuffer(1, len, audio.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let k = 0; k < len; k++) data[k] = Math.random() * 2 - 1;
+      const src = audio.createBufferSource();
+      src.buffer = buf;
+      const f = audio.createBiquadFilter();
+      f.type = "highpass"; f.frequency.value = 1500;
+      const g = audio.createGain();
+      g.gain.setValueAtTime(0.06, t);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 0.10);
+      src.connect(f); f.connect(g); g.connect(master);
+      src.start(t);
+    }
+    musicBeat++;
+  }
+  function startMusic(mode) {
+    const newMode = mode || "game";
+    if (musicTimer && musicMode === newMode) return;
+    if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+    musicMode = newMode;
+    if (!ensure()) return;
+    musicBeat = 0;
+    musicTimer = setInterval(tick, 220); // ~136 bpm 16ths feel
+  }
+  function stopMusic() {
+    if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+  }
+
   function toggleMute() {
     muted = !muted;
     localStorage.setItem("declanbike.muted", muted ? "1" : "0");
@@ -450,7 +591,8 @@ const Sound = (() => {
 
   return { ensure, startEngine, setEngine, stopEngine,
            jump, pickup, gem, flip: flipSnd, land: landSnd, perfect: perfectSnd,
-           crash: crashSnd, boostHit, click, toggleMute, isMuted };
+           crash: crashSnd, boostHit, click, toggleMute, isMuted,
+           startMusic, stopMusic };
 })();
 
 //==========================================================
@@ -681,7 +823,23 @@ function buildTerrain(level) {
     }
   }
 
-  return { heights, obstacles, collectibles, ramps, checkpoints, props };
+  // Hazards: spring ramps, oil slicks, mud, fire pits.
+  const hazards = [];
+  const hazardCount = Math.floor(level.length / 700) + 2;
+  for (let n = 0; n < hazardCount; n++) {
+    const cx = 500 + rand() * (level.length - 800);
+    const r = rand();
+    let type, w;
+    const themeName = level.theme || "dusk";
+    if (themeName === "desert")     type = r < 0.55 ? "spring" : (r < 0.85 ? "fire" : "oil");
+    else if (themeName === "night") type = r < 0.45 ? "oil" : (r < 0.75 ? "spring" : "fire");
+    else if (themeName === "sunset")type = r < 0.45 ? "spring" : (r < 0.7 ? "oil" : (r < 0.9 ? "mud" : "fire"));
+    else                            type = r < 0.4 ? "oil" : (r < 0.65 ? "mud" : (r < 0.9 ? "spring" : "fire"));
+    w = type === "spring" ? 32 : 60 + rand() * 50;
+    hazards.push({ x: cx, w, type, fired: false });
+  }
+
+  return { heights, obstacles, collectibles, ramps, checkpoints, props, hazards };
 }
 
 function terrainHeightAt(terrain, x) {
@@ -736,6 +894,9 @@ function startRun(levelId) {
       lastGroundedAt: performance.now(),
       preload: 0,
       currentFlipRot: 0,
+      airTrick: { tuck: 0, superman: 0, noHand: 0 },
+      oilTime: 0,
+      tireTrail: [], // recent ground positions for trail rendering
       pendingFlips: 0,
       pendingDirection: 0,
       health: stats.durability,
@@ -765,6 +926,21 @@ function startRun(levelId) {
   showOnly("hud");
   Sound.ensure();
   Sound.startEngine();
+  Sound.startMusic("game");
+  // First-run tutorials.
+  setTimeout(() => maybeTutorial("welcome", "Throttle ▶ to ride.  Brake ◀.  Tap ⤴ to jump."), 500);
+  setTimeout(() => maybeTutorial("flip", "In the air, hold ↻ to flip.  Land smooth for combos."), 4500);
+  setTimeout(() => maybeTutorial("boost", "Hit ⚡ to boost.  Watch your meter."), 9500);
+  setTimeout(() => maybeTutorial("hazards", "Watch out — fire pits crash you, oil slicks make you slide."), 14500);
+}
+
+function maybeTutorial(id, text) {
+  if (state !== STATE.PLAY || !runtime) return;
+  if (save.tutorialsSeen?.[id]) return;
+  if (!save.tutorialsSeen) save.tutorialsSeen = {};
+  save.tutorialsSeen[id] = true;
+  persistSave();
+  pushToast(text, "gold", 3500);
 }
 
 //==========================================================
@@ -825,6 +1001,7 @@ function updateBike(dt) {
     b.vy = -480;
     b.airtime = 0;
     b.currentFlipRot = 0;
+    b.airTrick = { tuck: 0, superman: 0, noHand: 0 };
     b.onGround = false;
     onGround = false; // skip the on-ground branch this frame so vy survives
     r.runStats.jumps++;
@@ -837,6 +1014,7 @@ function updateBike(dt) {
     // takeoff event (off a crest/ramp without jumping)
     b.airtime = 0;
     b.currentFlipRot = 0;
+    b.airTrick = { tuck: 0, superman: 0, noHand: 0 };
     r.runStats.jumps++;
     pushToast("Air!", "gold", 800);
   }
@@ -905,6 +1083,14 @@ function updateBike(dt) {
     b.throttleHeat = clamp(b.throttleHeat + (inp.throttle ? dt * 1.5 : -dt * 1.0), 0, 1);
     // exhaust particles when throttling
     if (inp.throttle && Math.random() < 0.35) spawnExhaustParticles(false);
+
+    // tire trail — sample rear wheel position
+    if (Math.abs(b.vx) > 60) {
+      const rx = b.x - Math.cos(b.angle) * 22;
+      const ry = b.y - Math.sin(b.angle) * 22;
+      b.tireTrail.push({ x: rx, y: ry, life: 1.5 });
+      if (b.tireTrail.length > 80) b.tireTrail.shift();
+    }
   } else {
     // air
     b.airtime += dt;
@@ -928,6 +1114,12 @@ function updateBike(dt) {
     b.angVel *= Math.pow(0.998, dt * 60);
     b.angle += b.angVel * dt;
     b.currentFlipRot += b.angVel * dt;
+
+    // Trick detection: track time spent holding specific input combos in air.
+    if (!b.airTrick) b.airTrick = { tuck: 0, superman: 0, noHand: 0 };
+    if (inp.leanFwd && inp.leanBack)              b.airTrick.tuck += dt;
+    else if (inp.boost && !inp.leanFwd && !inp.leanBack) b.airTrick.superman += dt;
+    else if (!inp.leanFwd && !inp.leanBack && !inp.boost && !inp.throttle) b.airTrick.noHand += dt;
 
     // simple air drag
     b.vx *= Math.pow(FRICTION_AIR, dt * 60);
@@ -970,6 +1162,39 @@ function updateBike(dt) {
       crash(`Hit a ${obs.type}!`);
       return;
     }
+  }
+
+  // hazard collision (oil, mud, fire, spring) — terrain-aligned strips.
+  if (b.oilTime > 0) b.oilTime = Math.max(0, b.oilTime - dt);
+  for (const hz of r.terrain.hazards || []) {
+    if (b.x < hz.x || b.x > hz.x + hz.w) continue;
+    if (hz.type === "fire" && !b.crashed) {
+      crash("Fire pit!");
+      return;
+    }
+    if (hz.type === "spring" && b.onGround && !hz.fired) {
+      hz.fired = true;
+      b.y -= 8;
+      b.vy = -680;
+      b.vx += 60;
+      b.onGround = false;
+      b.airtime = 0;
+      b.currentFlipRot = 0;
+      r.runStats.jumps++;
+      Sound.jump();
+      pushToast("BOING!", "gold", 700);
+      pushFloating("BOING!", b.x, b.y - 30, "#4ddc8c");
+    }
+    if (hz.type === "oil" && b.onGround) {
+      b.oilTime = 1.0;
+    }
+    if (hz.type === "mud" && b.onGround) {
+      b.vx *= Math.pow(0.92, dt * 60);
+    }
+  }
+  // Oil residual: induce tiny wobble in body angle while sliding
+  if (b.oilTime > 0 && b.onGround) {
+    b.angle += (Math.random() - 0.5) * 0.06;
   }
   // collectibles
   for (const c of r.terrain.collectibles) {
@@ -1022,6 +1247,20 @@ function handleLanding(slopeAngle) {
     } else {
       pushToast(label, "green", 800);
     }
+
+    // Air-trick bonuses (independent of flip count). Awarded if held >0.4s.
+    const at = b.airTrick || {};
+    let trickName = null, trickBonus = 0;
+    if (at.tuck > 0.4)         { trickName = "Tuck";     trickBonus = 150; }
+    if (at.superman > at.tuck && at.superman > 0.4) { trickName = "Superman"; trickBonus = 250; }
+    if (at.noHand > Math.max(at.tuck, at.superman) && at.noHand > 0.4) {
+      trickName = "No-Hander"; trickBonus = 200;
+    }
+    if (trickName) {
+      bonus += trickBonus;
+      pushToast(`${trickName}! +${trickBonus}`, "gold", 1100);
+    }
+
     if (r.combo > r.runStats.maxCombo) r.runStats.maxCombo = r.combo;
     r.score += bonus;
     r.cashEarned += Math.floor(bonus * 0.05);
@@ -1059,6 +1298,27 @@ function crash(reason) {
   pushToast(reason, "red", 1100);
   Sound.crash();
   if (r.shake) r.shake.mag = 14;
+  // Wipeout: health depleted, end the run as failure.
+  if (b.health <= 0 && !b.finished) {
+    b.finished = true;
+    b.crashTimer = 2.0;
+    setTimeout(() => wipeoutRun(), 1100);
+  }
+}
+
+function wipeoutRun() {
+  if (!runtime) return;
+  const r = runtime;
+  const earned = Math.floor(r.cashEarned * 0.4);
+  save.cash += earned;
+  save.totals.runs += 1;
+  save.totals.airtime += r.runStats.airtime;
+  save.totals.jumps += r.runStats.jumps;
+  save.totals.gems = (save.totals.gems || 0) + r.runStats.gems;
+  refreshQuestStates(r.runStats);
+  persistSave();
+  Sound.stopEngine();
+  showResult(false, { wipeoutEarned: earned, wipeout: true });
 }
 
 function finishRun() {
@@ -1079,12 +1339,19 @@ function finishRun() {
   r.runStats.runPerfects = r.runStats.perfectLandings;
 
   const lvl = r.level;
-  const prev = save.best[lvl.id] || { score: 0, time: Infinity, distance: 0, completed: false };
+  const prev = save.best[lvl.id] || { score: 0, time: Infinity, distance: 0, completed: false, medal: null };
+  const newTime = Math.min(prev.time, r.time);
+  const newMedal = medalForTime(lvl, newTime);
+  if (newMedal && medalRank(newMedal) > medalRank(prev.medal)) {
+    pushToast(`${medalIcon(newMedal)} ${newMedal.toUpperCase()} medal!`, "gold", 1800);
+    r.cashEarned += newMedal === "gold" ? 500 : newMedal === "silver" ? 300 : 150;
+  }
   save.best[lvl.id] = {
     completed: true,
     score: Math.max(prev.score, r.score + (timeBonus + distBonus)),
-    time: Math.min(prev.time, r.time),
+    time: newTime,
     distance: Math.max(prev.distance, distM),
+    medal: newMedal && medalRank(newMedal) > medalRank(prev.medal) ? newMedal : prev.medal,
   };
   // unlock next levels
   for (const L of LEVELS) {
@@ -1214,16 +1481,22 @@ function render() {
 
   drawTerrain(r.terrain, r.cam.x, theme);
   drawProps(r.terrain, r.cam.x, theme);
+  drawHazards(r.terrain, r.cam.x);
   drawCheckpoints(r.terrain, r.cam.x);
   drawObstacles(r.terrain, r.cam.x);
   drawCollectibles(r.terrain, r.cam.x);
   drawFinishLine(r.finishLineX, r.terrain);
 
-  // particles behind bike
+  // tire trail + particles behind bike
+  drawTireTrail(r.bike);
   drawParticles();
 
   drawBike(r.bike, r.stats);
   drawFloatingTexts();
+
+  // Foreground silhouette layer — closer parallax props, drawn over the bike
+  // so the world has depth.
+  drawForeground(r.cam.x, theme);
   ctx.restore();
 
   // foreground (screen-space) overlays
@@ -1285,6 +1558,8 @@ function drawMenuDemo(theme) {
   ctx.rotate(Math.sin(t * 1.2) * 0.05);
   paintBike(ctx, {
     paint: stats.paint,
+    accent: stats.charAccent,
+    boots: stats.charBoots,
     wheelAngle: t * 7,
     lean: { x: 1, y: 0 },
     squash: 0,
@@ -1563,6 +1838,127 @@ function drawCheckpoints(terrain, camX) {
   }
 }
 
+function drawTireTrail(bike) {
+  if (!bike.tireTrail || bike.tireTrail.length < 2) return;
+  ctx.strokeStyle = "rgba(20, 12, 6, 0.45)";
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  let first = true;
+  for (const p of bike.tireTrail) {
+    if (first) { ctx.moveTo(p.x, p.y); first = false; }
+    else ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+}
+
+// Foreground silhouette layer — extra moving foliage / grass blades close
+// to the camera, drawn after the bike. Adds depth without breaking gameplay.
+function drawForeground(camX, theme) {
+  const t = performance.now() / 1000;
+  // Foreground grass blades — wave with sin
+  const period = 16;
+  const startX = Math.floor(camX / period) * period;
+  ctx.fillStyle = theme.grassTuft;
+  for (let x = startX; x < camX + VW; x += period) {
+    const groundY = runtime ? terrainHeightAt(runtime.terrain, x) : GROUND_BASE;
+    const sway = Math.sin(t * 2 + x * 0.05) * 1.5;
+    ctx.fillRect(x + sway, groundY - 5, 1.5, 5);
+    ctx.fillRect(x + 5 - sway, groundY - 3, 1, 3);
+  }
+  // Light wisps drifting through foreground (atmospheric)
+  if (theme.propFog && theme.propFog > 0.1) {
+    ctx.fillStyle = `rgba(255, 255, 255, ${theme.propFog * 0.18})`;
+    for (let i = 0; i < 4; i++) {
+      const wx = camX + ((i * 410 + t * 60) % VW);
+      const wy = GROUND_BASE - 30 + Math.sin(t + i) * 8;
+      ctx.beginPath();
+      ctx.ellipse(wx, wy, 60, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawHazards(terrain, camX) {
+  if (!terrain.hazards) return;
+  const t = performance.now() / 1000;
+  for (const h of terrain.hazards) {
+    if (h.x + h.w < camX - 60 || h.x > camX + VW + 60) continue;
+    const groundLeft = terrainHeightAt(terrain, h.x);
+    const groundRight = terrainHeightAt(terrain, h.x + h.w);
+    if (h.type === "oil") {
+      // Dark glossy puddle
+      ctx.fillStyle = "rgba(15, 15, 20, 0.95)";
+      ctx.beginPath();
+      ctx.moveTo(h.x, groundLeft);
+      ctx.lineTo(h.x + h.w, groundRight);
+      ctx.lineTo(h.x + h.w - 4, groundRight + 3);
+      ctx.lineTo(h.x + 4, groundLeft + 3);
+      ctx.closePath(); ctx.fill();
+      // Rainbow sheen
+      ctx.fillStyle = "rgba(120, 120, 255, 0.18)";
+      ctx.fillRect(h.x + 8, groundLeft - 1, h.w - 16, 1.5);
+    } else if (h.type === "mud") {
+      ctx.fillStyle = "#3a2516";
+      ctx.beginPath();
+      ctx.moveTo(h.x, groundLeft);
+      ctx.lineTo(h.x + h.w, groundRight);
+      ctx.lineTo(h.x + h.w, groundRight + 4);
+      ctx.lineTo(h.x, groundLeft + 4);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.10)";
+      for (let i = 0; i < 4; i++) ctx.fillRect(h.x + 6 + i * 14, groundLeft - 1, 6, 1.2);
+    } else if (h.type === "fire") {
+      // Pit edges
+      ctx.fillStyle = "#1a0e08";
+      ctx.fillRect(h.x, groundLeft, h.w, 6);
+      // Animated flames
+      for (let i = 0; i < 6; i++) {
+        const fx = h.x + 8 + i * (h.w - 16) / 5;
+        const flick = Math.sin(t * 8 + i * 1.7) * 4;
+        ctx.fillStyle = "rgba(255, 100, 30, 0.95)";
+        ctx.beginPath();
+        ctx.moveTo(fx - 6, groundLeft);
+        ctx.lineTo(fx, groundLeft - 22 - flick);
+        ctx.lineTo(fx + 6, groundLeft);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "rgba(255, 220, 80, 0.85)";
+        ctx.beginPath();
+        ctx.moveTo(fx - 3, groundLeft);
+        ctx.lineTo(fx, groundLeft - 12 - flick * 0.6);
+        ctx.lineTo(fx + 3, groundLeft);
+        ctx.closePath(); ctx.fill();
+      }
+    } else if (h.type === "spring") {
+      // Spring pad
+      const cx = h.x + h.w / 2;
+      const cy = groundLeft;
+      ctx.fillStyle = "#4ddc8c";
+      ctx.fillRect(cx - 16, cy - 4, 32, 4);
+      ctx.fillStyle = "#2db86b";
+      // coil zigzag
+      ctx.strokeStyle = "#2db86b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 5; i++) {
+        const px = cx - 12 + i * 5;
+        const py = cy + 2 + (i % 2) * 4;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      // Indicator arrow
+      ctx.fillStyle = h.fired ? "#3a4f3a" : "#4ddc8c";
+      ctx.beginPath();
+      const a = h.fired ? 0 : Math.sin(t * 4) * 2;
+      ctx.moveTo(cx, cy - 22 - a);
+      ctx.lineTo(cx - 6, cy - 14 - a);
+      ctx.lineTo(cx + 6, cy - 14 - a);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+}
+
 function drawObstacles(terrain, camX) {
   for (const o of terrain.obstacles) {
     if (o.hit) continue;
@@ -1673,6 +2069,8 @@ function drawFloatingTexts() {
 // boosting, throttling.
 function paintBike(g, opts) {
   const paint = opts.paint || "#e94c3a";
+  const accent = opts.accent || "#ffffff";
+  const boots  = opts.boots  || "#0a0a0e";
   const wA = opts.wheelAngle || 0;
   const lean = opts.lean || { x: 0, y: 0 };
   const squash = opts.squash || 0;
@@ -1831,8 +2229,8 @@ function paintBike(g, opts) {
   g.lineTo(10 + lx, -16 + ly);
   g.lineTo(-4 + lx, -16 + ly);
   g.closePath(); g.fill();
-  // Jacket stripe
-  g.fillStyle = "rgba(255,255,255,0.6)";
+  // Jacket stripe (character accent)
+  g.fillStyle = accent;
   g.fillRect(-3 + lx, -22 + ly, 12, 1.5);
 
   // Helmet — base shape
@@ -1877,8 +2275,8 @@ function paintBike(g, opts) {
   g.beginPath();
   g.moveTo(2 + lx, -10 + ly); g.quadraticCurveTo(0, -4, -6, -2);
   g.stroke();
-  // Boot
-  g.fillStyle = "#0a0a0e";
+  // Boot (character)
+  g.fillStyle = boots;
   g.beginPath(); g.ellipse(-7, -2, 3, 2, 0, 0, Math.PI * 2); g.fill();
 
   // Boost flame from exhaust
@@ -1932,6 +2330,8 @@ function drawBike(b, stats) {
   ctx.rotate(b.angle);
   paintBike(ctx, {
     paint: stats.paint,
+    accent: stats.charAccent,
+    boots: stats.charBoots,
     wheelAngle: b.wheelAngle || 0,
     lean: { x: leanX, y: leanY },
     squash, boosting,
@@ -1940,17 +2340,25 @@ function drawBike(b, stats) {
 }
 
 function drawSpeedLines() {
-  ctx.strokeStyle = "rgba(110, 231, 255, 0.5)";
+  // Cyan streaks across the screen + faint vignette pulse for boost punch.
+  ctx.strokeStyle = "rgba(110, 231, 255, 0.55)";
   ctx.lineWidth = 2;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 18; i++) {
     const y = (Math.random() * H);
-    const len = 60 + Math.random() * 120;
+    const len = 80 + Math.random() * 200;
     const x = Math.random() * W;
     ctx.beginPath();
     ctx.moveTo(x, y);
     ctx.lineTo(x - len, y);
     ctx.stroke();
   }
+  // Cyan haze on edges
+  const g = ctx.createLinearGradient(0, 0, W, 0);
+  g.addColorStop(0,    "rgba(110, 231, 255, 0.20)");
+  g.addColorStop(0.5,  "rgba(110, 231, 255, 0.00)");
+  g.addColorStop(1,    "rgba(110, 231, 255, 0.20)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
 }
 
 //==========================================================
@@ -2001,6 +2409,10 @@ function showOnly(id) {
     if (id === "hud") touchEl.classList.remove("hidden");
     else touchEl.classList.add("hidden");
   }
+  // Music: game music during HUD, menu music elsewhere.
+  if (id === "hud") Sound.startMusic("game");
+  else if (id === "pause") { /* keep current track playing */ }
+  else Sound.startMusic("menu");
 }
 function showHud() { document.getElementById("hud").classList.remove("hidden"); }
 function hideHud() { document.getElementById("hud").classList.add("hidden"); }
@@ -2014,12 +2426,14 @@ function buildLevelGrid() {
     card.className = "level-card" + (unlocked ? "" : " locked");
     const best = save.best[lvl.id];
     const themeName = THEMES[lvl.theme]?.name || "—";
+    const medal = best?.medal ? medalIcon(best.medal) : "";
     card.innerHTML = `
-      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
+      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name} ${medal}</div>
       <div class="lc-meta">${themeName} • ${"★".repeat(lvl.difficulty)}${"☆".repeat(5 - lvl.difficulty)} • ${lvl.length}m${lvl.lowGravity ? " • Low-G" : ""}</div>
       <div class="lc-best">${best && best.completed
         ? `Best: ${best.score} pts • ${best.time.toFixed(1)}s`
         : "Not completed"}</div>
+      <div class="lc-meta">🥇 ${lvl.medals.gold}s &nbsp; 🥈 ${lvl.medals.silver}s &nbsp; 🥉 ${lvl.medals.bronze}s</div>
       <div class="lc-meta">${lvl.desc}</div>
     `;
     if (unlocked) card.addEventListener("click", () => startRun(lvl.id));
@@ -2046,13 +2460,19 @@ document.querySelectorAll(".parts-tabs .tab").forEach(t => {
 function buildPartsList(tab) {
   const list = document.getElementById("parts-list");
   list.innerHTML = "";
-  for (const p of PARTS[tab]) {
+  // The "character" tab uses a different catalog and equipment slot.
+  const items = (tab === "character") ? CHARACTERS : PARTS[tab];
+  const slot = (tab === "character") ? "character" : tab;
+  for (const p of items) {
     const owned = !!save.ownedParts[p.id];
-    const equipped = save.equipped[tab] === p.id;
+    const equipped = save.equipped[slot] === p.id;
     const card = document.createElement("div");
     card.className = "part-card" + (equipped ? " equipped" : "") + (owned || save.cash >= p.cost ? "" : " locked");
-    const stats = Object.entries(p.stats).filter(([k,v]) => k !== "paint")
-      .map(([k,v]) => `${k}: ${typeof v === "number" ? v : v}`).join("  •  ");
+    const stats = Object.entries(p.stats || {}).filter(([k,v]) => k !== "paint" && k !== "accent" && k !== "boots")
+      .map(([k,v]) => {
+        const sign = (typeof v === "number" && v > 0) ? "+" : "";
+        return `${k}: ${sign}${v}`;
+      }).join("  •  ");
     card.innerHTML = `
       <div>
         <div class="pc-name">${p.name}</div>
@@ -2072,7 +2492,7 @@ function buildPartsList(tab) {
         save.cash -= p.cost;
         save.ownedParts[p.id] = true;
       }
-      save.equipped[tab] = p.id;
+      save.equipped[slot] = p.id;
       persistSave();
       buildGarage();
       pushToast(`Equipped ${p.name}`, "green");
@@ -2111,7 +2531,7 @@ function drawGaragePreview() {
   g.fillText(engine.name, 16, 28);
 }
 function drawStaticBike(g, stats) {
-  paintBike(g, { paint: stats.paint, wheelAngle: 0, lean: { x: 0, y: 0 }, squash: 0, boosting: false });
+  paintBike(g, { paint: stats.paint, accent: stats.charAccent, boots: stats.charBoots, wheelAngle: 0, lean: { x: 0, y: 0 }, squash: 0, boosting: false });
 }
 
 function updateGarageStatBars() {
@@ -2157,7 +2577,13 @@ function showResult(completed, extra) {
   hideHud();
   const titleEl = document.getElementById("result-title");
   const body = document.getElementById("result-body");
-  titleEl.textContent = completed ? `Trail Complete — ${r.level.name}` : `Run Ended — ${r.level.name}`;
+  if (extra && extra.wipeout) {
+    titleEl.textContent = `💥 Wiped Out — ${r.level.name}`;
+  } else if (completed) {
+    titleEl.textContent = `Trail Complete — ${r.level.name}`;
+  } else {
+    titleEl.textContent = `Run Ended — ${r.level.name}`;
+  }
   let html = "";
   html += `<div class="row"><span>Time</span><span>${r.time.toFixed(1)}s</span></div>`;
   html += `<div class="row"><span>Distance</span><span>${Math.floor(r.distance/10)} m</span></div>`;
@@ -2173,6 +2599,13 @@ function showResult(completed, extra) {
     html += `<div class="row bonus"><span>Score cash</span><span>+$${extra.cashFromScore}</span></div>`;
   } else if (extra && extra.abandonedEarned != null) {
     html += `<div class="row bonus"><span>Half pay (abandoned)</span><span>+$${extra.abandonedEarned}</span></div>`;
+  } else if (extra && extra.wipeout) {
+    html += `<div class="row" style="color:var(--bad)"><span>Bike totaled</span><span>40% pay</span></div>`;
+    html += `<div class="row bonus"><span>Wipeout payout</span><span>+$${extra.wipeoutEarned}</span></div>`;
+  }
+  if (completed && save.best[r.level.id]?.medal) {
+    const m = save.best[r.level.id].medal;
+    html += `<div class="row bonus"><span>Medal</span><span>${medalIcon(m)} ${m.toUpperCase()}</span></div>`;
   }
   html += `<div class="row total"><span>Cash earned</span><span>+$${r.cashEarned}</span></div>`;
   html += `<div class="row"><span>Wallet</span><span>$${save.cash}</span></div>`;
@@ -2275,12 +2708,35 @@ function loop(now) {
       f.y += f.vy * dt;
       if (f.life <= 0) runtime.floatingTexts.splice(i, 1);
     }
+    // tire trail decay
+    if (runtime.bike.tireTrail) {
+      for (let i = runtime.bike.tireTrail.length - 1; i >= 0; i--) {
+        runtime.bike.tireTrail[i].life -= dt;
+        if (runtime.bike.tireTrail[i].life <= 0) runtime.bike.tireTrail.splice(i, 1);
+      }
+    }
   }
 
   render();
   justPressed.clear();
   requestAnimationFrame(loop);
 }
+
+// Auto-pause when tab hidden / phone screen locks.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && state === STATE.PLAY) {
+    state = STATE.PAUSE;
+    showOnly("pause");
+    Sound.stopEngine();
+  }
+});
+window.addEventListener("blur", () => {
+  if (state === STATE.PLAY) {
+    state = STATE.PAUSE;
+    showOnly("pause");
+    Sound.stopEngine();
+  }
+});
 
 // Boot
 showOnly("menu");
