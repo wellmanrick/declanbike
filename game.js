@@ -823,7 +823,14 @@ function buildTerrain(level) {
     const i = Math.floor(x / TERRAIN_DX);
     const groundY = heights[i];
     const y = groundY - 60 - rand() * 110;
-    collectibles.push({ x, y, type: rand() < 0.1 ? "gem" : "bolt", taken: false, bob: rand() * Math.PI * 2 });
+    const r0 = rand();
+    let type;
+    if (r0 < 0.05)      type = "star";    // 5% — invincibility
+    else if (r0 < 0.10) type = "shield";  // 5% — block one crash
+    else if (r0 < 0.13) type = "magnet";  // 3% — pull coins toward bike
+    else if (r0 < 0.22) type = "gem";     // 9% — high value
+    else                type = "bolt";    // rest — small cash
+    collectibles.push({ x, y, type, taken: false, bob: rand() * Math.PI * 2 });
   }
 
   // checkpoints every ~700px
@@ -959,6 +966,9 @@ function startRun(levelId) {
     finishedAt: null,
     shake: { mag: 0 },
     gravityScale: level.lowGravity ? 0.55 : 1.0,
+    countdown: 3.0,        // 3 → 2 → 1 → GO! before input is accepted
+    countdownLastTick: 4,  // last whole second we played a beep for
+    powerup: null,         // { type: "star"|"shield"|"magnet", time: 5 }
   };
   state = STATE.PLAY;
   showOnly("hud");
@@ -1059,6 +1069,30 @@ function updateBike(dt) {
   if (!jumpPressed) b.onGround = onGround;
 
   if (onGround) {
+    // Wheelie / stoppie detection: hold throttle + back lean for wheelie,
+    // brake + forward lean for stoppie. Builds a continuous bonus.
+    if (!b.wheelie) b.wheelie = { time: 0, dir: 0 };
+    const wantsWheelie = inp.throttle && inp.leanBack && Math.abs(b.vx) > 60;
+    const wantsStoppie = inp.brake    && inp.leanFwd  && Math.abs(b.vx) > 80;
+    if (wantsWheelie)      { b.wheelie.time += dt; b.wheelie.dir = -1; }
+    else if (wantsStoppie) { b.wheelie.time += dt; b.wheelie.dir = +1; }
+    else if (b.wheelie.time > 0) {
+      // Released — bank score if held long enough.
+      if (b.wheelie.time > 0.4) {
+        const sec = Math.min(8, b.wheelie.time);
+        const bonus = Math.floor(sec * 60);
+        const name = b.wheelie.dir < 0 ? "Wheelie" : "Stoppie";
+        r.score += bonus;
+        r.cashEarned += Math.floor(bonus * 0.05);
+        pushFloating(`${name} +${bonus}`, b.x, b.y - 36, "#ffb020");
+        if (sec > 1.5) {
+          r.combo = Math.min(10, r.combo + 1);
+          r.comboTimer = Math.max(r.comboTimer, 3);
+        }
+      }
+      b.wheelie.time = 0; b.wheelie.dir = 0;
+    }
+
     // align to slope smoothly
     const target = slopeAngle;
     const angleDiff = wrapAngle(target - b.angle);
@@ -1143,16 +1177,24 @@ function updateBike(dt) {
       b.boost = Math.max(0, b.boost - 35 * dt);
       spawnExhaustParticles(true);
     }
-    // rotation control. Heavier frames rotate slower. Tuned so a single jump
-    // gives ~1 full flip with sustained input. In air, throttle/brake also
-    // double as front/back flip (Bike Race / Mad Skills style).
-    const rotForce = 16.0 / stats.weight;
-    const rotFwd  = inp.leanFwd  || inp.throttle;
-    const rotBack = inp.leanBack || inp.brake;
-    if (rotFwd)  b.angVel += rotForce * dt; // nose down -> front flip when moving right
-    if (rotBack) b.angVel -= rotForce * dt; // nose up -> back flip
-    // very mild damping
-    b.angVel *= Math.pow(0.998, dt * 60);
+    // Rotation control. Up/Down (or W/S) always rotate. Throttle/brake also
+    // rotate after ~0.25s of air, so small hops over bumps while just driving
+    // don't accidentally pitch the bike off and crash the landing.
+    const rotForce = 13.0 / stats.weight;
+    const paddleEngaged = b.airtime > 0.25;
+    const rotFwd  = inp.leanFwd  || (paddleEngaged && inp.throttle);
+    const rotBack = inp.leanBack || (paddleEngaged && inp.brake);
+    if (rotFwd)  b.angVel += rotForce * dt;
+    if (rotBack) b.angVel -= rotForce * dt;
+    // Self-leveling: when no rotation input is held and we're past the
+    // initial paddle delay, gently pull the bike back toward level so a
+    // small bump doesn't end with a crash.
+    if (!rotFwd && !rotBack && b.airtime > 0.15) {
+      const target = terrainSlopeAt(r.terrain, b.x);
+      const diff = wrapAngle(target - b.angle);
+      b.angVel += diff * 4.0 * dt;
+    }
+    b.angVel *= Math.pow(0.992, dt * 60);
     b.angle += b.angVel * dt;
     b.currentFlipRot += b.angVel * dt;
 
@@ -1238,14 +1280,50 @@ function updateBike(dt) {
     b.angle += (Math.random() - 0.5) * 0.06;
   }
   // collectibles
+  // Magnet: pull eligible collectibles toward the bike.
+  const magnetActive = r.powerup && r.powerup.type === "magnet" && r.powerup.time > 0;
   for (const c of r.terrain.collectibles) {
     if (c.taken) continue;
-    const dx = b.x - c.x;
-    const dy = b.y - c.y;
-    if (dx*dx + dy*dy < 30*30) {
+    let dx = b.x - c.x;
+    let dy = b.y - c.y;
+    if (magnetActive && (c.type === "bolt" || c.type === "gem")) {
+      const d2 = dx*dx + dy*dy;
+      if (d2 < 220 * 220) {
+        const d = Math.sqrt(d2) || 1;
+        c.x += (dx / d) * 360 * dt;
+        c.y += (dy / d) * 360 * dt;
+        dx = b.x - c.x; dy = b.y - c.y;
+      }
+    }
+    const radius = (c.type === "star" || c.type === "shield" || c.type === "magnet") ? 36 : 30;
+    if (dx*dx + dy*dy < radius*radius) {
       c.taken = true;
-      if (c.type === "gem") { r.cashEarned += 50; r.score += 250; r.runStats.gems++; pushFloating("+$50", c.x, c.y, "#6ee7ff"); Sound.gem(); }
-      else { r.cashEarned += 5; r.score += 25; r.runStats.collectibles++; pushFloating("+$5", c.x, c.y, "#ffc940"); Sound.pickup(); }
+      if (c.type === "gem") {
+        r.cashEarned += 50; r.score += 250; r.runStats.gems++;
+        pushFloating("+$50", c.x, c.y, "#6ee7ff"); Sound.gem();
+      } else if (c.type === "bolt") {
+        r.cashEarned += 5; r.score += 25; r.runStats.collectibles++;
+        pushFloating("+$5", c.x, c.y, "#ffc940"); Sound.pickup();
+      } else if (c.type === "star") {
+        r.powerup = { type: "star", time: 5 };
+        r.score += 50;
+        pushFloating("STAR!", c.x, c.y, "#ffe680");
+        pushToast("Invincibility 5s", "gold", 1100);
+        Sound.perfect && Sound.perfect();
+      } else if (c.type === "shield") {
+        // Persistent — added to bike. If a shield is already active, refresh.
+        b.hasShield = true;
+        r.score += 30;
+        pushFloating("SHIELD!", c.x, c.y, "#6ee7ff");
+        pushToast("Shield ready (one free crash)", "green", 1200);
+        Sound.gem && Sound.gem();
+      } else if (c.type === "magnet") {
+        r.powerup = { type: "magnet", time: 5 };
+        r.score += 30;
+        pushFloating("MAGNET!", c.x, c.y, "#c2ff3a");
+        pushToast("Magnet 5s — coins fly to you", "green", 1100);
+        Sound.gem && Sound.gem();
+      }
     }
   }
 }
@@ -1259,11 +1337,17 @@ function handleLanding(slopeAngle) {
   const flips = Math.round(b.currentFlipRot / (Math.PI * 2));
   const absFlips = Math.abs(flips);
 
-  if (angDiffDeg < 25) {
-    // Clean / perfect
+  // Tolerance bands:
+  //   < 6°   : Perfect — bonus + cash + sfx
+  //   < 35°  : Clean — small bonus
+  //   < 65°  : Save — auto-correct angle, no bonus, no crash
+  //   ≥ 65°  : Bail — crash
+  const PERFECT = 6, CLEAN = 35, SAVE = 65;
+
+  if (angDiffDeg < CLEAN) {
     let bonus = 0;
     let label = "Clean!";
-    if (angDiffDeg < 4) {
+    if (angDiffDeg < PERFECT) {
       label = "Perfect!"; bonus += 100;
       r.runStats.perfectLandings++;
       save.totals.perfectLandings++;
@@ -1306,16 +1390,25 @@ function handleLanding(slopeAngle) {
     r.score += bonus;
     r.cashEarned += Math.floor(bonus * 0.05);
     pushFloating(`+${bonus}`, b.x, b.y - 30, "#ffb020");
-    // snap angle
     b.angle = slopeAngle;
     b.angVel = 0;
 
-    // suspension absorbs vertical
     const absorb = r.stats.suspension;
     b.landSquash = clamp(Math.abs(b.vy) / 700, 0, 1) * (1 - absorb * 0.7);
     b.vy *= (1 - absorb) * 0.4;
+    spawnLandingDust(Math.max(0.5, b.landSquash * 1.2));
+  } else if (angDiffDeg < SAVE) {
+    // Sketchy save — don't crash, but punish: lose combo, no bonus, big squash.
+    pushToast("Save!", "gold", 700);
+    r.combo = 1; r.comboTimer = 0;
+    b.angle = slopeAngle;
+    b.angVel = 0;
+    b.vx *= 0.6;
+    b.vy *= 0.2;
+    b.landSquash = 1;
+    Sound.land();
+    spawnLandingDust(1.0);
   } else {
-    // bad landing
     crash("Bailed!");
   }
   b.currentFlipRot = 0;
@@ -1325,6 +1418,20 @@ function crash(reason) {
   const r = runtime;
   const b = r.bike;
   if (b.crashed) return;
+  // Star = invincibility, walks through everything.
+  if (r.powerup && r.powerup.type === "star" && r.powerup.time > 0) {
+    pushFloating("BLOCKED!", b.x, b.y - 30, "#ffe680");
+    return;
+  }
+  // Shield absorbs one crash and is consumed.
+  if (b.hasShield) {
+    b.hasShield = false;
+    pushFloating("SHIELDED!", b.x, b.y - 30, "#6ee7ff");
+    pushToast("Shield broken", "gold", 800);
+    Sound.boostHit && Sound.boostHit();
+    if (r.shake) r.shake.mag = Math.max(r.shake.mag, 6);
+    return;
+  }
   b.crashed = true;
   b.crashTimer = 1.4;
   b.vx *= -0.2;
@@ -1442,6 +1549,27 @@ function spawnExhaustParticles(isBoost) {
     });
   }
 }
+function spawnLandingDust(intensity) {
+  if (!runtime) return;
+  const r = runtime;
+  const b = r.bike;
+  const groundY = terrainHeightAt(r.terrain, b.x);
+  const n = Math.floor(8 + intensity * 14);
+  for (let i = 0; i < n; i++) {
+    const dir = i < n / 2 ? -1 : 1;
+    r.particles.push({
+      x: b.x + (Math.random() - 0.5) * 30,
+      y: groundY,
+      vx: dir * (40 + Math.random() * 200) * intensity,
+      vy: -40 - Math.random() * 120 * intensity,
+      life: 0.7 + Math.random() * 0.4,
+      maxLife: 1.0,
+      color: "rgba(180, 150, 100, " + (0.45 + Math.random() * 0.3).toFixed(2) + ")",
+      size: 3 + Math.random() * 5,
+    });
+  }
+}
+
 function spawnCrashParticles() {
   const r = runtime;
   const b = r.bike;
@@ -1543,8 +1671,57 @@ function render() {
   drawForegroundFog(theme);
   if (input().boost && runtime.bike.boost > 1) drawSpeedLines();
   drawVignette();
+  if (r.countdown > 0) drawCountdown(r.countdown);
+  if (r.powerup) drawPowerupBadge(r.powerup);
 
   updateHUD();
+}
+
+function drawCountdown(countdown) {
+  // Big animated 3 / 2 / 1 / GO! at center.
+  const sec = Math.ceil(countdown);
+  const text = sec >= 1 ? String(sec) : "GO!";
+  const phase = 1 - (countdown % 1); // 0 → 1 within each second
+  const scale = 1.4 - 0.4 * phase;
+  const alpha = Math.max(0.2, 1 - phase * 0.7);
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = alpha;
+  ctx.font = "bold 120px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillText(text, 4, 6);
+  ctx.fillStyle = sec === 0 ? "#4ddc8c" : "#ffb020";
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+}
+
+function drawPowerupBadge(p) {
+  const icons = { star: "★", shield: "🛡", magnet: "🧲" };
+  const label = (p.type[0].toUpperCase() + p.type.slice(1));
+  const x = W / 2;
+  const y = 60;
+  ctx.save();
+  ctx.fillStyle = "rgba(11,13,18,0.75)";
+  ctx.strokeStyle = "#ffb020";
+  ctx.lineWidth = 2;
+  const w = 180, h = 38;
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(x - w/2, y - h/2, w, h, 10) : ctx.rect(x - w/2, y - h/2, w, h);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#ffb020";
+  ctx.font = "bold 16px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(`${icons[p.type] || "?"}  ${label}  ${p.time.toFixed(1)}s`, x, y);
+  ctx.restore();
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -2045,24 +2222,69 @@ function drawCollectibles(terrain, camX) {
     if (c.taken) continue;
     if (c.x < camX - 40 || c.x > camX + VW + 40) continue;
     const bobY = c.y + Math.sin(t * 3 + c.bob) * 4;
+
+    // Halo glow — bigger and brighter for power-ups, modest for coins.
+    let haloColor = "rgba(255, 201, 64, 0.25)";
+    let haloR = 18;
+    if (c.type === "gem")    { haloColor = "rgba(110, 231, 255, 0.30)"; haloR = 22; }
+    if (c.type === "star")   { haloColor = "rgba(255, 230, 120, 0.55)"; haloR = 30; }
+    if (c.type === "shield") { haloColor = "rgba(110, 231, 255, 0.45)"; haloR = 28; }
+    if (c.type === "magnet") { haloColor = "rgba(194, 255, 58, 0.45)";  haloR = 28; }
+    const pulse = 1 + 0.15 * Math.sin(t * 4 + c.bob);
+    const grad = ctx.createRadialGradient(c.x, bobY, 0, c.x, bobY, haloR * pulse);
+    grad.addColorStop(0, haloColor);
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(c.x - haloR * 1.4, bobY - haloR * 1.4, haloR * 2.8, haloR * 2.8);
+
     if (c.type === "gem") {
-      ctx.fillStyle = "#6ee7ff";
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
+      ctx.fillStyle = "#6ee7ff"; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(c.x, bobY - 14); ctx.lineTo(c.x + 10, bobY);
+      ctx.lineTo(c.x, bobY + 14); ctx.lineTo(c.x - 10, bobY);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else if (c.type === "star") {
+      // 5-point star
+      ctx.fillStyle = "#ffe680"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + i * Math.PI / 5;
+        const r = (i % 2 === 0) ? 14 : 6;
+        const x = c.x + Math.cos(a) * r;
+        const y = bobY + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else if (c.type === "shield") {
+      // Heater-shield shape
+      ctx.fillStyle = "#6ee7ff"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(c.x, bobY - 14);
-      ctx.lineTo(c.x + 10, bobY);
-      ctx.lineTo(c.x, bobY + 14);
-      ctx.lineTo(c.x - 10, bobY);
-      ctx.closePath();
-      ctx.fill(); ctx.stroke();
-    } else {
-      ctx.fillStyle = "#ffc940";
-      ctx.strokeStyle = "#7a4a00";
-      ctx.lineWidth = 2;
+      ctx.lineTo(c.x + 12, bobY - 8);
+      ctx.lineTo(c.x + 10, bobY + 6);
+      ctx.quadraticCurveTo(c.x, bobY + 14, c.x - 10, bobY + 6);
+      ctx.lineTo(c.x - 12, bobY - 8);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.fillRect(c.x - 1, bobY - 6, 2, 10);
+      ctx.fillRect(c.x - 5, bobY - 2, 10, 2);
+    } else if (c.type === "magnet") {
+      // Horseshoe magnet
+      ctx.fillStyle = "#c2ff3a"; ctx.strokeStyle = "#444"; ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(c.x, bobY, 8, 0, Math.PI * 2);
-      ctx.fill(); ctx.stroke();
+      ctx.arc(c.x, bobY + 2, 10, Math.PI, 0, false);
+      ctx.lineTo(c.x + 10, bobY + 8);
+      ctx.lineTo(c.x + 4, bobY + 8);
+      ctx.arc(c.x, bobY + 2, 4, 0, Math.PI, true);
+      ctx.lineTo(c.x - 10, bobY + 8);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      // Tips
+      ctx.fillStyle = "#1a1a1a";
+      ctx.fillRect(c.x - 12, bobY + 8, 6, 4);
+      ctx.fillRect(c.x + 6,  bobY + 8, 6, 4);
+    } else {
+      // bolt
+      ctx.fillStyle = "#ffc940"; ctx.strokeStyle = "#7a4a00"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(c.x, bobY, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       ctx.fillStyle = "#7a4a00";
       ctx.fillRect(c.x - 2, bobY - 2, 4, 4);
     }
@@ -2347,6 +2569,25 @@ function paintBike(g, opts) {
 }
 
 function drawBike(b, stats) {
+  // Aura around bike when star or shield is active.
+  const r = runtime;
+  if (r) {
+    const t = performance.now() / 1000;
+    if (r.powerup && r.powerup.type === "star" && r.powerup.time > 0) {
+      const pulse = 1 + 0.12 * Math.sin(t * 12);
+      const grad = ctx.createRadialGradient(b.x, b.y - 10, 0, b.x, b.y - 10, 60 * pulse);
+      grad.addColorStop(0, "rgba(255, 230, 120, 0.50)");
+      grad.addColorStop(1, "rgba(255, 230, 120, 0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(b.x - 80, b.y - 90, 160, 130);
+    } else if (b.hasShield) {
+      ctx.strokeStyle = "rgba(110, 231, 255, " + (0.4 + 0.2 * Math.sin(t * 8)) + ")";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y - 12, 36, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
   // Ground shadow (drawn in world coords, no rotation)
   if (!b.onGround && runtime) {
     const groundY = terrainHeightAt(runtime.terrain, b.x);
@@ -2374,7 +2615,12 @@ function drawBike(b, stats) {
 
   ctx.save();
   ctx.translate(b.x, b.y);
-  ctx.rotate(b.angle);
+  // Visual-only wheelie / stoppie tilt on top of the physics angle.
+  let tilt = 0;
+  if (b.onGround && b.wheelie && b.wheelie.time > 0) {
+    tilt = b.wheelie.dir * Math.min(0.55, b.wheelie.time * 1.6);
+  }
+  ctx.rotate(b.angle + tilt);
   paintBike(ctx, {
     paint: stats.paint,
     accent: stats.charAccent,
@@ -2738,12 +2984,31 @@ function loop(now) {
   }
 
   if (state === STATE.PLAY && runtime) {
-    runtime.time += dt;
-    updateBike(dt);
-    // engine sound modulated by speed/throttle/boost
-    const inp = input();
-    const speed01 = clamp(Math.abs(runtime.bike.vx) / TOP_SPEED_PX(runtime.stats.topSpeed), 0, 1);
-    Sound.setEngine(speed01, inp.throttle, inp.boost && runtime.bike.boost > 1);
+    // Countdown freeze: tick it down, beep on each whole-second boundary,
+    // hold the bike steady at the start.
+    if (runtime.countdown > 0) {
+      runtime.countdown -= dt;
+      const sec = Math.max(0, Math.ceil(runtime.countdown));
+      if (sec < runtime.countdownLastTick) {
+        runtime.countdownLastTick = sec;
+        if (sec === 0) {
+          pushToast("GO!", "gold", 700);
+          Sound.boostHit && Sound.boostHit();
+        } else {
+          Sound.click && Sound.click();
+        }
+      }
+      // Decay particles + tire-trail while frozen so they don't pile up.
+      // (No physics update; bike sits still until GO.)
+      Sound.setEngine(0, false, false);
+    } else {
+      runtime.time += dt;
+      updateBike(dt);
+      // engine sound modulated by speed/throttle/boost
+      const inp = input();
+      const speed01 = clamp(Math.abs(runtime.bike.vx) / TOP_SPEED_PX(runtime.stats.topSpeed), 0, 1);
+      Sound.setEngine(speed01, inp.throttle, inp.boost && runtime.bike.boost > 1);
+    }
 
     // dust kick from rear wheel when grounded and moving
     const b = runtime.bike;
@@ -2762,6 +3027,15 @@ function loop(now) {
 
     // shake decay
     if (runtime.shake) runtime.shake.mag = Math.max(0, runtime.shake.mag - dt * 28);
+
+    // Powerup timer (star / magnet — shield is persistent).
+    if (runtime.powerup && runtime.powerup.time > 0) {
+      runtime.powerup.time = Math.max(0, runtime.powerup.time - dt);
+      if (runtime.powerup.time === 0) {
+        pushToast(`${runtime.powerup.type[0].toUpperCase() + runtime.powerup.type.slice(1)} ended`, "red", 700);
+        runtime.powerup = null;
+      }
+    }
 
     // particles update
     for (let i = runtime.particles.length - 1; i >= 0; i--) {
