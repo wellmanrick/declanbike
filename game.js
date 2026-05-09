@@ -274,6 +274,47 @@ function input() {
   };
 }
 
+// Touch controls — simulate key state on press/hold.
+const isTouchDevice = (("ontouchstart" in window) || (navigator.maxTouchPoints > 0));
+function setupTouchControls() {
+  const touchEl = document.getElementById("touch");
+  if (!touchEl) return;
+  if (isTouchDevice) touchEl.classList.add("show");
+
+  const buttons = touchEl.querySelectorAll(".tbtn");
+  for (const btn of buttons) {
+    const code = btn.dataset.key;
+    const press = (e) => {
+      e.preventDefault();
+      btn.classList.add("held");
+      if (code === "Escape") {
+        // Treat as one-shot
+        if (!keys.has("Escape")) justPressed.add("Escape");
+        keys.add("Escape");
+        setTimeout(() => keys.delete("Escape"), 50);
+        return;
+      }
+      if (!keys.has(code)) justPressed.add(code);
+      keys.add(code);
+    };
+    const release = (e) => {
+      e.preventDefault();
+      btn.classList.remove("held");
+      if (code === "Escape") return;
+      keys.delete(code);
+    };
+    btn.addEventListener("touchstart", press, { passive: false });
+    btn.addEventListener("touchend", release, { passive: false });
+    btn.addEventListener("touchcancel", release, { passive: false });
+    // Mouse fallback (desktop testing)
+    btn.addEventListener("mousedown", press);
+    btn.addEventListener("mouseup", release);
+    btn.addEventListener("mouseleave", release);
+    // Prevent context menu on long-press
+    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
+}
+
 //==========================================================
 // PRNG (seedable)
 //==========================================================
@@ -1279,6 +1320,12 @@ function showOnly(id) {
     if (overlay === id) el.classList.remove("hidden");
     else el.classList.add("hidden");
   }
+  // Touch overlay only shown during PLAY (and only on touch devices via .show class)
+  const touchEl = document.getElementById("touch");
+  if (touchEl) {
+    if (id === "hud") touchEl.classList.remove("hidden");
+    else touchEl.classList.add("hidden");
+  }
 }
 function showHud() { document.getElementById("hud").classList.remove("hidden"); }
 function hideHud() { document.getElementById("hud").classList.add("hidden"); }
@@ -1558,5 +1605,6 @@ function loop(now) {
 
 // Boot
 showOnly("menu");
+setupTouchControls();
 refreshQuestStates();
 requestAnimationFrame(loop);

@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0b0d12" />
 <title>Declan Bike — Excite Trails</title>
 <link rel="stylesheet" href="style.css" />
 </head>
@@ -28,6 +32,19 @@
     </div>
     <div id="quest-tracker" class="quest-tracker"></div>
     <div id="toast-stack" class="toast-stack"></div>
+
+    <!-- Touch controls (shown on touch devices) -->
+    <div id="touch" class="touch hidden">
+      <div class="touch-left">
+        <button class="tbtn brake" data-key="ArrowLeft" aria-label="Brake / Back flip">◀</button>
+      </div>
+      <div class="touch-right">
+        <button class="tbtn flip" data-key="ArrowUp" aria-label="Front flip">↻</button>
+        <button class="tbtn boost" data-key="Space" aria-label="Boost">⚡</button>
+        <button class="tbtn throttle" data-key="ArrowRight" aria-label="Throttle">▶</button>
+      </div>
+      <button class="tbtn pause-btn" data-key="Escape" aria-label="Pause">II</button>
+    </div>
   </div>
 
   <!-- Main Menu -->

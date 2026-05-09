@@ -5,7 +5,13 @@ Build your bike. Hit the trails. Land flips. Eat dirt occasionally.
 
 ## Run it
 
-Open `index.html` in any modern browser. No build step, no server required.
+**Locally:** open `index.html` in any modern browser, or run `python3 -m http.server 8000` and visit `http://localhost:8000`. No build step.
+
+**On your phone:** push to `main` (or any `claude/**` branch) and the included
+GitHub Actions workflow at `.github/workflows/pages.yml` builds and deploys to
+GitHub Pages. First-time setup: in the repo settings, **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+After the first successful run, your game lives at
+`https://<username>.github.io/<repo>/`.
 
 ## Controls
 
@@ -19,6 +25,10 @@ Open `index.html` in any modern browser. No build step, no server required.
 | `Shift` | Preload — charge a hop at takeoff |
 | `R` | Restart current run |
 | `Esc` | Pause / quit to menu |
+
+**Touch / phone controls** (auto-shown on touch devices):
+on-screen ◀ (brake / back-flip), ▶ (throttle), ↻ (front-flip), ⚡ (boost),
+and a `II` pause button in the top-right.
 
 ## What's in the game
 
