@@ -2637,10 +2637,18 @@ function showResult(completed, extra) {
 }
 
 function bindMenuActions() {
-  document.body.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-action]");
-    if (!t) return;
-    const action = t.dataset.action;
+  // Single dispatcher used by both pointerup (touch + mouse) and click.
+  // pointerup is the more reliable signal on iOS Safari; click is kept
+  // as a fallback for keyboard (Enter / Space activations).
+  let lastDispatchAt = 0;
+  function dispatch(target) {
+    if (!target) return;
+    const action = target.dataset.action;
+    if (!action) return;
+    // De-dupe pointerup → click pair for the same logical activation.
+    const now = performance.now();
+    if (now - lastDispatchAt < 250) return;
+    lastDispatchAt = now;
     switch (action) {
       case "play": buildLevelGrid(); state = STATE.LEVELS; showOnly("levels"); break;
       case "garage": buildGarage(); state = STATE.GARAGE; showOnly("garage"); break;
@@ -2659,7 +2667,18 @@ function bindMenuActions() {
         }
         break;
     }
-  });
+  }
+  function handle(e) {
+    const t = e.target && e.target.closest && e.target.closest("[data-action]");
+    if (!t) return;
+    e.preventDefault();
+    Sound.ensure();
+    dispatch(t);
+  }
+  // pointerup catches taps + mouse releases on every modern browser.
+  document.body.addEventListener("pointerup", handle);
+  // Click as a backup for keyboard + assistive activations.
+  document.body.addEventListener("click", handle);
 }
 bindMenuActions();
 
