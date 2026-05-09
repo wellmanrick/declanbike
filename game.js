@@ -3228,16 +3228,25 @@ canvas.addEventListener("pointercancel",(e) => dispatchMinigamePointer("up",  e)
 //----------------------------------------------------------
 // FIRST-PERSON FLICK PROJECTION HELPERS
 //----------------------------------------------------------
-// World coords: x = lateral, y = height (positive = up), z = depth into
-// the screen (positive = away from camera). Camera at origin, looking +z.
-const FP_FOCAL = 700;
+// World coords (meters):
+//   x = lateral (0 = straight ahead)
+//   y = height above the ground (positive = up)
+//   z = depth into the screen (positive = away from camera)
+// Camera sits at (0, FP_CAMERA_H, 0) looking down +z. Anything at the
+// camera's eye height (y = FP_CAMERA_H) projects exactly to the horizon;
+// the ground plane (y = 0) projects below the horizon and rises to it as
+// z → ∞; tall things (uprights) project above the horizon. This is the
+// standard pinhole model and avoids the "ball balloons to fill screen"
+// bug at small z.
+const FP_FOCAL    = 600;       // pixels of focal length
+const FP_CAMERA_H = 1.6;       // ~5'3" eye line, behind the holder
 function fpHorizonY() { return H * 0.55; }
 function fpProject(x, y, z) {
   const zz = Math.max(0.5, z);
   return {
     sx: W / 2 + x * FP_FOCAL / zz,
-    sy: fpHorizonY() - y * FP_FOCAL / zz,
-    scale: FP_FOCAL / zz / 30, // baseline so stuff at z=23 reads at ~1x
+    sy: fpHorizonY() + (FP_CAMERA_H - y) * FP_FOCAL / zz,
+    scale: FP_FOCAL / zz / 60,   // baseline scale: ~1× at z=10
   };
 }
 function fpDrawSky(top1, top2, bot) {
@@ -3245,30 +3254,32 @@ function fpDrawSky(top1, top2, bot) {
   sky.addColorStop(0, top1); sky.addColorStop(0.55, top2); sky.addColorStop(1, bot);
   ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
 }
-function fpDrawField(grass, dirt, lineColor) {
+// Fill the ground plane with grass + perspective lateral lines. Optionally
+// pass `bg` to override the field color.
+function fpDrawField(grass, lineColor, opts) {
   const horizon = fpHorizonY();
   ctx.fillStyle = grass;
   ctx.fillRect(0, horizon, W, H - horizon);
-  // Ground grid — perspective lines converging to the vanishing point.
-  ctx.strokeStyle = lineColor || "rgba(255,255,255,0.30)";
-  ctx.lineWidth = 1.5;
-  // Lateral lines
-  for (let i = 1; i <= 7; i++) {
-    const z = i * 6;
-    const sy = horizon + (H - horizon) * (1 - 1 / (1 + z * 0.10));
-    ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+  // Yard lines every 5m — drawn via projection of the ground plane.
+  ctx.strokeStyle = lineColor || "rgba(255,255,255,0.40)";
+  for (let z = 5; z <= 120; z += 5) {
+    const left  = fpProject(-25, 0, z);
+    const right = fpProject( 25, 0, z);
+    ctx.lineWidth = Math.max(0.6, 2 * (FP_FOCAL / z / 60));
+    ctx.beginPath(); ctx.moveTo(left.sx, left.sy); ctx.lineTo(right.sx, right.sy); ctx.stroke();
   }
-  // Forward lines (rails)
-  for (let lane = -3; lane <= 3; lane++) {
-    if (lane === 0) continue;
-    const near = fpProject(lane * 2, 0, 1);
-    const far  = fpProject(lane * 2, 0, 80);
-    ctx.beginPath(); ctx.moveTo(near.sx, near.sy); ctx.lineTo(far.sx, far.sy); ctx.stroke();
+  // Hash marks down the center.
+  ctx.strokeStyle = lineColor || "rgba(255,255,255,0.50)";
+  for (let z = 2; z <= 80; z += 2) {
+    const a = fpProject(-0.4, 0, z);
+    const b = fpProject( 0.4, 0, z);
+    ctx.lineWidth = Math.max(0.5, 1.5 * (FP_FOCAL / z / 60));
+    ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); ctx.stroke();
   }
 }
 
-// Standard input handler that records drag start/now and returns a flick
-// vector on release. Returns { vec, power, lateral } or null.
+// Standard flick handler. Returns {power, lateral, upward} on release of
+// a real upward swipe, otherwise null.
 function fpProcessFlick(state, kind, x, y) {
   if (kind === "down") { state.dragStart = { x, y, t: performance.now() }; state.dragNow = { x, y }; return null; }
   if (kind === "move" && state.dragStart) { state.dragNow = { x, y }; return null; }
@@ -3278,9 +3289,9 @@ function fpProcessFlick(state, kind, x, y) {
     const ey = (state.dragNow ? state.dragNow.y : y);
     state.dragStart = null; state.dragNow = null;
     const dx = ex - sx;
-    const dy = ey - sy; // up = negative
+    const dy = ey - sy;
     const dist = Math.hypot(dx, dy);
-    if (dy > -25 || dist < 60) return null; // need a real upward flick
+    if (dy > -25 || dist < 60) return null;
     const power = Math.min(1, dist / 360);
     const lateral = Math.max(-1, Math.min(1, dx / Math.max(60, -dy)));
     const upward = -dy / dist;
@@ -3296,22 +3307,25 @@ function fpDrawAimArc(state, originSX, originSY, color) {
   const dist = Math.hypot(dx, dy);
   if (dist < 8) return;
   const power = Math.min(1, dist / 360);
-  // Preview as an arc going up-and-toward.
+  // Preview arc — projects roughly where the ball will travel on screen.
   ctx.strokeStyle = color || `rgba(255, 220, 80, ${0.5 + power * 0.5})`;
   ctx.lineWidth = 4;
+  ctx.setLineDash([8, 6]);
   ctx.beginPath();
   for (let t = 0; t <= 1; t += 0.05) {
-    const px = originSX + (-dx) * t * 0.6;
-    const py = originSY + (-dy) * t - 600 * t * (1 - t) * power * 0.4;
+    const px = originSX + (-dx) * t * 0.55;
+    const py = originSY + (-dy) * t - 700 * t * (1 - t) * power * 0.45;
     if (t === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
   }
   ctx.stroke();
+  ctx.setLineDash([]);
   // Power bar
   ctx.fillStyle = "rgba(0,0,0,0.4)";
   ctx.fillRect(W - 130, 20, 110, 10);
   ctx.fillStyle = color || "#ffb020";
   ctx.fillRect(W - 130, 20, 110 * power, 10);
 }
+
 
 //----------------------------------------------------------
 // FIELD GOAL KICK (first-person flick)
@@ -3324,7 +3338,10 @@ const FieldGoal = {
   init() {
     return {
       ball: null,
-      posts: { z: 60, gap: 8, height: 7 },  // world units (meters-ish)
+      // Posts at z=25m. Crossbar 1m above the ground (we use 1m here for
+      // visibility on screen — real NCAA is 10ft / 3m); uprights extend up
+      // to ~10m. Gap between uprights is ~6m wide on screen.
+      posts: { z: 25, gap: 6, crossbar: 1.0, top: 9.5, padHeight: 0.6 },
       attempts: 5, kicked: 0, made: 0, score: 0,
       wind: 0, dragStart: null, dragNow: null,
       message: "", messageTimer: 0, finished: false,
@@ -3332,8 +3349,9 @@ const FieldGoal = {
   },
   payout(g) { return Math.floor((g.score || 0) * 1.0); },
   reset(g) {
-    g.ball = { x: 0, y: 0.4, z: 1.5, vx: 0, vy: 0, vz: 0, spin: 0, kicked: false, scored: false, gone: false, t: 0 };
-    g.wind = (Math.random() - 0.5) * 6;
+    // Ball sits a couple meters in front of camera, on the ground tee.
+    g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0, kicked: false, scored: false, gone: false, t: 0 };
+    g.wind = (Math.random() - 0.5) * 4;
     g.message = ""; g.messageTimer = 0;
   },
   handlePointer(g, kind, x, y) {
@@ -3343,10 +3361,10 @@ const FieldGoal = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    g.ball.vz = 22 + power * 24;
-    g.ball.vy = 6 + power * 18 * upward;
-    g.ball.vx = lateral * 8 * power;
-    g.ball.spin = lateral * 1.8;
+    g.ball.vz = 14 + power * 12;
+    g.ball.vy = 5 + power * 7 * upward;
+    g.ball.vx = lateral * 4 * power;
+    g.ball.spin = lateral * 1.4;
     g.ball.kicked = true;
     Sound.boostHit && Sound.boostHit();
   },
@@ -3355,23 +3373,26 @@ const FieldGoal = {
     const b = g.ball, p = g.posts;
     if (b.kicked && !b.gone) {
       b.t += dt;
-      b.vy -= 11 * dt;          // gravity in world units
+      b.vy -= 9.8 * dt;
       b.vx += g.wind * dt + b.spin * dt;
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-      b.z += b.vz * dt;
-      // Check goal plane
+      b.x  += b.vx * dt;
+      b.y  += b.vy * dt;
+      b.z  += b.vz * dt;
       if (b.z >= p.z && !b.scored) {
         b.scored = true;
-        const through = Math.abs(b.x) < p.gap / 2 && b.y > 1.0 && b.y < p.height + 4;
+        const through = Math.abs(b.x) < p.gap / 2
+                       && b.y > p.crossbar
+                       && b.y < p.top + 1;
         if (through) {
           g.made++; g.score += 7;
           g.message = "GOOD!"; g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
+        } else if (Math.abs(b.x) < p.gap / 2 && b.y <= p.crossbar) {
+          g.message = "Short!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+        } else if (Math.abs(b.x) < p.gap) {
+          g.message = "Doinked!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
         } else {
-          g.message = b.y < 1.0 ? "Short!" : (Math.abs(b.x) < p.gap ? "Doinked!" : "Wide!");
-          g.messageTimer = 1.4;
-          Sound.crash && Sound.crash();
+          g.message = "Wide!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
         }
       }
       if (b.y < 0 || b.z > p.z + 12) b.gone = true;
@@ -3387,31 +3408,40 @@ const FieldGoal = {
   },
   render(g) {
     if (!g.ball) FieldGoal.reset(g);
-    fpDrawSky("#7fbcff", "#cfeaff", "#3c7c2a");
-    fpDrawField("#3a7a1f", "#2a5414");
-    // Posts in perspective
-    const p = g.posts;
-    const baseL = fpProject(-p.gap / 2, 0, p.z);
-    const baseR = fpProject( p.gap / 2, 0, p.z);
-    const topL  = fpProject(-p.gap / 2, p.height, p.z);
-    const topR  = fpProject( p.gap / 2, p.height, p.z);
-    // Single base coming up from the field, then a horizontal crossbar that
-    // splits into two uprights that rise out of frame.
-    const baseStem = fpProject(0, 0, p.z);
-    const stemTop  = fpProject(0, p.height * 0.55, p.z);
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = Math.max(2, 6 * baseStem.scale);
-    // stem
-    ctx.beginPath(); ctx.moveTo(baseStem.sx, baseStem.sy); ctx.lineTo(stemTop.sx, stemTop.sy); ctx.stroke();
-    // crossbar — between baseL.x level at stemTop.y
-    const crossL = fpProject(-p.gap / 2, p.height * 0.55, p.z);
-    const crossR = fpProject( p.gap / 2, p.height * 0.55, p.z);
-    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(crossR.sx, crossR.sy); ctx.stroke();
-    // uprights from crossbar to top
-    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(topL.sx, topL.sy); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(crossR.sx, crossR.sy); ctx.lineTo(topR.sx, topR.sy); ctx.stroke();
+    fpDrawSky("#7fbcff", "#cfeaff", "#4d8d2a");
+    fpDrawField("#3a7a1f", "rgba(255,255,255,0.45)");
+    // End-zone tint behind the posts.
+    const ezNear = fpProject(-25, 0, 22);
+    const ezFar  = fpProject( 25, 0, 32);
+    ctx.fillStyle = "rgba(255, 100, 60, 0.20)";
+    ctx.fillRect(0, ezFar.sy, W, ezNear.sy - ezFar.sy);
 
-    // Wind / score / attempts HUD
+    const p = g.posts;
+    // Yellow goalposts: stem from ground up to crossbar, crossbar across,
+    // two uprights extending up.
+    const stemBase = fpProject(0, 0, p.z);
+    const stemTop  = fpProject(0, p.crossbar, p.z);
+    const crossL   = fpProject(-p.gap / 2, p.crossbar, p.z);
+    const crossR   = fpProject( p.gap / 2, p.crossbar, p.z);
+    const upL      = fpProject(-p.gap / 2, p.top, p.z);
+    const upR      = fpProject( p.gap / 2, p.top, p.z);
+    const postYellow = "#ffd03a";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = postYellow;
+    const stroke = Math.max(3, 8 * stemBase.scale * 6);
+    ctx.lineWidth = stroke;
+    ctx.beginPath(); ctx.moveTo(stemBase.sx, stemBase.sy); ctx.lineTo(stemTop.sx, stemTop.sy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(crossR.sx, crossR.sy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(upL.sx, upL.sy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(crossR.sx, crossR.sy); ctx.lineTo(upR.sx, upR.sy); ctx.stroke();
+    ctx.lineCap = "butt";
+    // White pad at the base
+    const padNear = fpProject(-0.4, 0, p.z + 0.4);
+    const padFar  = fpProject( 0.4, 0, p.z - 0.4);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(padFar.sx, padFar.sy - 8, Math.max(4, padNear.sx - padFar.sx), 10);
+
+    // HUD
     ctx.fillStyle = "rgba(0,0,0,0.7)";
     ctx.font = "bold 16px ui-monospace, monospace";
     const dir = g.wind > 0.5 ? "→" : g.wind < -0.5 ? "←" : "·";
@@ -3420,33 +3450,46 @@ const FieldGoal = {
     ctx.fillText(`Made: ${g.made}/${g.kicked}    Score: ${g.score}`, 16, 50);
     ctx.fillText(`Kicks left: ${Math.max(0, g.attempts - g.kicked)}`, 16, 72);
 
-    // Aim preview when dragging — drawn from where the ball is on screen.
-    if (!g.ball.kicked) {
-      const ballProj = fpProject(g.ball.x, g.ball.y, g.ball.z);
-      fpDrawAimArc(g, ballProj.sx, ballProj.sy);
-    }
+    // Aim preview — when the ball is at rest, originate from its fixed
+    // bottom-of-screen sprite position. Once kicked, switch to perspective.
+    const restSX = W / 2;
+    const restSY = H * 0.84;
+    const restR  = Math.min(72, Math.max(48, W * 0.10));
+    if (!g.ball.kicked) fpDrawAimArc(g, restSX, restSY);
 
-    // Ball in perspective
+    // Football — drawn last so it sits over the field.
     const b = g.ball;
-    const proj = fpProject(b.x, b.y, b.z);
-    const r = Math.max(3, 16 * proj.scale);
+    let bx, by, r;
+    if (!b.kicked) {
+      bx = restSX; by = restSY; r = restR;
+    } else {
+      const proj = fpProject(b.x, b.y, b.z);
+      bx = proj.sx; by = proj.sy; r = Math.max(6, 22 * proj.scale);
+    }
     ctx.save();
-    ctx.translate(proj.sx, proj.sy);
-    ctx.rotate(b.t * 8);
-    ctx.fillStyle = "#7a3c14";
-    ctx.beginPath(); ctx.ellipse(0, 0, r * 0.95, r * 0.65, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = Math.max(1, 1.2 * proj.scale);
-    ctx.beginPath(); ctx.moveTo(-r * 0.5, 0); ctx.lineTo(r * 0.5, 0); ctx.stroke();
-    for (let i = -2; i <= 2; i++) {
-      ctx.beginPath();
-      ctx.moveTo(i * r * 0.18, -r * 0.18);
-      ctx.lineTo(i * r * 0.18,  r * 0.18);
-      ctx.stroke();
+    ctx.translate(bx, by);
+    ctx.rotate(b.kicked ? b.t * 7 : 0);
+    const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+    grad.addColorStop(0, "#9b5a2c"); grad.addColorStop(1, "#5a2a0e");
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.62, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+    ctx.lineWidth = Math.max(0.5, b.kicked ? 1 * (r / 22) : 2);
+    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.62, 0, 0, Math.PI * 2); ctx.stroke();
+    if (r > 6) {
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = Math.max(1.5, r * 0.06);
+      ctx.beginPath(); ctx.moveTo(-r * 0.4, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
+      const lace = Math.max(2, r * 0.10);
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * r * 0.16, -lace);
+        ctx.lineTo(i * r * 0.16,  lace);
+        ctx.stroke();
+      }
     }
     ctx.restore();
 
-    // Message
     if (g.message && g.messageTimer > 0) {
       ctx.font = "bold 56px ui-monospace, monospace";
       ctx.textAlign = "center";
@@ -3456,12 +3499,11 @@ const FieldGoal = {
       ctx.fillText(g.message, W/2, H/2);
       ctx.textAlign = "start";
     }
-    // Hint
     if (!b.kicked && !g.dragStart) {
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Flick UP toward the goal — angle curves the ball", W/2, H * 0.94);
+      ctx.fillText("Flick UP toward the goal — angle curves the kick", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
   },
@@ -3476,28 +3518,26 @@ const CanBash = {
   icon: "🥎",
   color: "#ff5a3a",
   init() {
-    // Pyramid of cans positioned on a table at depth z = 18.
     const cans = [];
-    const tableZ = 18;
-    const tableY = 0.5;       // height of table top above ground
-    const canHeight = 0.7;
-    const canWidth = 0.6;
+    const tableZ = 10;
+    const tableTopY = 1.0;
+    const canHeight = 0.55;
+    const canWidth  = 0.45;
     const rows = 4;
     for (let row = 0; row < rows; row++) {
       const count = rows - row;
-      const yy = tableY + row * canHeight + canHeight / 2;
+      const yy = tableTopY + row * canHeight + canHeight / 2;
       for (let i = 0; i < count; i++) {
-        const xx = (i - (count - 1) / 2) * canWidth;
+        const xx = (i - (count - 1) / 2) * canWidth * 1.1;
         cans.push({
           x: xx, y: yy, z: tableZ, w: canWidth, h: canHeight,
-          // Knockdown state — once hit, animate falling on screen.
-          hit: false, fallT: 0, fallVx: 0, fallVy: 0, fallAngle: 0,
+          hit: false, fallVx: 0, fallVy: 0, angle: 0, angVel: 0, fallT: 0,
         });
       }
     }
     return {
       cans, ball: null, throws: 3, thrown: 0, score: 0, knocked: 0,
-      tableZ, tableY,
+      tableZ, tableTopY,
       message: "", messageTimer: 0, finished: false,
       dragStart: null, dragNow: null,
     };
@@ -3507,7 +3547,7 @@ const CanBash = {
     return g.knocked * 30 + (cleared ? 100 : 0);
   },
   resetBall(g) {
-    g.ball = { x: 0, y: 0.4, z: 1.2, vx: 0, vy: 0, vz: 0, spin: 0, thrown: false, gone: false, t: 0 };
+    g.ball = { x: 0, y: 0.4, z: 3, vx: 0, vy: 0, vz: 0, spin: 0, thrown: false, gone: false, didHit: false, t: 0 };
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
@@ -3516,10 +3556,10 @@ const CanBash = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    g.ball.vz = 18 + power * 22;
-    g.ball.vy = 3 + power * 12 * upward;
-    g.ball.vx = lateral * 6 * power;
-    g.ball.spin = lateral * 1.0;
+    g.ball.vz = 12 + power * 14;
+    g.ball.vy = 2 + power * 5 * upward;
+    g.ball.vx = lateral * 3 * power;
+    g.ball.spin = lateral * 0.8;
     g.ball.thrown = true;
     g.thrown++;
     Sound.boostHit && Sound.boostHit();
@@ -3529,24 +3569,23 @@ const CanBash = {
     const b = g.ball;
     if (b.thrown && !b.gone) {
       b.t += dt;
-      b.vy -= 11 * dt;
+      b.vy -= 9.8 * dt;
       b.vx += b.spin * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.z += b.vz * dt;
-      // Collision with cans when ball reaches the table depth.
       if (b.z >= g.tableZ - 0.5 && !b.didHit) {
         for (const c of g.cans) {
           if (c.hit) continue;
           const dx = b.x - c.x;
           const dy = b.y - c.y;
-          if (Math.abs(dx) < c.w * 0.6 + 0.25 && Math.abs(dy) < c.h * 0.6 + 0.25) {
+          if (Math.abs(dx) < c.w * 0.55 + 0.18 && Math.abs(dy) < c.h * 0.6 + 0.18) {
             c.hit = true;
-            c.fallVx = b.vx * 0.3 + dx * 4;
+            c.fallVx = b.vx * 0.4 + dx * 4;
             c.fallVy = -b.vy * 0.5 + 1;
-            c.fallAngle = (Math.random() - 0.5) * 1.0;
-            g.knocked++;
-            g.score += 10;
+            c.angle = (Math.random() - 0.5) * 0.6;
+            c.angVel = (Math.random() - 0.5) * 6;
+            g.knocked++; g.score += 10;
             Sound.pickup && Sound.pickup();
             b.vx *= 0.5; b.vy *= 0.5; b.vz *= 0.4;
           }
@@ -3555,23 +3594,20 @@ const CanBash = {
       }
       if (b.z > g.tableZ + 4 || b.y < -1) b.gone = true;
     }
-    // Tumbling cans
     for (const c of g.cans) {
       if (!c.hit) continue;
       c.fallT += dt;
-      c.fallVy -= 14 * dt;
+      c.fallVy -= 9.8 * dt;
       c.x += c.fallVx * dt;
       c.y += c.fallVy * dt;
-      c.fallAngle += dt * 4;
+      c.angle += (c.angVel || 0) * dt;
       if (c.y < 0) c.y = 0;
     }
-    // Move on after the throw is over.
     if ((b.gone || (b.thrown && b.didHit && b.t > 0.6)) && !g.finished) {
-      if (g.thrown >= g.throws || g.cans.every(c => c.hit)) {
-        if (!g.finished) {
-          if (g.cans.every(c => c.hit)) g.score += 50;
-          g.finished = true;
-        }
+      const cleared = g.cans.every(c => c.hit);
+      if (g.thrown >= g.throws || cleared) {
+        if (cleared) g.score += 50;
+        g.finished = true;
       } else {
         CanBash.resetBall(g);
       }
@@ -3580,62 +3616,94 @@ const CanBash = {
   render(g) {
     if (!g.ball) CanBash.resetBall(g);
     fpDrawSky("#3a3050", "#5a3340", "#3a2516");
-    fpDrawField("#5a3818", "#3a2516");
+    fpDrawField("#5a3818", "rgba(255, 200, 100, 0.18)");
 
-    // Table
-    const tFrontTL = fpProject(-2.5, g.tableY, g.tableZ - 1);
-    const tFrontTR = fpProject( 2.5, g.tableY, g.tableZ - 1);
-    const tFrontBL = fpProject(-2.5, 0, g.tableZ - 1);
-    const tFrontBR = fpProject( 2.5, 0, g.tableZ - 1);
-    const tBackTL  = fpProject(-2.5, g.tableY, g.tableZ + 1);
-    const tBackTR  = fpProject( 2.5, g.tableY, g.tableZ + 1);
-    ctx.fillStyle = "#6b3b1d";
+    // Table — wooden box at z=tableZ.
+    const tableHalfW = 2.0, tableDepth = 1.2;
+    const tlz = g.tableZ - tableDepth / 2;
+    const trz = g.tableZ + tableDepth / 2;
+    const topL = fpProject(-tableHalfW, g.tableTopY, tlz);
+    const topR = fpProject( tableHalfW, g.tableTopY, tlz);
+    const topBL = fpProject(-tableHalfW, g.tableTopY, trz);
+    const topBR = fpProject( tableHalfW, g.tableTopY, trz);
+    const botL = fpProject(-tableHalfW, 0, tlz);
+    const botR = fpProject( tableHalfW, 0, tlz);
+    ctx.fillStyle = "#5a2a10";
     ctx.beginPath();
-    ctx.moveTo(tFrontTL.sx, tFrontTL.sy);
-    ctx.lineTo(tFrontTR.sx, tFrontTR.sy);
-    ctx.lineTo(tBackTR.sx, tBackTR.sy);
-    ctx.lineTo(tBackTL.sx, tBackTL.sy);
+    ctx.moveTo(topL.sx, topL.sy); ctx.lineTo(topR.sx, topR.sy);
+    ctx.lineTo(botR.sx, botR.sy); ctx.lineTo(botL.sx, botL.sy);
     ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "#3a2010";
+    ctx.fillStyle = "#8a4a26";
     ctx.beginPath();
-    ctx.moveTo(tFrontTL.sx, tFrontTL.sy);
-    ctx.lineTo(tFrontTR.sx, tFrontTR.sy);
-    ctx.lineTo(tFrontBR.sx, tFrontBR.sy);
-    ctx.lineTo(tFrontBL.sx, tFrontBL.sy);
+    ctx.moveTo(topL.sx, topL.sy); ctx.lineTo(topR.sx, topR.sy);
+    ctx.lineTo(topBR.sx, topBR.sy); ctx.lineTo(topBL.sx, topBL.sy);
     ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(255,200,140,0.35)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(topL.sx, topL.sy); ctx.lineTo(topR.sx, topR.sy);
+    ctx.stroke();
 
-    // Cans — sort back-to-front for correct overlap.
+    // Cans (back-to-front)
     const sorted = g.cans.slice().sort((a, b) => b.y - a.y);
     for (const c of sorted) {
       const proj = fpProject(c.x, c.y, c.z);
-      const w = Math.max(6, 28 * proj.scale);
-      const h = Math.max(8, 36 * proj.scale);
+      const w = Math.max(8, 32 * proj.scale);
+      const h = Math.max(10, 40 * proj.scale);
       ctx.save();
       ctx.translate(proj.sx, proj.sy);
-      if (c.hit) ctx.rotate(c.fallAngle);
-      ctx.fillStyle = "#cccccc";
-      ctx.fillRect(-w / 2, -h / 2, w, h);
+      if (c.hit) ctx.rotate(c.angle);
+      const can = ctx.createLinearGradient(-w/2, 0, w/2, 0);
+      can.addColorStop(0, "#888"); can.addColorStop(0.5, "#dadada"); can.addColorStop(1, "#666");
+      ctx.fillStyle = can;
+      ctx.fillRect(-w/2, -h/2, w, h);
       ctx.fillStyle = "#e94c3a";
-      ctx.fillRect(-w / 2, -h * 0.18, w, h * 0.45);
-      ctx.fillStyle = "rgba(255,255,255,0.4)";
-      ctx.fillRect(-w / 2 + 1, -h / 2, 2, h);
+      ctx.fillRect(-w/2, -h * 0.18, w, h * 0.4);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(-w/2, -h * 0.22, w, 1.5);
+      ctx.fillRect(-w/2,  h * 0.22, w, 1.5);
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = Math.max(0.5, 1.2 * proj.scale);
+      ctx.beginPath(); ctx.ellipse(0, -h/2, w/2, h * 0.07, 0, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
-    // Aim preview
-    if (!g.ball.thrown) {
-      const ballProj = fpProject(g.ball.x, g.ball.y, g.ball.z);
-      fpDrawAimArc(g, ballProj.sx, ballProj.sy, "rgba(255, 90, 80, ");
-    }
-
-    // Ball
+    // Baseball — at-rest sprite at the bottom; perspective once thrown.
+    const restSX = W / 2;
+    const restSY = H * 0.84;
+    const restR  = Math.min(64, Math.max(40, W * 0.085));
+    if (!g.ball.thrown) fpDrawAimArc(g, restSX, restSY, "rgba(255, 90, 80, 0.85)");
     const b = g.ball;
-    const bp = fpProject(b.x, b.y, b.z);
-    const br = Math.max(3, 14 * bp.scale);
-    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#aa0000"; ctx.lineWidth = Math.max(1, 1.4 * bp.scale);
-    ctx.beginPath(); ctx.arc(bp.sx, bp.sy, br, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.arc(bp.sx, bp.sy, br * 0.7, -0.4, 0.4); ctx.stroke();
-    ctx.beginPath(); ctx.arc(bp.sx, bp.sy, br * 0.7, Math.PI - 0.4, Math.PI + 0.4); ctx.stroke();
+    let bx, by, br;
+    if (!b.thrown) {
+      bx = restSX; by = restSY; br = restR;
+    } else {
+      const bp = fpProject(b.x, b.y, b.z);
+      bx = bp.sx; by = bp.sy; br = Math.max(5, 18 * bp.scale);
+    }
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(b.t * 8);
+    const bgrad = ctx.createRadialGradient(-br * 0.3, -br * 0.3, br * 0.1, 0, 0, br);
+    bgrad.addColorStop(0, "#fff"); bgrad.addColorStop(1, "#cfd6e3");
+    ctx.fillStyle = bgrad;
+    ctx.beginPath(); ctx.arc(0, 0, br, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#aa0000";
+    ctx.lineWidth = Math.max(1, br * 0.10);
+    if (br > 5) {
+      ctx.beginPath(); ctx.arc(0, 0, br * 0.78, -0.6, 0.6); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, br * 0.78, Math.PI - 0.6, Math.PI + 0.6); ctx.stroke();
+      // Stitch dashes
+      const dash = Math.max(2, br * 0.10);
+      for (let i = -2; i <= 2; i++) {
+        const a = i * 0.18;
+        const x1 = Math.cos(a) * br * 0.78, y1 = Math.sin(a) * br * 0.78;
+        const x2 = Math.cos(a) * br * 0.62, y2 = Math.sin(a) * br * 0.62;
+        ctx.beginPath(); ctx.moveTo(x1 + dash, y1); ctx.lineTo(x2 + dash, y2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-x1 - dash, y1); ctx.lineTo(-x2 - dash, y2); ctx.stroke();
+      }
+    }
+    ctx.restore();
 
     // HUD
     ctx.fillStyle = "rgba(0,0,0,0.7)";
@@ -3645,11 +3713,12 @@ const CanBash = {
     if (!b.thrown && !g.dragStart) {
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Flick UP at the cans — angle to bend the throw", W/2, H * 0.94);
+      ctx.fillText("Flick UP at the cans — angle bends the throw", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
   },
 };
+
 
 //----------------------------------------------------------
 // DUCK HUNT (tap-to-shoot)
