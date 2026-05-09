@@ -399,7 +399,8 @@ resizeCanvas();
 const Sound = (() => {
   let audio = null, master = null;
   let engineOsc = null, engineGain = null, engineFilter = null;
-  let muted = localStorage.getItem("declanbike.muted") === "1";
+  let muted = false;
+  try { muted = localStorage.getItem("declanbike.muted") === "1"; } catch (e) {}
 
   function ensure() {
     if (audio) {
@@ -594,7 +595,7 @@ const Sound = (() => {
 
   function toggleMute() {
     muted = !muted;
-    localStorage.setItem("declanbike.muted", muted ? "1" : "0");
+    try { localStorage.setItem("declanbike.muted", muted ? "1" : "0"); } catch (e) {}
     if (master) master.gain.value = muted ? 0 : 0.55;
     return muted;
   }
