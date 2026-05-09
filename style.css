@@ -273,6 +273,15 @@ kbd {
   width: 44px; height: 44px; font-size: 14px; letter-spacing: 0.1em;
   border-radius: 10px;
 }
+.tbtn.mute-btn {
+  position: absolute; top: 14px; right: 70px;
+  width: 44px; height: 44px; font-size: 18px;
+  border-radius: 10px;
+}
+.tbtn.mute-btn.muted { color: var(--bad); border-color: var(--bad); }
+.tbtn.jump { background: rgba(110, 231, 255, 0.18); border-color: rgba(110, 231, 255, 0.5); color: var(--boost); }
+.tbtn.jump:active, .tbtn.jump.held { background: rgba(110, 231, 255, 0.7); color: #001a26; }
+.tcol { display: flex; flex-direction: column; gap: 10px; align-items: center; }
 
 /* Show touch controls only on touch-capable devices */
 .touch.show { display: block; }

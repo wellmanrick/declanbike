@@ -253,6 +253,130 @@ window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 //==========================================================
+// SOUND (Web Audio API, all procedural — no asset files)
+//==========================================================
+const Sound = (() => {
+  let audio = null, master = null;
+  let engineOsc = null, engineGain = null, engineFilter = null;
+  let muted = localStorage.getItem("declanbike.muted") === "1";
+
+  function ensure() {
+    if (audio) {
+      if (audio.state === "suspended") audio.resume();
+      return audio;
+    }
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return null;
+    audio = new C();
+    master = audio.createGain();
+    master.gain.value = muted ? 0 : 0.55;
+    master.connect(audio.destination);
+    return audio;
+  }
+  function blip(freq, dur = 0.12, type = "sine", vol = 0.18, when = 0) {
+    if (!ensure()) return;
+    const t = audio.currentTime + when;
+    const o = audio.createOscillator();
+    const g = audio.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  function sweep(f1, f2, dur, type = "square", vol = 0.18) {
+    if (!ensure()) return;
+    const t = audio.currentTime;
+    const o = audio.createOscillator();
+    const g = audio.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f1, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  function noise(dur, vol = 0.3, lpf = 1500) {
+    if (!ensure()) return;
+    const len = Math.floor(audio.sampleRate * dur);
+    const buf = audio.createBuffer(1, len, audio.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = audio.createBufferSource();
+    src.buffer = buf;
+    const f = audio.createBiquadFilter();
+    f.type = "lowpass"; f.frequency.value = lpf;
+    const g = audio.createGain();
+    const t = audio.currentTime;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start(t);
+  }
+
+  function startEngine() {
+    if (!ensure() || engineOsc) return;
+    engineOsc = audio.createOscillator();
+    engineOsc.type = "sawtooth";
+    engineOsc.frequency.value = 80;
+    engineFilter = audio.createBiquadFilter();
+    engineFilter.type = "lowpass";
+    engineFilter.frequency.value = 700;
+    engineGain = audio.createGain();
+    engineGain.gain.value = 0;
+    engineOsc.connect(engineFilter);
+    engineFilter.connect(engineGain);
+    engineGain.connect(master);
+    engineOsc.start();
+  }
+  function setEngine(speed01, throttle, boost) {
+    if (!engineOsc) return;
+    const t = audio.currentTime;
+    const baseFreq = 65 + speed01 * 230 + (throttle ? 25 : 0) + (boost ? 70 : 0);
+    engineOsc.frequency.cancelScheduledValues(t);
+    engineOsc.frequency.linearRampToValueAtTime(baseFreq, t + 0.06);
+    engineFilter.frequency.linearRampToValueAtTime(500 + speed01 * 1400 + (boost ? 700 : 0), t + 0.06);
+    const targetGain = (throttle || boost) ? 0.085 : 0.025 + speed01 * 0.04;
+    engineGain.gain.cancelScheduledValues(t);
+    engineGain.gain.linearRampToValueAtTime(muted ? 0 : targetGain, t + 0.06);
+  }
+  function stopEngine() {
+    if (!engineOsc) return;
+    const t = audio.currentTime;
+    engineGain.gain.cancelScheduledValues(t);
+    engineGain.gain.linearRampToValueAtTime(0, t + 0.15);
+    const osc = engineOsc;
+    engineOsc = null;
+    setTimeout(() => { try { osc.stop(); } catch {} }, 220);
+  }
+
+  // Event sounds
+  function jump()      { sweep(220, 540, 0.14, "square", 0.20); }
+  function pickup()    { blip(880, 0.07, "triangle", 0.18); blip(1320, 0.10, "triangle", 0.10, 0.04); }
+  function gem()       { blip(880, 0.08, "triangle", 0.18); blip(1100, 0.08, "triangle", 0.18, 0.06); blip(1320, 0.12, "triangle", 0.18, 0.12); }
+  function flipSnd(n)  { for (let i = 0; i < n; i++) blip(660 + i * 220, 0.07, "square", 0.16, i * 0.06); }
+  function landSnd()   { sweep(160, 80, 0.16, "sine", 0.28); noise(0.10, 0.10, 600); }
+  function perfectSnd(){ blip(1320, 0.10, "triangle", 0.20); blip(1760, 0.18, "triangle", 0.18, 0.08); }
+  function crashSnd()  { noise(0.45, 0.40, 900); sweep(260, 60, 0.32, "sawtooth", 0.22); }
+  function boostHit()  { noise(0.20, 0.18, 3000); sweep(800, 1600, 0.18, "sine", 0.10); }
+  function click()     { blip(900, 0.04, "square", 0.10); }
+
+  function toggleMute() {
+    muted = !muted;
+    localStorage.setItem("declanbike.muted", muted ? "1" : "0");
+    if (master) master.gain.value = muted ? 0 : 0.55;
+    return muted;
+  }
+  function isMuted() { return muted; }
+
+  return { ensure, startEngine, setEngine, stopEngine,
+           jump, pickup, gem, flip: flipSnd, land: landSnd, perfect: perfectSnd,
+           crash: crashSnd, boostHit, click, toggleMute, isMuted };
+})();
+
+//==========================================================
 // INPUT
 //==========================================================
 const keys = new Set();
@@ -261,8 +385,10 @@ window.addEventListener("keydown", (e) => {
   if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Space"].includes(e.code)) e.preventDefault();
   if (!keys.has(e.code)) justPressed.add(e.code);
   keys.add(e.code);
+  Sound.ensure(); // browsers gate AudioContext behind a user gesture
 });
 window.addEventListener("keyup", (e) => { keys.delete(e.code); });
+window.addEventListener("pointerdown", () => Sound.ensure(), { once: false });
 function input() {
   return {
     throttle: keys.has("ArrowRight") || keys.has("KeyD"),
@@ -281,12 +407,29 @@ function setupTouchControls() {
   if (!touchEl) return;
   if (isTouchDevice) touchEl.classList.add("show");
 
+  const muteBtn = document.getElementById("mute-btn");
+  if (muteBtn) {
+    const updateMuteUi = () => {
+      muteBtn.textContent = Sound.isMuted() ? "🔇" : "♪";
+      muteBtn.classList.toggle("muted", Sound.isMuted());
+    };
+    updateMuteUi();
+    muteBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      Sound.ensure();
+      Sound.toggleMute();
+      updateMuteUi();
+    });
+  }
+
   const buttons = touchEl.querySelectorAll(".tbtn");
   for (const btn of buttons) {
     const code = btn.dataset.key;
+    if (!code) continue; // skip mute (no data-key)
     const press = (e) => {
       e.preventDefault();
       btn.classList.add("held");
+      Sound.ensure();
       if (code === "Escape") {
         // Treat as one-shot
         if (!keys.has("Escape")) justPressed.add("Escape");
@@ -479,6 +622,9 @@ function startRun(levelId) {
     bike: {
       x: startX, y: startY, vx: 80, vy: 0,
       angle: 0, angVel: 0,
+      wheelAngle: 0,
+      landSquash: 0,
+      boostingPrev: false,
       onGround: true,
       airtime: 0,
       lastGroundedAt: performance.now(),
@@ -509,6 +655,8 @@ function startRun(levelId) {
   };
   state = STATE.PLAY;
   showOnly("hud");
+  Sound.ensure();
+  Sound.startEngine();
 }
 
 //==========================================================
@@ -562,26 +710,28 @@ function updateBike(dt) {
   const groundY = terrainHeightAt(r.terrain, b.x);
   const onGround = (b.y >= groundY - 4);
 
-  // Shift "preload" charges a hop on takeoff
-  if (inp.preload && onGround) b.preload = Math.min(1, b.preload + dt * 2.5);
-  if (!inp.preload) b.preload = Math.max(0, b.preload - dt * 4);
-
-  if (onGround && !b.onGround) {
-    // landing event
-    handleLanding(slopeAngle);
-  }
-  if (!onGround && b.onGround) {
-    // takeoff event
+  // Explicit jump action: tap Shift (or on-screen jump button) while grounded.
+  const jumpPressed = justPressed.has("ShiftLeft") || justPressed.has("ShiftRight");
+  if (jumpPressed && onGround && !b.crashed && !b.finished) {
+    b.y -= 8;
+    b.vy = -480;
     b.airtime = 0;
     b.currentFlipRot = 0;
-    if (b.preload > 0.4) {
-      b.vy -= 220 * b.preload;
-      b.preload = 0;
-    }
+    b.onGround = false;
+    r.runStats.jumps++;
+    Sound.jump();
+    pushToast("Jump!", "gold", 600);
+  } else if (onGround && !b.onGround) {
+    // landing event
+    handleLanding(slopeAngle);
+  } else if (!onGround && b.onGround) {
+    // takeoff event (off a crest/ramp without jumping)
+    b.airtime = 0;
+    b.currentFlipRot = 0;
     r.runStats.jumps++;
     pushToast("Air!", "gold", 800);
   }
-  b.onGround = onGround;
+  if (!jumpPressed) b.onGround = onGround;
 
   if (onGround) {
     // align to slope smoothly
@@ -596,13 +746,16 @@ function updateBike(dt) {
     if (inp.throttle) thrust = 950 * stats.accel / stats.weight;
     if (inp.brake) thrust = -700;
     // boost
-    if (inp.boost && b.boost > 1 && (inp.throttle || b.vx > 50)) {
+    const boosting = inp.boost && b.boost > 1 && (inp.throttle || b.vx > 50);
+    if (boosting) {
       thrust += 700;
       b.boost = Math.max(0, b.boost - 35 * dt);
       spawnExhaustParticles(true);
+      if (!b.boostingPrev) Sound.boostHit();
     } else {
       b.boost = Math.min(stats.boostCap, b.boost + stats.boostRegen * dt);
     }
+    b.boostingPrev = boosting;
     // Apply thrust along ground (horizontal component) plus gravity-along-slope.
     b.vx += Math.cos(slopeAngle) * thrust * dt;
     // Downhill slope (positive angle in screen coords) gives a free push; uphill resists.
@@ -631,11 +784,10 @@ function updateBike(dt) {
       const drop = ahead - b.y;
       if (drop > 10 && b.vx > 200) {
         b.onGround = false;
-        b.y -= 6; // detach from ground
+        b.y -= 6;
         b.vy = -Math.min(b.vx * 0.28, 320);
         b.airtime = 0;
         b.currentFlipRot = 0;
-        if (b.preload > 0.4) { b.vy -= 200 * b.preload; b.preload = 0; }
         r.runStats.jumps++;
       }
     }
@@ -658,12 +810,13 @@ function updateBike(dt) {
       b.boost = Math.max(0, b.boost - 35 * dt);
       spawnExhaustParticles(true);
     }
-    // rotation control. Heavier frames rotate slower.
-    const rotForce = 7.0 / stats.weight;
+    // rotation control. Heavier frames rotate slower. Tuned so a single jump
+    // gives ~1 full flip with sustained input.
+    const rotForce = 16.0 / stats.weight;
     if (inp.leanFwd)  b.angVel += rotForce * dt; // nose down -> front flip when moving right
     if (inp.leanBack) b.angVel -= rotForce * dt; // nose up -> back flip
-    // mild damping
-    b.angVel *= Math.pow(0.995, dt * 60);
+    // very mild damping
+    b.angVel *= Math.pow(0.998, dt * 60);
     b.angle += b.angVel * dt;
     b.currentFlipRot += b.angVel * dt;
 
@@ -672,6 +825,11 @@ function updateBike(dt) {
     b.x += b.vx * dt;
     b.y += b.vy * dt;
   }
+
+  // wheel spin: 13px radius wheel, angular vel = vx / r
+  b.wheelAngle = (b.wheelAngle + (b.vx / 13) * dt) % (Math.PI * 2);
+  // landing squash decays
+  if (b.landSquash > 0) b.landSquash = Math.max(0, b.landSquash - dt * 4);
 
   // boundary
   if (b.x < 20) { b.x = 20; b.vx = Math.max(0, b.vx); }
@@ -706,8 +864,8 @@ function updateBike(dt) {
     const dy = b.y - c.y;
     if (dx*dx + dy*dy < 30*30) {
       c.taken = true;
-      if (c.type === "gem") { r.cashEarned += 50; r.score += 250; r.runStats.gems++; pushFloating("+$50", c.x, c.y, "#6ee7ff"); }
-      else { r.cashEarned += 5; r.score += 25; r.runStats.collectibles++; pushFloating("+$5", c.x, c.y, "#ffc940"); }
+      if (c.type === "gem") { r.cashEarned += 50; r.score += 250; r.runStats.gems++; pushFloating("+$50", c.x, c.y, "#6ee7ff"); Sound.gem(); }
+      else { r.cashEarned += 5; r.score += 25; r.runStats.collectibles++; pushFloating("+$5", c.x, c.y, "#ffc940"); Sound.pickup(); }
     }
   }
 }
@@ -729,8 +887,10 @@ function handleLanding(slopeAngle) {
       label = "Perfect!"; bonus += 100;
       r.runStats.perfectLandings++;
       save.totals.perfectLandings++;
+      Sound.perfect();
     } else {
       bonus += 30;
+      Sound.land();
     }
     r.runStats.cleanLandings++;
     save.totals.cleanLandings++;
@@ -743,6 +903,7 @@ function handleLanding(slopeAngle) {
       r.runStats.flips += absFlips;
       save.totals.flips += absFlips;
       pushToast(`${absFlips}x ${flips > 0 ? "Front" : "Back"}flip! +${flipBonus} (x${r.combo})`, "gold", 1400);
+      Sound.flip(Math.min(4, absFlips + 1));
     } else {
       pushToast(label, "green", 800);
     }
@@ -756,6 +917,7 @@ function handleLanding(slopeAngle) {
 
     // suspension absorbs vertical
     const absorb = r.stats.suspension;
+    b.landSquash = clamp(Math.abs(b.vy) / 700, 0, 1) * (1 - absorb * 0.7);
     b.vy *= (1 - absorb) * 0.4;
   } else {
     // bad landing
@@ -780,6 +942,7 @@ function crash(reason) {
   save.totals.crashes++;
   spawnCrashParticles();
   pushToast(reason, "red", 1100);
+  Sound.crash();
 }
 
 function finishRun() {
@@ -814,6 +977,7 @@ function finishRun() {
 
   r.finishedAt = performance.now();
   setTimeout(() => showResult(true, { timeBonus, distBonus, cashFromScore }), 700);
+  Sound.stopEngine();
 }
 
 function abandonRun() {
@@ -829,6 +993,7 @@ function abandonRun() {
   refreshQuestStates(r.runStats);
   persistSave();
   showResult(false, { abandonedEarned: earned });
+  Sound.stopEngine();
 }
 
 //==========================================================
@@ -1157,110 +1322,274 @@ function drawFloatingTexts() {
   ctx.textAlign = "start";
 }
 
-function drawBike(b, stats) {
-  ctx.save();
-  ctx.translate(b.x, b.y);
-  ctx.rotate(b.angle);
+// Shared bike renderer. `g` is the 2D context, already translated/rotated.
+// `opts` carries: paint, wheelAngle, lean ({x, y}), squash (0..1 landing impact),
+// boosting, throttling.
+function paintBike(g, opts) {
+  const paint = opts.paint || "#e94c3a";
+  const wA = opts.wheelAngle || 0;
+  const lean = opts.lean || { x: 0, y: 0 };
+  const squash = opts.squash || 0;
+  const boosting = !!opts.boosting;
 
-  // shadow under (only if airborne — show ground shadow)
-  ctx.restore();
+  // ----- Wheels ----------------------------------------------------------
+  const wheelR = 13;
+  const wheelXs = [-24, 24];
+  for (const wx of wheelXs) {
+    // Tire — outer dark
+    g.fillStyle = "#0f0f12";
+    g.beginPath(); g.arc(wx, 0, wheelR, 0, Math.PI * 2); g.fill();
+    // Tread ticks (rotate with bike's wheelAngle)
+    g.save();
+    g.translate(wx, 0);
+    g.rotate(wA);
+    g.fillStyle = "#3a3a40";
+    for (let i = 0; i < 8; i++) {
+      g.save();
+      g.rotate((i / 8) * Math.PI * 2);
+      g.fillRect(-1, wheelR - 4, 2, 4);
+      g.restore();
+    }
+    // Rim
+    g.fillStyle = "#9aa3b3";
+    g.beginPath(); g.arc(0, 0, 6, 0, Math.PI * 2); g.fill();
+    // Spokes
+    g.strokeStyle = "#cfd6e3";
+    g.lineWidth = 1;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.lineTo(Math.cos(a) * 6, Math.sin(a) * 6);
+      g.stroke();
+    }
+    // Hub
+    g.fillStyle = "#1d222e";
+    g.beginPath(); g.arc(0, 0, 2.2, 0, Math.PI * 2); g.fill();
+    g.restore();
+  }
+
+  // ----- Frame: base triangle + swingarm ---------------------------------
+  // Swingarm (rear)
+  g.strokeStyle = "#1d222e";
+  g.lineWidth = 4;
+  g.beginPath(); g.moveTo(-24, 0); g.lineTo(-6, -6); g.stroke();
+  // Lower frame
+  g.beginPath(); g.moveTo(-6, -6); g.lineTo(14, -8); g.stroke();
+  // Front fork (with two stanchions)
+  g.strokeStyle = "#cfd6e3";
+  g.lineWidth = 2.5;
+  g.beginPath(); g.moveTo(24, 0); g.lineTo(20, -16); g.stroke();
+  g.strokeStyle = "#7d8898";
+  g.lineWidth = 2;
+  g.beginPath(); g.moveTo(26, 0); g.lineTo(22, -16); g.stroke();
+  // Front fender
+  g.fillStyle = paint;
+  g.beginPath();
+  g.moveTo(14, -2); g.quadraticCurveTo(22, -7, 30, -3);
+  g.lineTo(30, -1); g.quadraticCurveTo(22, -5, 14, 0);
+  g.closePath(); g.fill();
+
+  // Engine block (with vertical fins)
+  g.fillStyle = "#2a2f3c";
+  g.fillRect(-9, -10, 18, 12);
+  g.fillStyle = "#11141c";
+  for (let i = 0; i < 4; i++) g.fillRect(-8 + i * 5, -10, 2, 8);
+  // Engine highlight
+  g.fillStyle = "rgba(255,255,255,0.05)";
+  g.fillRect(-9, -10, 18, 2);
+
+  // Gas tank (paint color, with shading + highlight)
+  g.fillStyle = paint;
+  g.beginPath();
+  g.moveTo(-12, -10);
+  g.lineTo(-2, -20);
+  g.lineTo(14, -16);
+  g.lineTo(16, -10);
+  g.closePath();
+  g.fill();
+  // Tank shading underside
+  g.fillStyle = "rgba(0,0,0,0.25)";
+  g.beginPath();
+  g.moveTo(-12, -10); g.lineTo(16, -10); g.lineTo(14, -8); g.lineTo(-10, -8);
+  g.closePath(); g.fill();
+  // Tank highlight
+  g.fillStyle = "rgba(255,255,255,0.35)";
+  g.beginPath();
+  g.moveTo(-2, -19); g.lineTo(8, -17); g.lineTo(8, -16); g.lineTo(-2, -18);
+  g.closePath(); g.fill();
+
+  // Number plate on side
+  g.fillStyle = "#f2f2f5";
+  g.beginPath();
+  g.moveTo(-24, -8); g.lineTo(-12, -10); g.lineTo(-10, -4); g.lineTo(-22, -2);
+  g.closePath(); g.fill();
+  g.fillStyle = "#1a1a1a";
+  g.font = "bold 7px ui-monospace";
+  g.fillText("07", -20, -4);
+
+  // Seat (curved)
+  g.fillStyle = "#0c0d12";
+  g.beginPath();
+  g.moveTo(-22, -10); g.quadraticCurveTo(-16, -14, -8, -14); g.lineTo(-2, -14);
+  g.lineTo(-2, -12); g.quadraticCurveTo(-12, -12, -22, -8);
+  g.closePath(); g.fill();
+  // Seat stitch highlight
+  g.strokeStyle = "rgba(255,255,255,0.12)";
+  g.lineWidth = 0.6;
+  g.beginPath();
+  g.moveTo(-20, -12); g.quadraticCurveTo(-12, -14, -4, -13);
+  g.stroke();
+
+  // Rear shock (visible spring)
+  g.strokeStyle = "#ffb020";
+  g.lineWidth = 2;
+  g.beginPath(); g.moveTo(-8, -8); g.lineTo(-18, -2); g.stroke();
+  g.strokeStyle = "rgba(255,255,255,0.25)";
+  g.lineWidth = 0.6;
+  for (let i = 0; i < 4; i++) {
+    g.beginPath();
+    g.moveTo(-10 - i * 2, -7 + i); g.lineTo(-12 - i * 2, -5 + i);
+    g.stroke();
+  }
+
+  // Exhaust pipe
+  g.strokeStyle = "#9aa3b3";
+  g.lineWidth = 3;
+  g.beginPath();
+  g.moveTo(0, -4); g.quadraticCurveTo(-12, 0, -22, -4);
+  g.stroke();
+  // Exhaust tip
+  g.fillStyle = "#1d222e";
+  g.beginPath(); g.arc(-22, -4, 2.5, 0, Math.PI * 2); g.fill();
+
+  // Handlebars + grip
+  g.strokeStyle = "#1d222e";
+  g.lineWidth = 3;
+  g.beginPath();
+  g.moveTo(20, -16); g.lineTo(28, -22);
+  g.stroke();
+  g.fillStyle = "#0c0d12";
+  g.beginPath(); g.arc(28, -22, 2.5, 0, Math.PI * 2); g.fill();
+
+  // ----- Rider -----------------------------------------------------------
+  const lx = lean.x, ly = lean.y - squash * 1.5;
+  // Pants / lower body
+  g.fillStyle = "#1d2030";
+  g.fillRect(-4 + lx, -16 + ly, 12, 8);
+  // Jacket / torso (paint color)
+  g.fillStyle = paint;
+  g.beginPath();
+  g.moveTo(-4 + lx, -28 + ly);
+  g.lineTo(8 + lx, -26 + ly);
+  g.lineTo(10 + lx, -16 + ly);
+  g.lineTo(-4 + lx, -16 + ly);
+  g.closePath(); g.fill();
+  // Jacket stripe
+  g.fillStyle = "rgba(255,255,255,0.6)";
+  g.fillRect(-3 + lx, -22 + ly, 12, 1.5);
+
+  // Helmet — base shape
+  g.fillStyle = paint;
+  g.beginPath();
+  g.arc(3 + lx, -33 + ly, 7, 0, Math.PI * 2);
+  g.fill();
+  // Helmet darken bottom
+  g.fillStyle = "rgba(0,0,0,0.25)";
+  g.beginPath();
+  g.arc(3 + lx, -33 + ly, 7, 0, Math.PI);
+  g.fill();
+  // Helmet stripe
+  g.fillStyle = "#fff";
+  g.fillRect(0 + lx, -38 + ly, 8, 1.5);
+  // Visor
+  g.fillStyle = "#0c1426";
+  g.beginPath();
+  g.moveTo(2 + lx, -36 + ly);
+  g.lineTo(10 + lx, -34 + ly);
+  g.lineTo(10 + lx, -31 + ly);
+  g.lineTo(2 + lx, -31 + ly);
+  g.closePath(); g.fill();
+  // Visor reflection
+  g.fillStyle = "rgba(150, 220, 255, 0.5)";
+  g.fillRect(7 + lx, -35 + ly, 2.5, 1.5);
+
+  // Arms — gripping handlebars
+  g.strokeStyle = paint;
+  g.lineWidth = 4;
+  g.beginPath();
+  g.moveTo(6 + lx, -22 + ly);
+  g.quadraticCurveTo(18, -22, 26, -20);
+  g.stroke();
+  // Glove
+  g.fillStyle = "#0c0d12";
+  g.beginPath(); g.arc(26, -20, 2, 0, Math.PI * 2); g.fill();
+
+  // Leg — bent on peg
+  g.strokeStyle = "#1d2030";
+  g.lineWidth = 4;
+  g.beginPath();
+  g.moveTo(2 + lx, -10 + ly); g.quadraticCurveTo(0, -4, -6, -2);
+  g.stroke();
+  // Boot
+  g.fillStyle = "#0a0a0e";
+  g.beginPath(); g.ellipse(-7, -2, 3, 2, 0, 0, Math.PI * 2); g.fill();
+
+  // Boost flame from exhaust
+  if (boosting) {
+    const t = performance.now() / 60;
+    g.fillStyle = "rgba(255, 220, 80, 0.85)";
+    g.beginPath();
+    g.moveTo(-22, -4);
+    g.lineTo(-30 - Math.sin(t) * 2, -6);
+    g.lineTo(-34 - Math.sin(t * 1.3) * 3, -3);
+    g.lineTo(-30 - Math.sin(t) * 2, -1);
+    g.closePath(); g.fill();
+    g.fillStyle = "rgba(110, 231, 255, 0.9)";
+    g.beginPath();
+    g.moveTo(-22, -4);
+    g.lineTo(-26 - Math.sin(t) * 1, -5);
+    g.lineTo(-28, -3);
+    g.lineTo(-26, -2);
+    g.closePath(); g.fill();
+  }
+}
+
+function drawBike(b, stats) {
+  // Ground shadow (drawn in world coords, no rotation)
   if (!b.onGround && runtime) {
     const groundY = terrainHeightAt(runtime.terrain, b.x);
     const dist = Math.max(0, groundY - b.y);
     const shadowScale = clamp(1 - dist / 400, 0.2, 1);
     ctx.fillStyle = `rgba(0,0,0,${0.35 * shadowScale})`;
     ctx.beginPath();
-    ctx.ellipse(b.x, groundY + 2, 30 * shadowScale, 6 * shadowScale, 0, 0, Math.PI * 2);
+    ctx.ellipse(b.x, groundY + 2, 32 * shadowScale, 6 * shadowScale, 0, 0, Math.PI * 2);
     ctx.fill();
   }
-  ctx.save();
-  ctx.translate(b.x, b.y);
-  ctx.rotate(b.angle);
 
-  // Bike body
-  // wheels
-  ctx.strokeStyle = "#222";
-  ctx.lineWidth = 4;
-  ctx.fillStyle = "#1a1a1a";
-  // back wheel
-  ctx.beginPath(); ctx.arc(-22, 0, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  // front wheel
-  ctx.beginPath(); ctx.arc(22, 0, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  // wheel rims
-  ctx.strokeStyle = "#666";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(-22, 0, 5, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.arc(22, 0, 5, 0, Math.PI * 2); ctx.stroke();
-  // engine block
-  ctx.fillStyle = "#444";
-  ctx.fillRect(-8, -8, 16, 14);
-  // gas tank / main body — paint color
-  ctx.fillStyle = stats.paint;
-  ctx.beginPath();
-  ctx.moveTo(-22, -6);
-  ctx.lineTo(0, -16);
-  ctx.lineTo(18, -10);
-  ctx.lineTo(22, -2);
-  ctx.lineTo(-18, -2);
-  ctx.closePath();
-  ctx.fill();
-  // forks (front)
-  ctx.strokeStyle = "#888";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(22, 0);
-  ctx.lineTo(20, -14);
-  ctx.stroke();
-  // handlebars
-  ctx.strokeStyle = "#222";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(20, -14);
-  ctx.lineTo(28, -22);
-  ctx.stroke();
-  // rear suspension
-  ctx.strokeStyle = "#888";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(-22, 0);
-  ctx.lineTo(-10, -8);
-  ctx.stroke();
-  // seat
-  ctx.fillStyle = "#0f0f0f";
-  ctx.fillRect(-18, -14, 14, 4);
-
-  // RIDER — leans with input
   const inp = input();
   let leanX = 0, leanY = 0;
   if (b.onGround) {
     if (inp.brake) leanX = -3;
     if (inp.leanFwd) { leanX = 3; leanY = -2; }
     if (inp.throttle) leanY = -1;
+  } else {
+    // air pose: rider tucks slightly
+    leanY = -1;
   }
-  // body
-  ctx.fillStyle = "#2a3350";
-  ctx.fillRect(-4 + leanX, -32 + leanY, 12, 18);
-  // helmet
-  ctx.fillStyle = stats.paint;
-  ctx.beginPath();
-  ctx.arc(2 + leanX, -36 + leanY, 7, 0, Math.PI * 2);
-  ctx.fill();
-  // visor
-  ctx.fillStyle = "#aafaff";
-  ctx.fillRect(2 + leanX, -38 + leanY, 6, 4);
-  // arms
-  ctx.strokeStyle = "#2a3350";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(2 + leanX, -22 + leanY);
-  ctx.lineTo(24, -18);
-  ctx.stroke();
-  // legs
-  ctx.beginPath();
-  ctx.moveTo(0 + leanX, -16 + leanY);
-  ctx.lineTo(-10, -4);
-  ctx.stroke();
+  // squash on landing impact (decays)
+  const squash = clamp((b.landSquash || 0), 0, 1);
+  const boosting = !!b.boostingPrev;
 
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.angle);
+  paintBike(ctx, {
+    paint: stats.paint,
+    wheelAngle: b.wheelAngle || 0,
+    lean: { x: leanX, y: leanY },
+    squash, boosting,
+  });
   ctx.restore();
 }
 
@@ -1435,32 +1764,7 @@ function drawGaragePreview() {
   g.fillText(engine.name, 16, 28);
 }
 function drawStaticBike(g, stats) {
-  // copy of drawBike without input/runtime deps
-  g.strokeStyle = "#222"; g.lineWidth = 4;
-  g.fillStyle = "#1a1a1a";
-  g.beginPath(); g.arc(-22, 0, 12, 0, Math.PI * 2); g.fill(); g.stroke();
-  g.beginPath(); g.arc(22, 0, 12, 0, Math.PI * 2); g.fill(); g.stroke();
-  g.strokeStyle = "#666"; g.lineWidth = 1.5;
-  g.beginPath(); g.arc(-22, 0, 5, 0, Math.PI * 2); g.stroke();
-  g.beginPath(); g.arc(22, 0, 5, 0, Math.PI * 2); g.stroke();
-  g.fillStyle = "#444"; g.fillRect(-8, -8, 16, 14);
-  g.fillStyle = stats.paint;
-  g.beginPath();
-  g.moveTo(-22, -6); g.lineTo(0, -16); g.lineTo(18, -10); g.lineTo(22, -2); g.lineTo(-18, -2);
-  g.closePath(); g.fill();
-  g.strokeStyle = "#888"; g.lineWidth = 3;
-  g.beginPath(); g.moveTo(22, 0); g.lineTo(20, -14); g.stroke();
-  g.strokeStyle = "#222"; g.lineWidth = 3;
-  g.beginPath(); g.moveTo(20, -14); g.lineTo(28, -22); g.stroke();
-  g.strokeStyle = "#888"; g.lineWidth = 3;
-  g.beginPath(); g.moveTo(-22, 0); g.lineTo(-10, -8); g.stroke();
-  g.fillStyle = "#0f0f0f"; g.fillRect(-18, -14, 14, 4);
-  g.fillStyle = "#2a3350"; g.fillRect(-4, -32, 12, 18);
-  g.fillStyle = stats.paint; g.beginPath(); g.arc(2, -36, 7, 0, Math.PI * 2); g.fill();
-  g.fillStyle = "#aafaff"; g.fillRect(2, -38, 6, 4);
-  g.strokeStyle = "#2a3350"; g.lineWidth = 4;
-  g.beginPath(); g.moveTo(2, -22); g.lineTo(24, -18); g.stroke();
-  g.beginPath(); g.moveTo(0, -16); g.lineTo(-10, -4); g.stroke();
+  paintBike(g, { paint: stats.paint, wheelAngle: 0, lean: { x: 0, y: 0 }, squash: 0, boosting: false });
 }
 
 function updateGarageStatBars() {
@@ -1567,11 +1871,16 @@ function loop(now) {
   // Pause toggle
   if (justPressed.has("Escape")) {
     justPressed.delete("Escape");
-    if (state === STATE.PLAY) { state = STATE.PAUSE; showOnly("pause"); }
-    else if (state === STATE.PAUSE) { state = STATE.PLAY; showOnly("hud"); }
+    if (state === STATE.PLAY) { state = STATE.PAUSE; showOnly("pause"); Sound.stopEngine(); }
+    else if (state === STATE.PAUSE) { state = STATE.PLAY; showOnly("hud"); Sound.startEngine(); }
     else if (state === STATE.LEVELS || state === STATE.GARAGE || state === STATE.QUESTS || state === STATE.HOW || state === STATE.RESULT) {
-      runtime = null; state = STATE.MENU; showOnly("menu");
+      runtime = null; state = STATE.MENU; showOnly("menu"); Sound.stopEngine();
     }
+  }
+  if (justPressed.has("KeyM")) {
+    justPressed.delete("KeyM");
+    const m = Sound.toggleMute();
+    pushToast(m ? "Muted" : "Sound on", m ? "red" : "green", 700);
   }
   if (justPressed.has("KeyR") && state === STATE.PLAY && runtime) {
     justPressed.delete("KeyR");
@@ -1581,6 +1890,10 @@ function loop(now) {
   if (state === STATE.PLAY && runtime) {
     runtime.time += dt;
     updateBike(dt);
+    // engine sound modulated by speed/throttle/boost
+    const inp = input();
+    const speed01 = clamp(Math.abs(runtime.bike.vx) / TOP_SPEED_PX(runtime.stats.topSpeed), 0, 1);
+    Sound.setEngine(speed01, inp.throttle, inp.boost && runtime.bike.boost > 1);
     // particles update
     for (let i = runtime.particles.length - 1; i >= 0; i--) {
       const p = runtime.particles[i];
