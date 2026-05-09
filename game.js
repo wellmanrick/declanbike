@@ -1,7 +1,15 @@
 /* Declan Bike — Excite Trails
  * Single-file dirt bike side-scroller with bike-builder, upgrades, and side quests.
- * No external libraries. Renders to a 1280x720 canvas.
+ * No external libraries.
  */
+
+// Polyfill structuredClone for older iOS / Safari builds. Without this the
+// script throws on the very first load and nothing else runs.
+if (typeof structuredClone === "undefined") {
+  window.structuredClone = function (obj) {
+    return JSON.parse(JSON.stringify(obj));
+  };
+}
 
 //==========================================================
 // SAVE / LOAD
