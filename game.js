@@ -1705,11 +1705,40 @@ function render() {
     return;
   }
 
-  // camera
-  const targetX = r.bike.x - VW * 0.38;
-  const targetY = r.bike.y - VH * 0.60;
+  // Dynamic camera: zoom out for speed and altitude so big jumps and tall
+  // hills stay framed, and lead the bike forward at speed.
+  const b = r.bike;
+  const groundY = terrainHeightAt(r.terrain, b.x);
+  const altitude = Math.max(0, groundY - b.y);
+  const speed01 = Math.min(1, Math.abs(b.vx) / 700);
+  // Required vertical span: bike + ground + margins. The further off the
+  // ground we are, the more zoomed out we need to be to see both.
+  const requiredVH = Math.max(420, altitude + 280);
+  const altZoom = H / requiredVH;
+  const speedZoom = WORLD_ZOOM - speed01 * 0.22;
+  const zoomTarget = clamp(Math.min(altZoom, speedZoom), 1.0, WORLD_ZOOM);
+  if (r.cam.zoom == null) r.cam.zoom = WORLD_ZOOM;
+  r.cam.zoom = lerp(r.cam.zoom, zoomTarget, 0.07);
+  VW = W / r.cam.zoom;
+  VH = H / r.cam.zoom;
+
+  // Camera target. At low speed bike sits ~38% from left; at high speed
+  // it slides toward 20% so we see more of what's coming. When the bike
+  // is high in the air, frame the midpoint of bike + ground so both stay
+  // visible instead of letting one fall off-screen.
+  const lookFrac = 0.38 - speed01 * 0.18;
+  const targetX = b.x - VW * lookFrac;
+  let targetY;
+  if (altitude > 60) {
+    const mid = (b.y + groundY) / 2;
+    targetY = mid - VH * 0.5;
+  } else {
+    targetY = b.y - VH * 0.55;
+  }
+  // Don't dig too far below ground.
+  targetY = Math.min(targetY, GROUND_BASE - VH * 0.30);
   r.cam.x = lerp(r.cam.x, Math.max(0, targetX), 0.14);
-  r.cam.y = lerp(r.cam.y, clamp(targetY, GROUND_BASE - VH * 0.78, GROUND_BASE - VH * 0.35), 0.10);
+  r.cam.y = lerp(r.cam.y, targetY, 0.10);
 
   // screen-shake offsets (decays inside loop)
   const sk = r.shake || (r.shake = { x: 0, y: 0, mag: 0 });
@@ -1721,7 +1750,7 @@ function render() {
 
   // World transform: zoom + camera + screen shake
   ctx.save();
-  ctx.scale(WORLD_ZOOM, WORLD_ZOOM);
+  ctx.scale(r.cam.zoom, r.cam.zoom);
   ctx.translate(-Math.floor(r.cam.x) + sx, -Math.floor(r.cam.y) + sy);
 
   drawTerrain(r.terrain, r.cam.x, theme);
