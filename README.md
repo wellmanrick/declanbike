@@ -22,13 +22,21 @@ After the first successful run, your game lives at
 | `↑` / `W` | Lean forward — in air, front-flip rotation |
 | `↓` / `S` | Lean back — in air, back-flip rotation |
 | `Space` | Boost (drains the boost meter) |
-| `Shift` | Preload — charge a hop at takeoff |
+| `Shift` | **Jump** — tap to launch off the ground (air = stop charging gravity) |
+| `M` | Mute / unmute sound |
 | `R` | Restart current run |
 | `Esc` | Pause / quit to menu |
 
 **Touch / phone controls** (auto-shown on touch devices):
-on-screen ◀ (brake / back-flip), ▶ (throttle), ↻ (front-flip), ⚡ (boost),
-and a `II` pause button in the top-right.
+on-screen ◀ (brake / back-flip), ▶ (throttle), ⤴ (jump), ↻ (front-flip),
+⚡ (boost), `II` pause and `♪` mute buttons in the top-right.
+
+## Audio
+
+All sounds are synthesized live with Web Audio API — no asset files. The engine
+hum modulates with throttle/speed/boost; landings, flips, pickups, and crashes
+each have their own procedural blip. Tap any key/button to enable audio (browser
+gesture requirement). Mute with `M` or the `♪` button.
 
 ## What's in the game
 
