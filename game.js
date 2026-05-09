@@ -925,14 +925,16 @@ const STATE = {
   MENU: "menu",
   LEVELS: "levels",
   GARAGE: "garage",
-  QUESTS: "quests",
+  QUESTS: "quests",       // doubles as mini-games menu now
   HOW: "how",
   PLAY: "play",
   PAUSE: "pause",
   RESULT: "result",
+  MINIGAME: "minigame",
 };
 let state = STATE.MENU;
-let runtime = null; // active run
+let runtime = null;        // active trail run
+let minigameRuntime = null; // active mini-game
 
 function startRun(levelId) {
   const level = LEVELS.find(l => l.id === levelId);
@@ -3043,22 +3045,25 @@ function updateGarageStatBars() {
 }
 
 function buildQuests() {
+  // The "quests" overlay now shows mini-games. Lifetime quest tracking
+  // still runs in the background and pays out automatically.
   const list = document.getElementById("quests-list");
   list.innerHTML = "";
-  for (const q of QUESTS) {
-    const s = save.quests[q.id] || { progress: 0, done: false };
-    const prog = getQuestProgress(q);
-    const done = s.done;
+  for (const id of Object.keys(MINIGAMES)) {
+    const mg = MINIGAMES[id];
+    const best = (save.minigameBest && save.minigameBest[id]) || 0;
     const card = document.createElement("div");
-    card.className = "quest-card" + (done ? " done" : "");
+    card.className = "quest-card minigame-card";
+    card.style.borderLeft = `4px solid ${mg.color}`;
     card.innerHTML = `
       <div>
-        <div class="qc-name">${q.name}</div>
-        <div class="qc-desc">${q.desc}</div>
-        <div class="qc-desc">Progress: ${Math.min(prog, q.target)} / ${q.target}</div>
+        <div class="qc-name">${mg.icon || "🎯"}  ${mg.name}</div>
+        <div class="qc-desc">${mg.desc}</div>
+        <div class="qc-desc">Best: ${best} pts</div>
       </div>
-      <div class="qc-reward">$${q.reward}</div>
+      <div class="qc-reward">Play ▶</div>
     `;
+    card.addEventListener("click", () => startMinigame(id));
     list.appendChild(card);
   }
 }
@@ -3156,6 +3161,576 @@ try {
 } catch {}
 
 //==========================================================
+// MINI-GAMES
+//==========================================================
+// Each mini-game is a small self-contained module that owns its state and
+// renders to the main canvas. They share a flick-style input (drag + release
+// to launch) routed through canvas pointer events.
+
+function startMinigame(id) {
+  const mg = MINIGAMES[id];
+  if (!mg) return;
+  Sound.ensure && Sound.ensure();
+  Sound.startMusic && Sound.startMusic("game");
+  minigameRuntime = mg.init();
+  minigameRuntime.id = id;
+  state = STATE.MINIGAME;
+  // Hide every overlay (and the touch UI). The canvas is the whole screen.
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch"]) {
+    const el = document.getElementById(overlay);
+    if (el) el.classList.add("hidden");
+  }
+}
+
+function endMinigame() {
+  if (!minigameRuntime) return;
+  const mg = MINIGAMES[minigameRuntime.id];
+  if (mg) {
+    const score = minigameRuntime.score || 0;
+    const best = save.minigameBest && save.minigameBest[minigameRuntime.id];
+    const cash = mg.payout ? mg.payout(minigameRuntime) : Math.floor(score / 2);
+    save.cash += cash;
+    save.minigameBest = save.minigameBest || {};
+    if (!best || score > best) save.minigameBest[minigameRuntime.id] = score;
+    persistSave();
+    pushToast(`${mg.name}: ${score} pts • +$${cash}`, "gold", 2200);
+  }
+  minigameRuntime = null;
+  state = STATE.QUESTS;
+  buildQuests();
+  showOnly("quests");
+}
+
+function canvasPointerToWorld(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) * (W / rect.width),
+    y: (clientY - rect.top)  * (H / rect.height),
+  };
+}
+function dispatchMinigamePointer(kind, e) {
+  if (state !== STATE.MINIGAME || !minigameRuntime) return;
+  e.preventDefault && e.preventDefault();
+  // If the round is over, any tap returns to the mini-game menu.
+  if (minigameRuntime.finished) {
+    if (kind === "down" && (!minigameRuntime.finishHoldUntil || performance.now() > minigameRuntime.finishHoldUntil)) {
+      endMinigame();
+    }
+    return;
+  }
+  const p = canvasPointerToWorld(e.clientX, e.clientY);
+  const mg = MINIGAMES[minigameRuntime.id];
+  if (mg && mg.handlePointer) mg.handlePointer(minigameRuntime, kind, p.x, p.y);
+}
+canvas.addEventListener("pointerdown", (e) => dispatchMinigamePointer("down", e));
+canvas.addEventListener("pointermove", (e) => dispatchMinigamePointer("move", e));
+canvas.addEventListener("pointerup",   (e) => dispatchMinigamePointer("up",   e));
+canvas.addEventListener("pointercancel",(e) => dispatchMinigamePointer("up",  e));
+
+//----------------------------------------------------------
+// FIELD GOAL KICK
+//----------------------------------------------------------
+const FieldGoal = {
+  name: "Field Goal Kick",
+  desc: "Flick the football through the uprights. Mind the wind. 5 attempts.",
+  icon: "🏈",
+  color: "#4ddc8c",
+  init() {
+    return {
+      ball: null, posts: null, attempts: 5, kicked: 0, made: 0, score: 0,
+      wind: 0, dragStart: null, dragNow: null,
+      message: "", messageTimer: 0, finished: false,
+    };
+  },
+  payout(g) { return Math.floor(g.score * 1.0); },
+  reset(g) {
+    g.ball = { x: W * 0.18, y: H * 0.78, vx: 0, vy: 0, kicked: false, gone: false, t: 0 };
+    g.posts = { x: W * 0.78, baseY: H * 0.78, gap: 110, height: 220 };
+    g.wind = (Math.random() - 0.5) * 80;
+    g.message = ""; g.messageTimer = 0;
+    g.dragStart = null; g.dragNow = null;
+  },
+  handlePointer(g, kind, x, y) {
+    if (g.finished) return;
+    if (!g.ball) FieldGoal.reset(g);
+    const ball = g.ball;
+    if (ball.kicked) return;
+    if (kind === "down") {
+      g.dragStart = { x, y };
+      g.dragNow = { x, y };
+    } else if (kind === "move" && g.dragStart) {
+      g.dragNow = { x, y };
+    } else if (kind === "up" && g.dragStart) {
+      const dx = (g.dragStart.x - x);
+      const dy = (g.dragStart.y - y);
+      const dist = Math.hypot(dx, dy);
+      if (dist > 30) {
+        const power = Math.min(1, dist / 280);
+        ball.vx = dx * power * 6;
+        ball.vy = dy * power * 6;
+        ball.kicked = true;
+        Sound.boostHit && Sound.boostHit();
+      }
+      g.dragStart = null; g.dragNow = null;
+    }
+  },
+  update(g, dt) {
+    if (!g.ball) FieldGoal.reset(g);
+    const b = g.ball, p = g.posts;
+    if (b.kicked && !b.gone) {
+      b.t += dt;
+      b.vy += 1100 * dt;        // gravity
+      b.vx += g.wind * dt;      // wind drift
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      // Goal detection — when ball crosses post x going right.
+      if (b.x >= p.x && !b.scored) {
+        b.scored = true;
+        const aboveCrossbar = b.y < p.baseY && b.y > p.baseY - p.height;
+        if (aboveCrossbar) {
+          g.made++; g.score += 7;
+          g.message = "GOOD!"; g.messageTimer = 1.4;
+          Sound.perfect && Sound.perfect();
+        } else {
+          g.message = "MISSED!"; g.messageTimer = 1.4;
+          Sound.crash && Sound.crash();
+        }
+      }
+      // Land or off-screen.
+      if (b.y >= H * 0.85 || b.x > W + 60 || b.x < -40) {
+        b.gone = true;
+        if (!b.scored) { g.message = "Short!"; g.messageTimer = 1.4; }
+      }
+    }
+    if ((b.gone || b.scored) && !g.finished) {
+      g.messageTimer -= dt;
+      if (g.messageTimer <= 0) {
+        g.kicked++;
+        if (g.kicked >= g.attempts) g.finished = true;
+        else FieldGoal.reset(g);
+      }
+    }
+  },
+  render(g) {
+    if (!g.ball) FieldGoal.reset(g);
+    // Sky → field gradient
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, "#7fbcff");
+    sky.addColorStop(0.55, "#cfeaff");
+    sky.addColorStop(1, "#3c7c2a");
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+    // Field
+    const fieldY = H * 0.78;
+    ctx.fillStyle = "#3a7a1f";
+    ctx.fillRect(0, fieldY, W, H - fieldY);
+    // Yard lines
+    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+    ctx.lineWidth = 2;
+    for (let x = W * 0.05; x < W; x += W * 0.1) {
+      ctx.beginPath(); ctx.moveTo(x, fieldY); ctx.lineTo(x, H); ctx.stroke();
+    }
+    // Goalposts
+    const p = g.posts;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(p.x - 4, p.baseY - p.height, 8, p.height);             // left upright (yes, single post style)
+    ctx.fillRect(p.x - 4 + p.gap, p.baseY - p.height, 8, p.height);     // right upright
+    ctx.fillRect(p.x - 4, p.baseY, 8 + p.gap + 0, 6);                   // base
+    ctx.fillRect(p.x - 4, p.baseY - p.height + 6, 8 + p.gap + 0, 4);    // crossbar shadow line near top? actually crossbar is at top
+    // The crossbar is a horizontal bar at p.baseY - p.height
+    ctx.fillRect(p.x - 4, p.baseY - p.height, 8 + p.gap + 0, 6);
+    // Wind indicator
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.font = "bold 16px ui-monospace, monospace";
+    const dir = g.wind > 4 ? "→" : g.wind < -4 ? "←" : "·";
+    ctx.fillText(`Wind: ${dir} ${Math.abs(Math.round(g.wind))}`, 16, 26);
+    // Score / attempts
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(`Made: ${g.made} / ${Math.max(g.kicked, 0)}    Score: ${g.score}`, 16, 50);
+    ctx.fillText(`Kicks left: ${Math.max(0, g.attempts - g.kicked)}`, 16, 72);
+
+    // Aim line preview
+    if (g.dragStart && g.dragNow) {
+      const dx = g.dragStart.x - g.dragNow.x;
+      const dy = g.dragStart.y - g.dragNow.y;
+      const len = Math.hypot(dx, dy);
+      const power = Math.min(1, len / 280);
+      ctx.strokeStyle = `rgba(255, 230, 80, ${0.4 + power * 0.5})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(g.ball.x, g.ball.y);
+      ctx.lineTo(g.ball.x + dx * 0.6, g.ball.y + dy * 0.6);
+      ctx.stroke();
+      // Power bar
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      ctx.fillRect(W - 130, 20, 110, 10);
+      ctx.fillStyle = "#ffb020";
+      ctx.fillRect(W - 130, 20, 110 * power, 10);
+    }
+    // Ball
+    const b = g.ball;
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.t * 6);
+    ctx.fillStyle = "#7a3c14";
+    ctx.beginPath(); ctx.ellipse(0, 0, 12, 8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.stroke();
+    for (let i = -3; i <= 3; i++) { ctx.beginPath(); ctx.moveTo(i*1.5, -2); ctx.lineTo(i*1.5, 2); ctx.stroke(); }
+    ctx.restore();
+    // Message
+    if (g.message && g.messageTimer > 0) {
+      ctx.font = "bold 56px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillText(g.message, W/2 + 3, H/2 + 3);
+      ctx.fillStyle = g.message === "GOOD!" ? "#4ddc8c" : "#ff5470";
+      ctx.fillText(g.message, W/2, H/2);
+      ctx.textAlign = "start";
+    }
+    // Hint
+    if (!b.kicked && !g.dragStart) {
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.font = "bold 16px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Drag back from the ball and release to kick", W/2, H * 0.92);
+      ctx.textAlign = "start";
+    }
+    // Finished overlay handled by main loop.
+  },
+};
+
+//----------------------------------------------------------
+// CAN BASH
+//----------------------------------------------------------
+const CanBash = {
+  name: "Can Bash",
+  desc: "Flick a baseball at the stack. Knock 'em all down. 3 throws.",
+  icon: "🥎",
+  color: "#ff5a3a",
+  init() {
+    const cans = [];
+    // Pyramid of cans on a table
+    const baseX = W * 0.78, baseY = H * 0.74;
+    const rows = 4;
+    for (let r = 0; r < rows; r++) {
+      const count = rows - r;
+      const yy = baseY - r * 36;
+      for (let i = 0; i < count; i++) {
+        const xx = baseX - (count - 1) * 18 + i * 36;
+        cans.push({ x: xx, y: yy, vx: 0, vy: 0, angle: 0, angVel: 0, hit: false });
+      }
+    }
+    return {
+      cans, ball: null, throws: 3, thrown: 0, score: 0, knocked: 0,
+      message: "", messageTimer: 0, finished: false,
+      dragStart: null, dragNow: null,
+    };
+  },
+  payout(g) {
+    // 30 cash per can knocked, plus 50 bonus for clearing.
+    const cleared = g.cans.every(c => c.hit);
+    return g.knocked * 30 + (cleared ? 100 : 0);
+  },
+  resetBall(g) {
+    g.ball = { x: W * 0.15, y: H * 0.55, vx: 0, vy: 0, thrown: false, gone: false };
+  },
+  handlePointer(g, kind, x, y) {
+    if (g.finished) return;
+    if (!g.ball) CanBash.resetBall(g);
+    const ball = g.ball;
+    if (ball.thrown) return;
+    if (kind === "down") { g.dragStart = { x, y }; g.dragNow = { x, y }; }
+    else if (kind === "move" && g.dragStart) g.dragNow = { x, y };
+    else if (kind === "up" && g.dragStart) {
+      const dx = g.dragStart.x - x;
+      const dy = g.dragStart.y - y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 25) {
+        const power = Math.min(1, dist / 260);
+        ball.vx = dx * power * 7;
+        ball.vy = dy * power * 7;
+        ball.thrown = true;
+        g.thrown++;
+        Sound.boostHit && Sound.boostHit();
+      }
+      g.dragStart = null; g.dragNow = null;
+    }
+  },
+  update(g, dt) {
+    if (!g.ball) CanBash.resetBall(g);
+    const b = g.ball;
+    if (b.thrown && !b.gone) {
+      b.vy += 1000 * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      // Ball vs cans
+      for (const c of g.cans) {
+        if (c.hit) continue;
+        const dx = b.x - c.x;
+        const dy = b.y - c.y;
+        if (dx*dx + dy*dy < 22*22) {
+          c.hit = true;
+          c.vx = b.vx * 0.4 + (Math.random() - 0.5) * 80;
+          c.vy = -160 - Math.random() * 80;
+          c.angVel = (Math.random() - 0.5) * 8;
+          // Ball loses energy
+          b.vx *= 0.55; b.vy *= 0.55;
+          g.knocked++;
+          g.score += 10;
+          Sound.pickup && Sound.pickup();
+          if (g.shake) g.shake.mag = 6;
+        }
+      }
+      if (b.y > H + 40 || b.x > W + 60 || b.x < -40) b.gone = true;
+    }
+    // Cans physics
+    for (const c of g.cans) {
+      if (!c.hit) continue;
+      c.vy += 1100 * dt;
+      c.x += c.vx * dt;
+      c.y += c.vy * dt;
+      c.angle += c.angVel * dt;
+      if (c.y > H * 0.86) { c.y = H * 0.86; c.vy *= -0.2; c.vx *= 0.6; c.angVel *= 0.8; }
+    }
+    if ((b.gone || (b.thrown && Math.abs(b.vx) < 30 && b.y > H * 0.85)) && !g.finished) {
+      // Settle, then next throw or finish.
+      g.message = "";
+      if (g.thrown >= g.throws || g.cans.every(c => c.hit)) {
+        g.finished = true;
+        if (g.cans.every(c => c.hit)) g.score += 50;  // clear bonus
+      } else {
+        CanBash.resetBall(g);
+      }
+    }
+  },
+  render(g) {
+    if (!g.ball) CanBash.resetBall(g);
+    // Sky + ground
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, "#3a3050"); sky.addColorStop(1, "#5a3340");
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#3a2516";
+    ctx.fillRect(0, H * 0.86, W, H * 0.14);
+    // Table
+    ctx.fillStyle = "#6b3b1d";
+    ctx.fillRect(W * 0.62, H * 0.78, W * 0.32, H * 0.10);
+    ctx.fillStyle = "#3a2010";
+    ctx.fillRect(W * 0.62, H * 0.78, W * 0.32, 4);
+    // Cans
+    for (const c of g.cans) {
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.rotate(c.angle);
+      // Body
+      ctx.fillStyle = "#cccccc";
+      ctx.fillRect(-12, -16, 24, 32);
+      // Label
+      ctx.fillStyle = "#e94c3a";
+      ctx.fillRect(-12, -8, 24, 14);
+      // Shine
+      ctx.fillStyle = "rgba(255,255,255,0.4)";
+      ctx.fillRect(-10, -16, 3, 32);
+      ctx.restore();
+    }
+    // Aim line
+    if (g.dragStart && g.dragNow) {
+      const dx = g.dragStart.x - g.dragNow.x;
+      const dy = g.dragStart.y - g.dragNow.y;
+      const len = Math.hypot(dx, dy);
+      const power = Math.min(1, len / 260);
+      ctx.strokeStyle = `rgba(255, 80, 80, ${0.4 + power * 0.5})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(g.ball.x, g.ball.y);
+      ctx.lineTo(g.ball.x + dx * 0.6, g.ball.y + dy * 0.6);
+      ctx.stroke();
+    }
+    // Ball
+    const b = g.ball;
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#aa0000"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(b.x, b.y, 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // Stitches
+    ctx.beginPath(); ctx.arc(b.x, b.y, 7, -0.4, 0.4); ctx.stroke();
+    ctx.beginPath(); ctx.arc(b.x, b.y, 7, Math.PI - 0.4, Math.PI + 0.4); ctx.stroke();
+
+    // HUD
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(`Knocked: ${g.knocked} / ${g.cans.length}    Score: ${g.score}`, 16, 28);
+    ctx.fillText(`Throws left: ${Math.max(0, g.throws - g.thrown)}`, 16, 52);
+    if (!b.thrown && !g.dragStart) {
+      ctx.font = "bold 16px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Drag back from the ball and release to throw", W/2, H * 0.95);
+      ctx.textAlign = "start";
+    }
+  },
+};
+
+//----------------------------------------------------------
+// DUCK HUNT (tap-to-shoot)
+//----------------------------------------------------------
+const DuckHunt = {
+  name: "Duck Hunt",
+  desc: "Tap the ducks before they fly off. 10 shots.",
+  icon: "🦆",
+  color: "#ffce6e",
+  init() {
+    return {
+      ducks: [], shots: 10, fired: 0, hits: 0, score: 0, time: 0,
+      spawnTimer: 0, finished: false, message: "", messageTimer: 0,
+      muzzle: 0, // briefly flash on shot
+    };
+  },
+  payout(g) { return g.hits * 25; },
+  spawnDuck(g) {
+    const fromLeft = Math.random() < 0.5;
+    const speed = 220 + Math.random() * 180;
+    g.ducks.push({
+      x: fromLeft ? -30 : W + 30,
+      y: H * (0.25 + Math.random() * 0.45),
+      vx: fromLeft ? speed : -speed,
+      vy: -20 - Math.random() * 40,
+      hit: false, alpha: 1, t: 0,
+    });
+  },
+  handlePointer(g, kind, x, y) {
+    if (g.finished) return;
+    if (kind !== "down") return;
+    if (g.fired >= g.shots) return;
+    g.fired++; g.muzzle = 0.12;
+    Sound.boostHit && Sound.boostHit();
+    // Hit-test ducks (closest within 40px wins).
+    let best = null, bestD = 40 * 40;
+    for (const d of g.ducks) {
+      if (d.hit) continue;
+      const dx = d.x - x, dy = d.y - y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < bestD) { bestD = d2; best = d; }
+    }
+    if (best) {
+      best.hit = true; best.vy = 320; best.vx *= 0.3;
+      g.hits++; g.score += 50;
+      Sound.gem && Sound.gem();
+    }
+  },
+  update(g, dt) {
+    g.time += dt;
+    g.muzzle = Math.max(0, g.muzzle - dt);
+    // Spawn
+    g.spawnTimer -= dt;
+    if (g.spawnTimer <= 0 && g.fired < g.shots) {
+      DuckHunt.spawnDuck(g);
+      g.spawnTimer = 0.7 + Math.random() * 0.6;
+    }
+    // Update ducks
+    for (const d of g.ducks) {
+      d.t += dt;
+      d.x += d.vx * dt;
+      if (d.hit) {
+        d.vy += 600 * dt;
+        d.y += d.vy * dt;
+        d.alpha = Math.max(0, d.alpha - dt * 0.5);
+      } else {
+        d.y += d.vy * dt;
+      }
+    }
+    g.ducks = g.ducks.filter(d => d.x > -60 && d.x < W + 60 && d.y < H + 60 && d.alpha > 0);
+    // End when out of shots and ducks have left.
+    if (g.fired >= g.shots && g.ducks.length === 0 && !g.finished) {
+      g.finished = true;
+    }
+  },
+  render(g) {
+    // Sky
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, "#9ad0ff"); sky.addColorStop(0.6, "#cfe7ff"); sky.addColorStop(1, "#7da64a");
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+    // Hills
+    ctx.fillStyle = "#3a7a1f";
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    for (let x = 0; x <= W; x += 40) ctx.lineTo(x, H * 0.78 + Math.sin(x * 0.012) * 16);
+    ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+    // Reeds
+    ctx.fillStyle = "#1a3010";
+    for (let x = 0; x < W; x += 14) ctx.fillRect(x, H * 0.84, 2, 14);
+
+    // Ducks
+    for (const d of g.ducks) {
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.scale(d.vx < 0 ? -1 : 1, 1);
+      ctx.globalAlpha = d.alpha;
+      // Body
+      ctx.fillStyle = d.hit ? "#7a4a14" : "#4a3018";
+      ctx.beginPath(); ctx.ellipse(0, 0, 18, 10, 0, 0, Math.PI * 2); ctx.fill();
+      // Head
+      ctx.fillStyle = "#1a4f2a";
+      ctx.beginPath(); ctx.arc(14, -8, 7, 0, Math.PI * 2); ctx.fill();
+      // Beak
+      ctx.fillStyle = "#ffb020";
+      ctx.fillRect(20, -8, 7, 3);
+      // Wing flap
+      const flap = d.hit ? -0.3 : Math.sin(d.t * 18) * 0.6;
+      ctx.fillStyle = "#2a1a08";
+      ctx.save();
+      ctx.rotate(flap);
+      ctx.beginPath(); ctx.ellipse(0, -6, 14, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      // Eye
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(16, -10, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    // Crosshair where pointer was last (skip — we don't track it)
+    // Muzzle flash
+    if (g.muzzle > 0) {
+      ctx.fillStyle = `rgba(255, 230, 120, ${g.muzzle * 5})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    // HUD
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(`Hits: ${g.hits} / ${g.fired}    Score: ${g.score}`, 16, 28);
+    ctx.fillText(`Shots left: ${Math.max(0, g.shots - g.fired)}`, 16, 52);
+    if (g.fired === 0) {
+      ctx.font = "bold 16px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Tap a duck to shoot it", W/2, H * 0.95);
+      ctx.textAlign = "start";
+    }
+  },
+};
+
+const MINIGAMES = {
+  field_goal: FieldGoal,
+  can_bash: CanBash,
+  duck_hunt: DuckHunt,
+};
+
+function drawMinigameFinishedOverlay(g) {
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#ffb020";
+  ctx.font = "bold 36px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("Game Over", W/2, H * 0.38);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 24px ui-monospace, monospace";
+  ctx.fillText(`Score: ${g.score || 0}`, W/2, H * 0.46);
+  const mg = MINIGAMES[g.id];
+  const cash = mg && mg.payout ? mg.payout(g) : Math.floor((g.score||0) / 2);
+  ctx.fillStyle = "#4ddc8c";
+  ctx.fillText(`+$${cash}`, W/2, H * 0.54);
+  ctx.fillStyle = "#cfd6e3";
+  ctx.font = "bold 16px ui-monospace, monospace";
+  ctx.fillText("Tap to continue", W/2, H * 0.66);
+  ctx.textAlign = "start";
+}
+
+//==========================================================
 // LOOP
 //==========================================================
 let lastT = performance.now();
@@ -3168,6 +3743,11 @@ function loop(now) {
     justPressed.delete("Escape");
     if (state === STATE.PLAY) { state = STATE.PAUSE; showOnly("pause"); Sound.stopEngine(); }
     else if (state === STATE.PAUSE) { state = STATE.PLAY; showOnly("hud"); Sound.startEngine(); }
+    else if (state === STATE.MINIGAME) {
+      // Forfeit current mini-game and return to the menu.
+      minigameRuntime = null;
+      state = STATE.QUESTS; buildQuests(); showOnly("quests");
+    }
     else if (state === STATE.LEVELS || state === STATE.GARAGE || state === STATE.QUESTS || state === STATE.HOW || state === STATE.RESULT) {
       runtime = null; state = STATE.MENU; showOnly("menu"); Sound.stopEngine();
     }
@@ -3180,6 +3760,24 @@ function loop(now) {
   if (justPressed.has("KeyR") && state === STATE.PLAY && runtime) {
     justPressed.delete("KeyR");
     startRun(runtime.level.id);
+  }
+
+  // Mini-game tick + render path takes over the canvas while active.
+  if (state === STATE.MINIGAME && minigameRuntime) {
+    const mg = MINIGAMES[minigameRuntime.id];
+    if (mg) {
+      mg.update(minigameRuntime, dt);
+      mg.render(minigameRuntime);
+      if (minigameRuntime.finished) {
+        if (!minigameRuntime.finishHoldUntil) {
+          minigameRuntime.finishHoldUntil = performance.now() + 600;
+        }
+        drawMinigameFinishedOverlay(minigameRuntime);
+      }
+    }
+    requestAnimationFrame(loop);
+    justPressed.clear();
+    return;
   }
 
   if (state === STATE.PLAY && runtime) {
