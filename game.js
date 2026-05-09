@@ -641,7 +641,7 @@ function setupTouchControls() {
     });
   }
 
-  const buttons = touchEl.querySelectorAll(".tbtn");
+  const buttons = touchEl.querySelectorAll(".tbtn, .tpad");
   for (const btn of buttons) {
     const code = btn.dataset.key;
     if (!code) continue; // skip mute (no data-key)
@@ -1106,10 +1106,13 @@ function updateBike(dt) {
       spawnExhaustParticles(true);
     }
     // rotation control. Heavier frames rotate slower. Tuned so a single jump
-    // gives ~1 full flip with sustained input.
+    // gives ~1 full flip with sustained input. In air, throttle/brake also
+    // double as front/back flip (Bike Race / Mad Skills style).
     const rotForce = 16.0 / stats.weight;
-    if (inp.leanFwd)  b.angVel += rotForce * dt; // nose down -> front flip when moving right
-    if (inp.leanBack) b.angVel -= rotForce * dt; // nose up -> back flip
+    const rotFwd  = inp.leanFwd  || inp.throttle;
+    const rotBack = inp.leanBack || inp.brake;
+    if (rotFwd)  b.angVel += rotForce * dt; // nose down -> front flip when moving right
+    if (rotBack) b.angVel -= rotForce * dt; // nose up -> back flip
     // very mild damping
     b.angVel *= Math.pow(0.998, dt * 60);
     b.angle += b.angVel * dt;
@@ -1117,9 +1120,9 @@ function updateBike(dt) {
 
     // Trick detection: track time spent holding specific input combos in air.
     if (!b.airTrick) b.airTrick = { tuck: 0, superman: 0, noHand: 0 };
-    if (inp.leanFwd && inp.leanBack)              b.airTrick.tuck += dt;
-    else if (inp.boost && !inp.leanFwd && !inp.leanBack) b.airTrick.superman += dt;
-    else if (!inp.leanFwd && !inp.leanBack && !inp.boost && !inp.throttle) b.airTrick.noHand += dt;
+    if (rotFwd && rotBack)                       b.airTrick.tuck += dt;
+    else if (inp.boost && !rotFwd && !rotBack)   b.airTrick.superman += dt;
+    else if (!rotFwd && !rotBack && !inp.boost)  b.airTrick.noHand += dt;
 
     // simple air drag
     b.vx *= Math.pow(FRICTION_AIR, dt * 60);

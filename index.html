@@ -33,25 +33,19 @@
     <div id="quest-tracker" class="quest-tracker"></div>
     <div id="toast-stack" class="toast-stack"></div>
 
-    <!-- Touch controls (shown on touch devices) -->
+    <!-- Touch controls (shown on touch devices) — Mad Skills / Bike Race layout:
+         two big paddle zones at the bottom plus jump + boost utility buttons. -->
     <div id="touch" class="touch hidden">
-      <div class="touch-left">
-        <div class="tcol">
-          <button class="tbtn jump" data-key="ShiftLeft" aria-label="Jump">⤴</button>
-          <button class="tbtn brake" data-key="ArrowLeft" aria-label="Brake / Back flip">◀</button>
-        </div>
-      </div>
-      <div class="touch-right">
-        <div class="tcol">
-          <button class="tbtn boost" data-key="Space" aria-label="Boost">⚡</button>
-          <button class="tbtn flip" data-key="ArrowUp" aria-label="Front flip">↻</button>
-        </div>
-        <div class="tcol">
-          <button class="tbtn throttle" data-key="ArrowRight" aria-label="Throttle">▶</button>
-        </div>
-      </div>
+      <button class="tpad tpad-left"  data-key="ArrowLeft"  aria-label="Brake / lean back / back flip">
+        <span class="tpad-arrow">◀</span><span class="tpad-label">BRAKE</span>
+      </button>
+      <button class="tpad tpad-right" data-key="ArrowRight" aria-label="Throttle / lean forward / front flip">
+        <span class="tpad-label">GAS</span><span class="tpad-arrow">▶</span>
+      </button>
+      <button class="tbtn jump"  data-key="ShiftLeft" aria-label="Jump">⤴</button>
+      <button class="tbtn boost" data-key="Space"    aria-label="Boost">⚡</button>
       <button class="tbtn pause-btn" data-key="Escape" aria-label="Pause">II</button>
-      <button class="tbtn mute-btn" id="mute-btn" aria-label="Mute">♪</button>
+      <button class="tbtn mute-btn"  id="mute-btn"    aria-label="Mute">♪</button>
     </div>
   </div>
 
@@ -122,17 +116,20 @@
   <div id="how" class="overlay hidden">
     <h2>How to Play</h2>
     <div class="how-grid">
-      <div><kbd>←</kbd>/<kbd>A</kbd> Lean back / Brake</div>
-      <div><kbd>→</kbd>/<kbd>D</kbd> Throttle</div>
-      <div><kbd>↑</kbd>/<kbd>W</kbd> Lean forward (in air: nose down / front flip)</div>
-      <div><kbd>↓</kbd>/<kbd>S</kbd> Lean back (in air: back flip)</div>
-      <div><kbd>Space</kbd> Boost (uses boost meter)</div>
-      <div><kbd>Shift</kbd> Preload / hop at takeoff</div>
+      <div><kbd>→</kbd>/<kbd>D</kbd> / GAS paddle — Throttle (in air: front flip)</div>
+      <div><kbd>←</kbd>/<kbd>A</kbd> / BRAKE paddle — Brake (in air: back flip)</div>
+      <div><kbd>↑</kbd>/<kbd>W</kbd> Lean forward (extra rotation in air)</div>
+      <div><kbd>↓</kbd>/<kbd>S</kbd> Lean back (extra rotation in air)</div>
+      <div><kbd>Shift</kbd> / ⤴ — Jump</div>
+      <div><kbd>Space</kbd> / ⚡ — Boost (drains meter)</div>
+      <div><kbd>M</kbd> Mute / unmute</div>
       <div><kbd>R</kbd> Restart run</div>
-      <div><kbd>Esc</kbd> Quit to menu</div>
+      <div><kbd>Esc</kbd> Pause / quit</div>
     </div>
     <p class="hint">
-      Land flips clean to bank cash and combo multipliers. Crash hard and you'll dent your bike — buy upgrades in the Garage.
+      On phone: hold the GAS paddle on the right, brake with the left, tap ⤴ to jump.
+      In the air, the paddles also flip the bike — hold GAS for a front flip, hold BRAKE
+      for a back flip. Land clean for combos and cash.
     </p>
     <button class="back-btn" data-action="back-menu">Back</button>
   </div>
