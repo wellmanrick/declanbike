@@ -1,0 +1,61 @@
+name: Build & Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: JS syntax check
+        run: node --check game.js
+      - name: HTML/CSS sanity (presence + non-empty)
+        run: |
+          test -s index.html
+          test -s style.css
+          test -s game.js
+          # crude check: every <link>/<script> referenced file exists
+          grep -oE 'href="[^"]+"|src="[^"]+"' index.html \
+            | sed -E 's/^(href|src)="//' \
+            | sed -E 's/"$//' \
+            | grep -vE '^https?://|^//|^#|^mailto:' \
+            | while read -r f; do
+                if [ -n "$f" ] && [ ! -e "$f" ]; then
+                  echo "Missing referenced file: $f" >&2
+                  exit 1
+                fi
+              done
+
+  deploy:
+    needs: check
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add .nojekyll
+        run: touch .nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: "."
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0b0d12" />
+<title>Declan Bike — Excite Trails</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+  <canvas id="game" width="1280" height="720"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hud hidden">
+    <div class="hud-row">
+      <div class="hud-pill"><span class="lbl">Speed</span><span id="hud-speed">0</span> mph</div>
+      <div class="hud-pill"><span class="lbl">Boost</span>
+        <div class="bar"><div id="hud-boost" class="bar-fill boost"></div></div>
+      </div>
+      <div class="hud-pill"><span class="lbl">Health</span>
+        <div class="bar"><div id="hud-health" class="bar-fill health"></div></div>
+      </div>
+      <div class="hud-pill"><span class="lbl">Combo</span>x<span id="hud-combo">1</span></div>
+      <div class="hud-pill"><span class="lbl">Score</span><span id="hud-score">0</span></div>
+      <div class="hud-pill"><span class="lbl">Cash</span>$<span id="hud-cash">0</span></div>
+      <div class="hud-pill"><span class="lbl">Time</span><span id="hud-time">0.0</span>s</div>
+      <div class="hud-pill"><span class="lbl">Distance</span><span id="hud-dist">0</span>m</div>
+    </div>
+    <div id="quest-tracker" class="quest-tracker"></div>
+    <div id="toast-stack" class="toast-stack"></div>
+
+    <!-- Touch controls (shown on touch devices) -->
+    <div id="touch" class="touch hidden">
+      <div class="touch-left">
+        <button class="tbtn brake" data-key="ArrowLeft" aria-label="Brake / Back flip">◀</button>
+      </div>
+      <div class="touch-right">
+        <button class="tbtn flip" data-key="ArrowUp" aria-label="Front flip">↻</button>
+        <button class="tbtn boost" data-key="Space" aria-label="Boost">⚡</button>
+        <button class="tbtn throttle" data-key="ArrowRight" aria-label="Throttle">▶</button>
+      </div>
+      <button class="tbtn pause-btn" data-key="Escape" aria-label="Pause">II</button>
+    </div>
+  </div>
+
+  <!-- Main Menu -->
+  <div id="menu" class="overlay">
+    <div class="title">
+      <span class="title-main">DECLAN BIKE</span>
+      <span class="title-sub">EXCITE TRAILS</span>
+    </div>
+    <div class="menu-buttons">
+      <button data-action="play">Ride</button>
+      <button data-action="garage">Garage</button>
+      <button data-action="quests">Side Quests</button>
+      <button data-action="how">How to Play</button>
+      <button data-action="reset">Reset Save</button>
+    </div>
+    <div class="footer">A scrappy little dirt bike scroller. Build it. Send it.</div>
+  </div>
+
+  <!-- Level Select -->
+  <div id="levels" class="overlay hidden">
+    <h2>Pick a Trail</h2>
+    <div id="level-grid" class="level-grid"></div>
+    <button class="back-btn" data-action="back-menu">Back</button>
+  </div>
+
+  <!-- Garage -->
+  <div id="garage" class="overlay hidden">
+    <h2>The Garage</h2>
+    <div class="garage-grid">
+      <div class="garage-preview">
+        <canvas id="garage-canvas" width="520" height="360"></canvas>
+        <div class="stat-block">
+          <div class="stat"><span>Top Speed</span><div class="bar"><div id="g-stat-speed" class="bar-fill"></div></div></div>
+          <div class="stat"><span>Acceleration</span><div class="bar"><div id="g-stat-accel" class="bar-fill"></div></div></div>
+          <div class="stat"><span>Grip</span><div class="bar"><div id="g-stat-grip" class="bar-fill"></div></div></div>
+          <div class="stat"><span>Suspension</span><div class="bar"><div id="g-stat-susp" class="bar-fill"></div></div></div>
+          <div class="stat"><span>Boost</span><div class="bar"><div id="g-stat-boost" class="bar-fill"></div></div></div>
+          <div class="stat"><span>Durability</span><div class="bar"><div id="g-stat-dura" class="bar-fill"></div></div></div>
+        </div>
+      </div>
+      <div class="garage-parts">
+        <div class="parts-tabs">
+          <button class="tab active" data-tab="engine">Engine</button>
+          <button class="tab" data-tab="tire">Tires</button>
+          <button class="tab" data-tab="suspension">Suspension</button>
+          <button class="tab" data-tab="frame">Frame</button>
+          <button class="tab" data-tab="paint">Paint</button>
+        </div>
+        <div id="parts-list" class="parts-list"></div>
+      </div>
+    </div>
+    <div class="garage-footer">
+      <div class="cash-label">Cash: $<span id="garage-cash">0</span></div>
+      <button class="back-btn" data-action="back-menu">Back</button>
+    </div>
+  </div>
+
+  <!-- Quests -->
+  <div id="quests" class="overlay hidden">
+    <h2>Side Quests</h2>
+    <div id="quests-list" class="quests-list"></div>
+    <button class="back-btn" data-action="back-menu">Back</button>
+  </div>
+
+  <!-- How to Play -->
+  <div id="how" class="overlay hidden">
+    <h2>How to Play</h2>
+    <div class="how-grid">
+      <div><kbd>←</kbd>/<kbd>A</kbd> Lean back / Brake</div>
+      <div><kbd>→</kbd>/<kbd>D</kbd> Throttle</div>
+      <div><kbd>↑</kbd>/<kbd>W</kbd> Lean forward (in air: nose down / front flip)</div>
+      <div><kbd>↓</kbd>/<kbd>S</kbd> Lean back (in air: back flip)</div>
+      <div><kbd>Space</kbd> Boost (uses boost meter)</div>
+      <div><kbd>Shift</kbd> Preload / hop at takeoff</div>
+      <div><kbd>R</kbd> Restart run</div>
+      <div><kbd>Esc</kbd> Quit to menu</div>
+    </div>
+    <p class="hint">
+      Land flips clean to bank cash and combo multipliers. Crash hard and you'll dent your bike — buy upgrades in the Garage.
+    </p>
+    <button class="back-btn" data-action="back-menu">Back</button>
+  </div>
+
+  <!-- Run Result -->
+  <div id="result" class="overlay hidden">
+    <h2 id="result-title">Run Complete</h2>
+    <div id="result-body" class="result-body"></div>
+    <div class="result-buttons">
+      <button data-action="retry">Retry</button>
+      <button data-action="garage">Garage</button>
+      <button data-action="back-menu">Menu</button>
+    </div>
+  </div>
+
+  <!-- Pause -->
+  <div id="pause" class="overlay hidden">
+    <h2>Paused</h2>
+    <div class="menu-buttons">
+      <button data-action="resume">Resume</button>
+      <button data-action="retry">Restart Run</button>
+      <button data-action="back-menu">Quit to Menu</button>
+    </div>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
