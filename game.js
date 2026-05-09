@@ -417,6 +417,15 @@ let W = canvas.width;
 let H = canvas.height;
 let DPR = window.devicePixelRatio || 1;
 
+// Viewport / world-zoom constants. Declared up here (not later in the file)
+// because resizeCanvas runs immediately on script load and indirectly reads
+// WORLD_ZOOM via updateViewport — Safari throws a TDZ error if the const
+// hasn't been initialized yet.
+const WORLD_ZOOM = 1.55;
+let VW = (W || 0) / WORLD_ZOOM;
+let VH = (H || 0) / WORLD_ZOOM;
+function updateViewport() { VW = W / WORLD_ZOOM; VH = H / WORLD_ZOOM; }
+
 function resizeCanvas() {
   const cw = window.innerWidth;
   const ch = window.innerHeight;
@@ -429,7 +438,7 @@ function resizeCanvas() {
   // Map drawing coordinates 1:1 with CSS pixels.
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   // Recompute the visible-world dimensions used by the camera + culling.
-  if (typeof updateViewport === "function") updateViewport();
+  updateViewport();
   // App container also tracks the viewport (no fixed letterbox).
   const app = document.getElementById("app");
   if (app) { app.style.width = cw + "px"; app.style.height = ch + "px"; }
@@ -1502,11 +1511,8 @@ function wrapAngle(a) {
   return a;
 }
 
-const WORLD_ZOOM = 1.55;        // global render zoom for the playfield
-let VW = W / WORLD_ZOOM;        // visible world width (recomputed on resize)
-let VH = H / WORLD_ZOOM;        // visible world height
-function updateViewport() { VW = W / WORLD_ZOOM; VH = H / WORLD_ZOOM; }
-updateViewport();
+// (WORLD_ZOOM / VW / VH / updateViewport are declared up near the canvas
+// globals so resizeCanvas can call updateViewport at boot without TDZ.)
 
 function render() {
   const r = runtime;
