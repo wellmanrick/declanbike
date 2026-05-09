@@ -2637,16 +2637,8 @@ function showResult(completed, extra) {
 }
 
 function bindMenuActions() {
-  // Single dispatcher used by all activations.
-  let lastDispatchAt = 0;
-  function dispatch(target) {
-    if (!target) return;
-    const action = target.dataset.action;
-    if (!action) return;
-    // De-dupe pointerup → click pair for the same logical activation.
-    const now = performance.now();
-    if (now - lastDispatchAt < 250) return;
-    lastDispatchAt = now;
+  function doAction(action) {
+    if (typeof Sound !== "undefined" && Sound.ensure) Sound.ensure();
     switch (action) {
       case "play": buildLevelGrid(); state = STATE.LEVELS; showOnly("levels"); break;
       case "garage": buildGarage(); state = STATE.GARAGE; showOnly("garage"); break;
@@ -2666,48 +2658,32 @@ function bindMenuActions() {
         break;
     }
   }
-
-  function handleEvent(e) {
-    // Tolerate Event objects with target / currentTarget either present.
-    const node = (e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.action)
-      ? e.currentTarget
-      : (e.target && e.target.closest ? e.target.closest("[data-action]") : null);
-    if (!node) return;
-    e.preventDefault();
-    e.stopPropagation();
-    Sound.ensure();
-    dispatch(node);
-  }
-
-  // Direct binding: every [data-action] button gets its own handlers.
-  // Safari/iOS body-level delegation has been unreliable, so listen on the
-  // button itself for both pointerup (touch) and click (keyboard / mouse).
   function bindOne(el) {
-    if (el.__menuBound) return;
-    el.__menuBound = true;
-    el.addEventListener("pointerup", handleEvent);
-    el.addEventListener("click", handleEvent);
+    if (el.__bound) return;
+    el.__bound = true;
+    el.addEventListener("click", function () { doAction(el.dataset.action); });
   }
   document.querySelectorAll("[data-action]").forEach(bindOne);
-
-  // Re-scan for any newly-rendered [data-action] buttons (e.g. inside
-  // result / pause overlays after first run).
-  const observer = new MutationObserver((mutations) => {
-    for (const m of mutations) {
+  // Re-bind any newly-added [data-action] elements (result/pause overlays).
+  new MutationObserver((muts) => {
+    for (const m of muts) {
       for (const node of m.addedNodes) {
         if (node.nodeType !== 1) continue;
         if (node.dataset && node.dataset.action) bindOne(node);
         node.querySelectorAll && node.querySelectorAll("[data-action]").forEach(bindOne);
       }
     }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  // Body-level fallback (in case the direct binding ever misses).
-  document.body.addEventListener("pointerup", handleEvent);
-  document.body.addEventListener("click", handleEvent);
+  }).observe(document.body, { childList: true, subtree: true });
 }
 bindMenuActions();
+// Visible heartbeat so we can tell from the page whether JS finished
+// initializing — a tiny marker in the corner of the menu footer.
+try {
+  const f = document.querySelector("#menu .footer");
+  if (f) f.textContent += "  •  v" + (
+    document.querySelector('script[src*="game.js"]')?.src.split("?v=")[1] || "dev"
+  );
+} catch {}
 
 //==========================================================
 // LOOP
