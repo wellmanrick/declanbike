@@ -28,19 +28,24 @@ canvas#game {
 .hidden { display: none !important; }
 
 /* HUD */
-.hud { position: absolute; inset: 0; pointer-events: none; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
-.hud-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.hud { position: absolute; inset: 0; pointer-events: none; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.hud-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .hud-pill {
-  background: rgba(11, 13, 18, 0.65);
+  background: rgba(11, 13, 18, 0.62);
   border: 1px solid rgba(255,255,255,0.08);
-  padding: 6px 10px;
-  border-radius: 10px;
-  font-size: 13px;
-  display: flex; align-items: center; gap: 8px;
-  backdrop-filter: blur(4px);
+  padding: 4px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex; align-items: center; gap: 5px;
+  backdrop-filter: blur(6px);
+  line-height: 1;
 }
-.hud-pill .lbl { color: var(--ink-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-.bar { width: 90px; height: 8px; background: rgba(255,255,255,0.08); border-radius: 999px; overflow: hidden; }
+.hud-pill .ico { font-size: 13px; opacity: 0.85; }
+.hud-pill .ico.boost { color: var(--boost); }
+.hud-pill .unit { color: var(--ink-dim); font-size: 10px; font-weight: 500; }
+.hud-pill.speedometer { font-size: 14px; padding: 4px 10px; }
+.bar { width: 70px; height: 6px; background: rgba(255,255,255,0.08); border-radius: 999px; overflow: hidden; }
 .bar-fill { height: 100%; width: 100%; background: var(--accent); transition: width 100ms linear; }
 .bar-fill.boost { background: linear-gradient(90deg, #6ee7ff, #4cb8ff); }
 .bar-fill.health { background: linear-gradient(90deg, #4ddc8c, #2db86b); }
@@ -86,6 +91,11 @@ canvas#game {
   z-index: 5;
   padding: 30px;
   overflow: auto;
+}
+/* Menu uses a translucent backdrop so the demo bike scrolls behind it. */
+#menu.overlay {
+  background: radial-gradient(ellipse at center, rgba(11,13,18,0.35) 0%, rgba(8,10,16,0.78) 75%);
+  backdrop-filter: blur(2px);
 }
 .overlay h2 {
   margin: 0 0 18px;

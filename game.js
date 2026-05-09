@@ -24,7 +24,7 @@ const DEFAULT_SAVE = {
   },
   quests: {},                     // questId -> { progress, done, claimed }
   unlockedLevels: { trail_01: true },
-  totals: { distance: 0, flips: 0, airtime: 0, crashes: 0, runs: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0 },
+  totals: { distance: 0, flips: 0, airtime: 0, crashes: 0, runs: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, gems: 0, cleanRuns: 0 },
 };
 
 function loadSave() {
@@ -146,21 +146,80 @@ function getEquippedStats() {
 }
 
 //==========================================================
+// THEMES — palette + sky/mountain/ground colors per biome
+//==========================================================
+const THEMES = {
+  day: {
+    name: "Day",
+    sky: [["#7fbcff", 0], ["#cfe7ff", 0.6], ["#fff4d6", 1]],
+    mtnFar:  "#7d8eb0", mtnMid: "#566285", mtnNear: "#3b486a",
+    treeFar: "#4f6b3e", treeNear: "#2c4226",
+    ground: "#6b421e", grassTop: "#a06a3c", grassTuft: "#7da64a",
+    sun: { x: 0.78, y: 0.30, color: "rgba(255, 230, 150, 0.55)", outerColor: "rgba(255, 200, 110, 0.20)", size: 70 },
+    propFog: 0.0, stars: 0,
+  },
+  sunset: {
+    name: "Sunset",
+    sky: [["#1d1535", 0], ["#ff6a3a", 0.55], ["#ffce6e", 0.92], ["#ffe6a3", 1]],
+    mtnFar:  "#5b3a5c", mtnMid: "#3b2244", mtnNear: "#1f1429",
+    treeFar: "#2d1a36", treeNear: "#15081a",
+    ground: "#5a2d18", grassTop: "#9a4f24", grassTuft: "#b96b34",
+    sun: { x: 0.72, y: 0.55, color: "rgba(255, 150, 80, 0.78)", outerColor: "rgba(255, 90, 50, 0.25)", size: 130 },
+    propFog: 0.15, stars: 0,
+  },
+  dusk: {
+    name: "Dusk",
+    sky: [["#0d1226", 0], ["#3a3050", 0.55], ["#5a3340", 1]],
+    mtnFar: "#3c364e", mtnMid: "#2a2444", mtnNear: "#1c1a30",
+    treeFar: "#1a1426", treeNear: "#0e1a18",
+    ground: "#5a3a26", grassTop: "#a06a3c", grassTuft: "#5a4a30",
+    sun: { x: 0.78, y: 0.28, color: "rgba(255, 200, 120, 0.45)", outerColor: "rgba(255, 180, 80, 0.22)", size: 130 },
+    propFog: 0.2, stars: 30,
+  },
+  night: {
+    name: "Night",
+    sky: [["#02050f", 0], ["#0a1430", 0.55], ["#1a2952", 1]],
+    mtnFar: "#13193a", mtnMid: "#0a0f24", mtnNear: "#06091a",
+    treeFar: "#070b18", treeNear: "#03050d",
+    ground: "#3a2618", grassTop: "#5a3818", grassTuft: "#3a4022",
+    sun: { x: 0.20, y: 0.22, color: "rgba(220, 230, 255, 0.85)", outerColor: "rgba(180, 200, 255, 0.20)", size: 60 },
+    propFog: 0.25, stars: 100,
+  },
+  desert: {
+    name: "Desert",
+    sky: [["#fdb24a", 0], ["#fde7a4", 0.6], ["#fff4d6", 1]],
+    mtnFar: "#caa37a", mtnMid: "#a6764a", mtnNear: "#7a4e2c",
+    treeFar: "#7a4e2c", treeNear: "#5a3818",
+    ground: "#c9874c", grassTop: "#e0a266", grassTuft: "#a8632a",
+    sun: { x: 0.82, y: 0.22, color: "rgba(255, 245, 200, 0.85)", outerColor: "rgba(255, 220, 150, 0.40)", size: 90 },
+    propFog: 0.35, stars: 0,
+  },
+};
+
+//==========================================================
 // LEVEL CATALOG
 //==========================================================
 const LEVELS = [
-  { id: "trail_01", name: "Backyard Trail",   length: 2200, seed: 11,  difficulty: 1, hills: 0.6, gaps: 0.2, obstacles: 0.3,
+  { id: "trail_01", name: "Backyard Trail",   length: 2200, seed: 11,  difficulty: 1, hills: 0.6, gaps: 0.2, obstacles: 0.3, theme: "day",
     desc: "An easy warm-up loop. Learn the controls." },
-  { id: "trail_02", name: "Pine Ridge",       length: 2800, seed: 23,  difficulty: 2, hills: 1.0, gaps: 0.5, obstacles: 0.5,
+  { id: "trail_02", name: "Pine Ridge",       length: 2800, seed: 23,  difficulty: 2, hills: 1.0, gaps: 0.5, obstacles: 0.5, theme: "day",
     desc: "Rolling hills with the first real ramps.", unlockAfter: "trail_01" },
-  { id: "trail_03", name: "Quarry Run",       length: 3400, seed: 47,  difficulty: 3, hills: 1.4, gaps: 0.8, obstacles: 0.8,
+  { id: "trail_03", name: "Quarry Run",       length: 3400, seed: 47,  difficulty: 3, hills: 1.4, gaps: 0.8, obstacles: 0.8, theme: "sunset",
     desc: "Big gaps. Bring boost.", unlockAfter: "trail_02" },
-  { id: "trail_04", name: "Dunes",            length: 3000, seed: 71,  difficulty: 3, hills: 2.0, gaps: 0.4, obstacles: 0.4,
+  { id: "trail_04", name: "Dunes",            length: 3000, seed: 71,  difficulty: 3, hills: 2.0, gaps: 0.4, obstacles: 0.4, theme: "desert",
     desc: "Smooth and rolling. Catch air on every crest.", unlockAfter: "trail_02" },
-  { id: "trail_05", name: "Industrial Yard",  length: 3600, seed: 91,  difficulty: 4, hills: 1.0, gaps: 1.0, obstacles: 1.4,
+  { id: "trail_05", name: "Industrial Yard",  length: 3600, seed: 91,  difficulty: 4, hills: 1.0, gaps: 1.0, obstacles: 1.4, theme: "dusk",
     desc: "Tight obstacles, sharp jumps. Reflex test.", unlockAfter: "trail_03" },
-  { id: "trail_06", name: "Mt. Send-It",      length: 4400, seed: 137, difficulty: 5, hills: 2.2, gaps: 1.4, obstacles: 1.0,
-    desc: "Final boss. Don't blink.", unlockAfter: "trail_05" },
+  { id: "trail_06", name: "Coastal Cliffs",   length: 3200, seed: 113, difficulty: 4, hills: 1.6, gaps: 1.0, obstacles: 0.6, theme: "sunset",
+    desc: "Long airtime over coastal gaps. Beautiful and scary.", unlockAfter: "trail_04" },
+  { id: "trail_07", name: "Lunar Loop",       length: 3800, seed: 131, difficulty: 4, hills: 2.4, gaps: 1.2, obstacles: 0.5, theme: "night",
+    desc: "Low gravity feel. Big floaty jumps under starlight.", unlockAfter: "trail_05", lowGravity: true },
+  { id: "trail_08", name: "Canyon Run",       length: 3600, seed: 157, difficulty: 5, hills: 1.8, gaps: 1.6, obstacles: 1.0, theme: "desert",
+    desc: "Long red canyons. Time it right or eat sand.", unlockAfter: "trail_06" },
+  { id: "trail_09", name: "Midnight Mile",    length: 4000, seed: 179, difficulty: 5, hills: 1.0, gaps: 1.8, obstacles: 1.4, theme: "night",
+    desc: "Visibility is rough. Speed is reckless. Send.", unlockAfter: "trail_07" },
+  { id: "trail_10", name: "Mt. Send-It",      length: 4400, seed: 137, difficulty: 5, hills: 2.2, gaps: 1.4, obstacles: 1.0, theme: "dusk",
+    desc: "Final boss. Don't blink.", unlockAfter: "trail_08" },
 ];
 
 function levelUnlocked(lvl) {
@@ -188,6 +247,14 @@ const QUESTS = [
   { id: "q_crashes",    name: "Tough Skin",    desc: "Survive 10 crashes. Painful but fair.", target: 10, metric: "crashes",     reward: 200 },
   { id: "q_complete_3", name: "Trail Boss",    desc: "Complete 3 different trails.",        target: 3,    metric: "uniqueTrails", reward: 600 },
   { id: "q_complete_all", name: "Excite Champion", desc: "Complete every trail.",           target: LEVELS.length, metric: "uniqueTrails", reward: 1500 },
+  { id: "q_speed_1",    name: "Need for Speed", desc: "Hit 80 mph in a single run.",         target: 80,   metric: "topSpeed",    reward: 300 },
+  { id: "q_speed_2",    name: "Ludicrous Speed", desc: "Hit 110 mph in a single run.",       target: 110,  metric: "topSpeed",    reward: 700 },
+  { id: "q_gem",        name: "Gem Collector",  desc: "Collect 20 gems total.",              target: 20,   metric: "gemsTotal",   reward: 400 },
+  { id: "q_air_2",      name: "Skydiver",       desc: "Rack up 5 minutes of air time total.", target: 300,  metric: "airtime",     reward: 700 },
+  { id: "q_air_single", name: "Hang Time",      desc: "Get 5s of airtime on one jump.",      target: 5,    metric: "longestAir",  reward: 350 },
+  { id: "q_no_crash",   name: "Clean Run",      desc: "Finish any trail without crashing.",  target: 1,    metric: "cleanRuns",   reward: 500 },
+  { id: "q_perfect_3",  name: "Stick Three",    desc: "Three perfect landings in one run.",  target: 3,    metric: "runPerfects", reward: 400 },
+  { id: "q_runs",       name: "Frequent Flyer", desc: "Finish 25 runs.",                     target: 25,   metric: "runs",        reward: 500 },
 ];
 
 function getQuestProgress(q) {
@@ -200,18 +267,28 @@ function getQuestProgress(q) {
     case "perfectLandings": return t.perfectLandings;
     case "jumps": return t.jumps;
     case "crashes": return t.crashes;
+    case "runs": return t.runs || 0;
     case "completions": return Object.values(save.best).filter(b => b.completed).length;
     case "uniqueTrails": return Object.values(save.best).filter(b => b.completed).length;
-    case "maxCombo": return save.quests[q.id]?.progress || 0;
+    case "gemsTotal": return t.gems || 0;
+    case "cleanRuns": return t.cleanRuns || 0;
+    // Per-run "best" metrics: stored in quest progress, updated on run end.
+    case "maxCombo":
+    case "topSpeed":
+    case "longestAir":
+    case "runPerfects":
+      return save.quests[q.id]?.progress || 0;
     default: return 0;
   }
 }
 
 function refreshQuestStates(runStats = null) {
+  const perRunMetrics = ["maxCombo", "topSpeed", "longestAir", "runPerfects"];
   for (const q of QUESTS) {
     const state = save.quests[q.id] || (save.quests[q.id] = { progress: 0, done: false, claimed: false });
-    if (q.metric === "maxCombo" && runStats) {
-      if (runStats.maxCombo > state.progress) state.progress = runStats.maxCombo;
+    if (perRunMetrics.includes(q.metric) && runStats) {
+      const v = runStats[q.metric];
+      if (typeof v === "number" && v > state.progress) state.progress = v;
     }
     const prog = getQuestProgress(q);
     if (!state.done && prog >= q.target) {
@@ -575,7 +652,36 @@ function buildTerrain(level) {
     checkpoints.push({ x: cx, y: heights[i] });
   }
 
-  return { heights, obstacles, collectibles, ramps, checkpoints };
+  // Theme-aware decorative props on the surface (background flavor only).
+  const props = [];
+  const theme = level.theme || "dusk";
+  const propStep = 110 + rand() * 40;
+  const signPhrases = ["SEND IT", "CAUTION", "SLOW", "RAMP", "GAP", "FAST!", "JUMP!", "200m", "LEFT TURN", "DROP"];
+  for (let cx = 220; cx < level.length - 200; cx += propStep + rand() * 80) {
+    const roll = rand();
+    if (theme === "desert") {
+      if (roll < 0.45) props.push({ x: cx, type: "cactus", h: 16 + rand() * 16 });
+      else if (roll < 0.7) props.push({ x: cx, type: "rock", r: 6 + rand() * 8 });
+      else if (roll < 0.85) props.push({ x: cx, type: "sign", h: 24 + rand() * 8, text: signPhrases[Math.floor(rand() * signPhrases.length)] });
+      else props.push({ x: cx, type: "flag", h: 26 + rand() * 10, color: "#ffce6e" });
+    } else if (theme === "night") {
+      if (roll < 0.5) props.push({ x: cx, type: "tree", h: 22 + rand() * 16, r: 7 + rand() * 5 });
+      else if (roll < 0.8) props.push({ x: cx, type: "rock", r: 5 + rand() * 7 });
+      else props.push({ x: cx, type: "sign", h: 22 + rand() * 6, text: signPhrases[Math.floor(rand() * signPhrases.length)] });
+    } else if (theme === "sunset") {
+      if (roll < 0.45) props.push({ x: cx, type: "tree", h: 20 + rand() * 18, r: 7 + rand() * 5 });
+      else if (roll < 0.7) props.push({ x: cx, type: "cone", h: 12 + rand() * 4 });
+      else if (roll < 0.85) props.push({ x: cx, type: "flag", h: 24 + rand() * 6, color: "#ff5a3a" });
+      else props.push({ x: cx, type: "rock", r: 5 + rand() * 6 });
+    } else { // day, dusk
+      if (roll < 0.55) props.push({ x: cx, type: "tree", h: 24 + rand() * 18, r: 8 + rand() * 5 });
+      else if (roll < 0.78) props.push({ x: cx, type: "rock", r: 6 + rand() * 7 });
+      else if (roll < 0.92) props.push({ x: cx, type: "sign", h: 22 + rand() * 6, text: signPhrases[Math.floor(rand() * signPhrases.length)] });
+      else props.push({ x: cx, type: "cone", h: 12 + rand() * 4 });
+    }
+  }
+
+  return { heights, obstacles, collectibles, ramps, checkpoints, props };
 }
 
 function terrainHeightAt(terrain, x) {
@@ -648,10 +754,12 @@ function startRun(levelId) {
     distance: 0,
     particles: [],
     floatingTexts: [],
-    runStats: { flips: 0, airtime: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, crashes: 0, maxCombo: 1, collectibles: 0, gems: 0 },
+    runStats: { flips: 0, airtime: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, crashes: 0, maxCombo: 1, collectibles: 0, gems: 0, topSpeed: 0, longestAir: 0, runPerfects: 0 },
     finishLineX: level.length - 60,
     paused: false,
     finishedAt: null,
+    shake: { mag: 0 },
+    gravityScale: level.lowGravity ? 0.55 : 1.0,
   };
   state = STATE.PLAY;
   showOnly("hud");
@@ -801,7 +909,7 @@ function updateBike(dt) {
     b.airtime += dt;
     r.runStats.airtime += dt;
     // gravity
-    b.vy += GRAVITY * dt;
+    b.vy += GRAVITY * (r.gravityScale || 1.0) * dt;
     // boost in air slightly extends jumps
     if (inp.boost && b.boost > 1) {
       const dir = b.vx >= 0 ? 1 : -1;
@@ -830,6 +938,11 @@ function updateBike(dt) {
   b.wheelAngle = (b.wheelAngle + (b.vx / 13) * dt) % (Math.PI * 2);
   // landing squash decays
   if (b.landSquash > 0) b.landSquash = Math.max(0, b.landSquash - dt * 4);
+
+  // Track per-run bests for quest metrics
+  const speedMph = Math.abs(b.vx) / 6;
+  if (speedMph > r.runStats.topSpeed) r.runStats.topSpeed = speedMph;
+  if (!b.onGround && b.airtime > r.runStats.longestAir) r.runStats.longestAir = b.airtime;
 
   // boundary
   if (b.x < 20) { b.x = 20; b.vx = Math.max(0, b.vx); }
@@ -888,6 +1001,7 @@ function handleLanding(slopeAngle) {
       r.runStats.perfectLandings++;
       save.totals.perfectLandings++;
       Sound.perfect();
+      if (r.shake) r.shake.mag = Math.max(r.shake.mag, 5);
     } else {
       bonus += 30;
       Sound.land();
@@ -943,6 +1057,7 @@ function crash(reason) {
   spawnCrashParticles();
   pushToast(reason, "red", 1100);
   Sound.crash();
+  if (r.shake) r.shake.mag = 14;
 }
 
 function finishRun() {
@@ -958,6 +1073,9 @@ function finishRun() {
   save.totals.runs += 1;
   save.totals.airtime += r.runStats.airtime;
   save.totals.jumps += r.runStats.jumps;
+  save.totals.gems = (save.totals.gems || 0) + r.runStats.gems;
+  if (r.runStats.crashes === 0) save.totals.cleanRuns = (save.totals.cleanRuns || 0) + 1;
+  r.runStats.runPerfects = r.runStats.perfectLandings;
 
   const lvl = r.level;
   const prev = save.best[lvl.id] || { score: 0, time: Infinity, distance: 0, completed: false };
@@ -1056,29 +1174,45 @@ function wrapAngle(a) {
   return a;
 }
 
+const WORLD_ZOOM = 1.55;        // global render zoom for the playfield
+const VW = W / WORLD_ZOOM;      // visible world width
+const VH = H / WORLD_ZOOM;      // visible world height
+
 function render() {
   const r = runtime;
   ctx.clearRect(0, 0, W, H);
 
-  // sky
-  drawSky();
+  // Background sky always renders (theme-aware if we have a runtime).
+  const theme = r ? THEMES[r.level.theme] : menuTheme();
+  drawSky(theme);
 
-  if (!r) return;
+  if (!r) {
+    // Menu / non-play states: render an autoscrolling demo background.
+    drawMenuDemo(theme);
+    return;
+  }
 
   // camera
-  const targetX = r.bike.x - W * 0.35;
-  const targetY = r.bike.y - H * 0.55;
-  r.cam.x = lerp(r.cam.x, Math.max(0, targetX), 0.12);
-  r.cam.y = lerp(r.cam.y, clamp(targetY, GROUND_BASE - H * 0.7, GROUND_BASE - H * 0.4), 0.08);
+  const targetX = r.bike.x - VW * 0.38;
+  const targetY = r.bike.y - VH * 0.60;
+  r.cam.x = lerp(r.cam.x, Math.max(0, targetX), 0.14);
+  r.cam.y = lerp(r.cam.y, clamp(targetY, GROUND_BASE - VH * 0.78, GROUND_BASE - VH * 0.35), 0.10);
 
-  // parallax mountains
-  drawMountains(r.cam.x);
-  drawTrees(r.cam.x);
+  // screen-shake offsets (decays inside loop)
+  const sk = r.shake || (r.shake = { x: 0, y: 0, mag: 0 });
+  const sx = (Math.random() - 0.5) * sk.mag;
+  const sy = (Math.random() - 0.5) * sk.mag;
 
+  // parallax background layers (in screen space, theme-aware)
+  drawParallax(theme, r.cam.x, sx, sy);
+
+  // World transform: zoom + camera + screen shake
   ctx.save();
-  ctx.translate(-Math.floor(r.cam.x), -Math.floor(r.cam.y));
+  ctx.scale(WORLD_ZOOM, WORLD_ZOOM);
+  ctx.translate(-Math.floor(r.cam.x) + sx, -Math.floor(r.cam.y) + sy);
 
-  drawTerrain(r.terrain, r.cam.x);
+  drawTerrain(r.terrain, r.cam.x, theme);
+  drawProps(r.terrain, r.cam.x, theme);
   drawCheckpoints(r.terrain, r.cam.x);
   drawObstacles(r.terrain, r.cam.x);
   drawCollectibles(r.terrain, r.cam.x);
@@ -1091,84 +1225,274 @@ function render() {
   drawFloatingTexts();
   ctx.restore();
 
-  // foreground UI overlay (speed lines for boost)
+  // foreground (screen-space) overlays
+  drawForegroundFog(theme);
   if (input().boost && runtime.bike.boost > 1) drawSpeedLines();
+  drawVignette();
 
   updateHUD();
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
-function drawSky() {
-  // gradient already set on canvas via CSS, but draw a sun/cloud feel
+// Cycles through themes every few seconds for the main menu backdrop.
+function menuTheme() {
+  const order = ["day", "sunset", "dusk", "night", "desert"];
+  const idx = Math.floor(performance.now() / 7000) % order.length;
+  return THEMES[order[idx]];
+}
+
+// Synthetic terrain for the autoscrolling demo backdrop on menus.
+const _menuDemo = {
+  scroll: 0,
+  fakeTerrain: (() => {
+    const len = 8000;
+    const heights = new Float32Array(Math.ceil(len / TERRAIN_DX) + 100);
+    for (let i = 0; i < heights.length; i++) {
+      const x = i * TERRAIN_DX;
+      heights[i] = GROUND_BASE - Math.sin(x * 0.005) * 40 - Math.sin(x * 0.013 + 1.1) * 18;
+    }
+    const terrain = { heights, obstacles: [], collectibles: [], ramps: [], checkpoints: [], props: [] };
+    // Sprinkle some props
+    for (let cx = 200; cx < len - 200; cx += 140) {
+      const r = Math.sin(cx) * 0.5 + 0.5;
+      if (r < 0.5) terrain.props.push({ x: cx, type: "tree", h: 26, r: 9 });
+      else if (r < 0.8) terrain.props.push({ x: cx, type: "rock", r: 7 });
+      else terrain.props.push({ x: cx, type: "sign", h: 24, text: "SEND IT" });
+    }
+    return terrain;
+  })(),
+};
+
+function drawMenuDemo(theme) {
+  const t = performance.now() / 1000;
+  _menuDemo.scroll = t * 80;
+  const camX = _menuDemo.scroll;
+  drawParallax(theme, camX, 0, 0);
+  ctx.save();
+  ctx.scale(WORLD_ZOOM, WORLD_ZOOM);
+  ctx.translate(-Math.floor(camX), -Math.floor(GROUND_BASE - VH * 0.55));
+  drawTerrain(_menuDemo.fakeTerrain, camX, theme);
+  drawProps(_menuDemo.fakeTerrain, camX, theme);
+
+  // Demo bike — bouncing along terrain
+  const bx = camX + VW * 0.45;
+  const by = terrainHeightAt(_menuDemo.fakeTerrain, bx);
+  const stats = getEquippedStats();
+  ctx.save();
+  ctx.translate(bx, by);
+  ctx.rotate(Math.sin(t * 1.2) * 0.05);
+  paintBike(ctx, {
+    paint: stats.paint,
+    wheelAngle: t * 7,
+    lean: { x: 1, y: 0 },
+    squash: 0,
+    boosting: false,
+  });
+  ctx.restore();
+
+  ctx.restore();
+  drawForegroundFog(theme);
+  drawVignette();
+}
+
+function drawSky(theme) {
   const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, "#0d1226");
-  g.addColorStop(0.55, "#3a3050");
-  g.addColorStop(1, "#5a3340");
+  for (const [c, stop] of theme.sky) g.addColorStop(stop, c);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
-  // sun
-  ctx.fillStyle = "rgba(255, 180, 80, 0.25)";
+
+  // Stars (night themes)
+  if (theme.stars > 0) {
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    for (let i = 0; i < theme.stars; i++) {
+      // Deterministic star positions per i
+      const sx = ((i * 127) % W);
+      const sy = ((i * 53) % Math.floor(H * 0.55));
+      const r = (i % 5 === 0) ? 1.6 : 1.0;
+      const tw = 0.5 + 0.5 * Math.sin(performance.now() / 600 + i);
+      ctx.globalAlpha = 0.4 + 0.6 * tw;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Sun / moon disc with glow halo
+  const s = theme.sun;
+  const sx = W * s.x, sy = H * s.y;
+  ctx.fillStyle = s.outerColor;
+  ctx.beginPath(); ctx.arc(sx, sy, s.size * 1.8, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = s.color;
+  ctx.beginPath(); ctx.arc(sx, sy, s.size, 0, Math.PI * 2); ctx.fill();
+
+  // Drifting clouds (day/sunset/desert themes)
+  if (theme.name !== "Night") {
+    const t = performance.now() / 1000;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.18)";
+    for (let i = 0; i < 6; i++) {
+      const cx = ((i * 240 + t * (15 + i * 3)) % (W + 200)) - 100;
+      const cy = 60 + (i % 3) * 30;
+      drawCloud(cx, cy, 30 + (i % 3) * 12);
+    }
+  }
+}
+
+function drawCloud(x, y, w) {
   ctx.beginPath();
-  ctx.arc(W * 0.78, H * 0.28, 130, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(255, 220, 140, 0.35)";
-  ctx.beginPath();
-  ctx.arc(W * 0.78, H * 0.28, 80, 0, Math.PI * 2);
+  ctx.arc(x, y, w, 0, Math.PI * 2);
+  ctx.arc(x + w * 0.7, y + 4, w * 0.7, 0, Math.PI * 2);
+  ctx.arc(x - w * 0.7, y + 4, w * 0.65, 0, Math.PI * 2);
   ctx.fill();
 }
 
-function drawMountains(camX) {
-  const par = camX * 0.15;
-  ctx.fillStyle = "#2a2444";
+function drawParallax(theme, camX, sx, sy) {
+  // Layer 1 — far mountains (slowest)
+  const p1 = camX * 0.10 + sx * 0.2;
+  ctx.fillStyle = theme.mtnFar;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let x = 0; x <= W + 200; x += 70) {
+    const wx = x + p1;
+    const y = 320 + Math.sin(wx * 0.0035) * 60 + Math.sin(wx * 0.011 + 1.2) * 26;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+
+  // Layer 2 — mid mountains
+  const p2 = camX * 0.22 + sx * 0.4;
+  ctx.fillStyle = theme.mtnMid;
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (let x = 0; x <= W + 200; x += 60) {
-    const wx = x + par;
-    const y = 380 + Math.sin(wx * 0.005) * 50 + Math.sin(wx * 0.013 + 1.3) * 25;
+    const wx = x + p2;
+    const y = 410 + Math.sin(wx * 0.005) * 48 + Math.sin(wx * 0.013 + 0.6) * 22;
     ctx.lineTo(x, y);
   }
-  ctx.lineTo(W, H);
-  ctx.closePath();
-  ctx.fill();
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
 
-  const par2 = camX * 0.3;
-  ctx.fillStyle = "#1c1a30";
+  // Layer 3 — near hills
+  const p3 = camX * 0.36 + sx * 0.6;
+  ctx.fillStyle = theme.mtnNear;
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (let x = 0; x <= W + 200; x += 50) {
-    const wx = x + par2;
-    const y = 460 + Math.sin(wx * 0.008 + 2.1) * 40 + Math.sin(wx * 0.017) * 18;
+    const wx = x + p3;
+    const y = 490 + Math.sin(wx * 0.008 + 2.1) * 38 + Math.sin(wx * 0.017) * 16;
     ctx.lineTo(x, y);
   }
-  ctx.lineTo(W, H);
-  ctx.closePath();
-  ctx.fill();
-}
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
 
-function drawTrees(camX) {
-  const par = camX * 0.55;
-  ctx.fillStyle = "#0e1a18";
-  for (let x = -par % 40; x < W; x += 40) {
-    const h = 25 + ((x * 13 + Math.floor(par/40) * 7) % 30);
-    const baseY = 540;
+  // Layer 4 — tree silhouette band
+  const p4 = camX * 0.52 + sx * 0.8;
+  ctx.fillStyle = theme.treeFar;
+  for (let x = (-p4 % 50); x < W + 60; x += 50) {
+    const seed = Math.floor((x + p4) / 50);
+    const h = 22 + ((seed * 13) % 28);
+    const baseY = 565 + ((seed * 7) % 8);
     ctx.beginPath();
-    ctx.moveTo(x - 8, baseY);
+    ctx.moveTo(x - 9, baseY);
     ctx.lineTo(x, baseY - h);
-    ctx.lineTo(x + 8, baseY);
+    ctx.lineTo(x + 9, baseY);
     ctx.closePath();
     ctx.fill();
   }
 }
 
-function drawTerrain(terrain, camX) {
+function drawForegroundFog(theme) {
+  if (!theme.propFog) return;
+  const g = ctx.createLinearGradient(0, H * 0.55, 0, H);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(1, `rgba(0,0,0,${theme.propFog})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, H * 0.55, W, H * 0.45);
+}
+
+function drawVignette() {
+  const g = ctx.createRadialGradient(W/2, H/2, Math.min(W,H) * 0.4, W/2, H/2, Math.max(W,H) * 0.7);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(1, "rgba(0,0,0,0.45)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawProps(terrain, camX, theme) {
+  const camLeft = camX - 40;
+  const camRight = camX + VW + 40;
+  for (const p of terrain.props || []) {
+    if (p.x < camLeft || p.x > camRight) continue;
+    const groundY = terrainHeightAt(terrain, p.x);
+    if (p.type === "tree") {
+      // Trunk
+      ctx.fillStyle = "#3b2412";
+      ctx.fillRect(p.x - 2, groundY - p.h, 4, p.h);
+      // Foliage cluster
+      ctx.fillStyle = theme.treeNear;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(p.x + (i - 1) * 6, groundY - p.h - 4 + (i % 2) * 3, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Subtle highlight
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.beginPath(); ctx.arc(p.x - 4, groundY - p.h - 6, p.r * 0.4, 0, Math.PI * 2); ctx.fill();
+    } else if (p.type === "cactus") {
+      ctx.fillStyle = "#2f5e2c";
+      ctx.fillRect(p.x - 3, groundY - p.h, 6, p.h);
+      ctx.fillRect(p.x - 9, groundY - p.h * 0.65, 4, p.h * 0.45);
+      ctx.fillRect(p.x + 5, groundY - p.h * 0.55, 4, p.h * 0.4);
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(p.x - 2, groundY - p.h, 1, p.h);
+    } else if (p.type === "rock") {
+      ctx.fillStyle = "#6a6f78";
+      ctx.beginPath();
+      ctx.ellipse(p.x, groundY - p.r * 0.4, p.r, p.r * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.10)";
+      ctx.beginPath();
+      ctx.ellipse(p.x - p.r * 0.3, groundY - p.r * 0.5, p.r * 0.3, p.r * 0.18, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.type === "sign") {
+      ctx.fillStyle = "#3b2412";
+      ctx.fillRect(p.x - 1.5, groundY - p.h, 3, p.h);
+      ctx.fillStyle = "#d8a13a";
+      ctx.fillRect(p.x - 14, groundY - p.h, 28, 14);
+      ctx.fillStyle = "#1a1a1a";
+      ctx.font = "bold 9px ui-monospace";
+      ctx.fillText(p.text, p.x - 11, groundY - p.h + 10);
+    } else if (p.type === "cone") {
+      ctx.fillStyle = "#ff7a2c";
+      ctx.beginPath();
+      ctx.moveTo(p.x, groundY - p.h);
+      ctx.lineTo(p.x - 6, groundY);
+      ctx.lineTo(p.x + 6, groundY);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(p.x - 5, groundY - p.h * 0.55, 10, 2);
+    } else if (p.type === "flag") {
+      ctx.fillStyle = "#888";
+      ctx.fillRect(p.x - 1, groundY - p.h, 2, p.h);
+      ctx.fillStyle = p.color || "#ffb020";
+      ctx.beginPath();
+      ctx.moveTo(p.x, groundY - p.h);
+      ctx.lineTo(p.x + 14, groundY - p.h + 4);
+      ctx.lineTo(p.x, groundY - p.h + 8);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+}
+
+function drawTerrain(terrain, camX, theme) {
   const startX = Math.max(0, camX - 40);
-  const endX = camX + W + 40;
+  const endX = camX + VW + 40;
   const startI = Math.max(0, Math.floor(startX / TERRAIN_DX));
   const endI = Math.min(terrain.heights.length - 1, Math.ceil(endX / TERRAIN_DX));
 
   // Dirt fill
-  ctx.fillStyle = "#5a3a26";
+  ctx.fillStyle = theme.ground;
   ctx.beginPath();
   ctx.moveTo(startI * TERRAIN_DX, GROUND_BASE + 600);
   for (let i = startI; i <= endI; i++) {
@@ -1179,7 +1503,7 @@ function drawTerrain(terrain, camX) {
   ctx.fill();
 
   // top stripe (grass / dirt edge)
-  ctx.strokeStyle = "#a06a3c";
+  ctx.strokeStyle = theme.grassTop;
   ctx.lineWidth = 4;
   ctx.beginPath();
   for (let i = startI; i <= endI; i++) {
@@ -1190,7 +1514,17 @@ function drawTerrain(terrain, camX) {
   }
   ctx.stroke();
 
-  // Texture lines
+  // Grass tufts on the surface (every ~24px, deterministic)
+  ctx.fillStyle = theme.grassTuft;
+  for (let i = startI; i <= endI; i += 3) {
+    if ((i * 17 + 11) % 4 !== 0) continue;
+    const x = i * TERRAIN_DX;
+    const y = terrain.heights[i];
+    ctx.fillRect(x, y - 3, 1.5, 3);
+    ctx.fillRect(x + 2, y - 2, 1, 2);
+  }
+
+  // Texture diagonal hash
   ctx.strokeStyle = "rgba(0,0,0,0.18)";
   ctx.lineWidth = 1;
   for (let i = startI; i <= endI; i += 3) {
@@ -1201,11 +1535,22 @@ function drawTerrain(terrain, camX) {
     ctx.lineTo(x + 18, y + 30);
     ctx.stroke();
   }
+
+  // Lighter dust layer just above darker subsoil
+  ctx.fillStyle = "rgba(0,0,0,0.15)";
+  ctx.beginPath();
+  ctx.moveTo(startI * TERRAIN_DX, GROUND_BASE + 600);
+  for (let i = startI; i <= endI; i++) {
+    ctx.lineTo(i * TERRAIN_DX, terrain.heights[i] + 60);
+  }
+  ctx.lineTo(endI * TERRAIN_DX, GROUND_BASE + 600);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function drawCheckpoints(terrain, camX) {
   for (const cp of terrain.checkpoints) {
-    if (cp.x < camX - 50 || cp.x > camX + W + 50) continue;
+    if (cp.x < camX - 50 || cp.x > camX + VW + 50) continue;
     ctx.strokeStyle = "rgba(255,255,255,0.25)";
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1220,7 +1565,7 @@ function drawCheckpoints(terrain, camX) {
 function drawObstacles(terrain, camX) {
   for (const o of terrain.obstacles) {
     if (o.hit) continue;
-    if (o.x < camX - 80 || o.x > camX + W + 80) continue;
+    if (o.x < camX - 80 || o.x > camX + VW + 80) continue;
     if (o.type === "rock") {
       ctx.fillStyle = "#777a7e";
       ctx.beginPath();
@@ -1254,7 +1599,7 @@ function drawCollectibles(terrain, camX) {
   const t = performance.now() / 1000;
   for (const c of terrain.collectibles) {
     if (c.taken) continue;
-    if (c.x < camX - 40 || c.x > camX + W + 40) continue;
+    if (c.x < camX - 40 || c.x > camX + VW + 40) continue;
     const bobY = c.y + Math.sin(t * 3 + c.bob) * 4;
     if (c.type === "gem") {
       ctx.fillStyle = "#6ee7ff";
@@ -1667,9 +2012,10 @@ function buildLevelGrid() {
     const unlocked = levelUnlocked(lvl);
     card.className = "level-card" + (unlocked ? "" : " locked");
     const best = save.best[lvl.id];
+    const themeName = THEMES[lvl.theme]?.name || "—";
     card.innerHTML = `
       <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
-      <div class="lc-meta">Difficulty ${"★".repeat(lvl.difficulty)}${"☆".repeat(5 - lvl.difficulty)} • ${lvl.length}m</div>
+      <div class="lc-meta">${themeName} • ${"★".repeat(lvl.difficulty)}${"☆".repeat(5 - lvl.difficulty)} • ${lvl.length}m${lvl.lowGravity ? " • Low-G" : ""}</div>
       <div class="lc-best">${best && best.completed
         ? `Best: ${best.score} pts • ${best.time.toFixed(1)}s`
         : "Not completed"}</div>
@@ -1894,6 +2240,25 @@ function loop(now) {
     const inp = input();
     const speed01 = clamp(Math.abs(runtime.bike.vx) / TOP_SPEED_PX(runtime.stats.topSpeed), 0, 1);
     Sound.setEngine(speed01, inp.throttle, inp.boost && runtime.bike.boost > 1);
+
+    // dust kick from rear wheel when grounded and moving
+    const b = runtime.bike;
+    if (b.onGround && Math.abs(b.vx) > 80 && Math.random() < 0.5) {
+      const groundY = terrainHeightAt(runtime.terrain, b.x);
+      runtime.particles.push({
+        x: b.x - 18 + Math.random() * 6,
+        y: groundY,
+        vx: -b.vx * 0.15 - Math.random() * 30,
+        vy: -30 - Math.random() * 40,
+        life: 0.5, maxLife: 0.5,
+        color: "rgba(180, 150, 100, 0.55)",
+        size: 3 + Math.random() * 3,
+      });
+    }
+
+    // shake decay
+    if (runtime.shake) runtime.shake.mag = Math.max(0, runtime.shake.mag - dt * 28);
+
     // particles update
     for (let i = runtime.particles.length - 1; i >= 0; i--) {
       const p = runtime.particles[i];
