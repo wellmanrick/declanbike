@@ -816,7 +816,7 @@ function updateBike(dt) {
   const wheelGroundR = ryR >= groundR - 1;
   const slopeAngle = terrainSlopeAt(r.terrain, b.x);
   const groundY = terrainHeightAt(r.terrain, b.x);
-  const onGround = (b.y >= groundY - 4);
+  let onGround = (b.y >= groundY - 4);
 
   // Explicit jump action: tap Shift (or on-screen jump button) while grounded.
   const jumpPressed = justPressed.has("ShiftLeft") || justPressed.has("ShiftRight");
@@ -826,6 +826,7 @@ function updateBike(dt) {
     b.airtime = 0;
     b.currentFlipRot = 0;
     b.onGround = false;
+    onGround = false; // skip the on-ground branch this frame so vy survives
     r.runStats.jumps++;
     Sound.jump();
     pushToast("Jump!", "gold", 600);
