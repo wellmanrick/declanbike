@@ -207,6 +207,7 @@ const THEMES = {
     ground: "#6b421e", grassTop: "#a06a3c", grassTuft: "#7da64a",
     sun: { x: 0.78, y: 0.30, color: "rgba(255, 230, 150, 0.55)", outerColor: "rgba(255, 200, 110, 0.20)", size: 70 },
     propFog: 0.0, stars: 0,
+    tint: "rgba(255, 240, 200, 0.06)", rays: 0.18, dark: false,
   },
   sunset: {
     name: "Sunset",
@@ -216,6 +217,7 @@ const THEMES = {
     ground: "#5a2d18", grassTop: "#9a4f24", grassTuft: "#b96b34",
     sun: { x: 0.72, y: 0.55, color: "rgba(255, 150, 80, 0.78)", outerColor: "rgba(255, 90, 50, 0.25)", size: 130 },
     propFog: 0.15, stars: 0,
+    tint: "rgba(255, 130, 70, 0.10)", rays: 0.30, dark: false,
   },
   dusk: {
     name: "Dusk",
@@ -225,6 +227,7 @@ const THEMES = {
     ground: "#5a3a26", grassTop: "#a06a3c", grassTuft: "#5a4a30",
     sun: { x: 0.78, y: 0.28, color: "rgba(255, 200, 120, 0.45)", outerColor: "rgba(255, 180, 80, 0.22)", size: 130 },
     propFog: 0.2, stars: 30,
+    tint: "rgba(140, 110, 200, 0.08)", rays: 0.10, dark: true,
   },
   night: {
     name: "Night",
@@ -234,6 +237,7 @@ const THEMES = {
     ground: "#3a2618", grassTop: "#5a3818", grassTuft: "#3a4022",
     sun: { x: 0.20, y: 0.22, color: "rgba(220, 230, 255, 0.85)", outerColor: "rgba(180, 200, 255, 0.20)", size: 60 },
     propFog: 0.25, stars: 100,
+    tint: "rgba(40, 70, 160, 0.16)", rays: 0.0, dark: true,
   },
   desert: {
     name: "Desert",
@@ -243,6 +247,7 @@ const THEMES = {
     ground: "#c9874c", grassTop: "#e0a266", grassTuft: "#a8632a",
     sun: { x: 0.82, y: 0.22, color: "rgba(255, 245, 200, 0.85)", outerColor: "rgba(255, 220, 150, 0.40)", size: 90 },
     propFog: 0.35, stars: 0,
+    tint: "rgba(255, 200, 110, 0.10)", rays: 0.40, dark: false,
   },
 };
 
@@ -802,10 +807,20 @@ function buildTerrain(level) {
     }
   }
 
-  // obstacles
+  // obstacles — placed with minimum spacing so the player always has a
+  // window to react. Skip spots near ramps (tough landing zones).
   const obsCount = Math.floor(level.length / 300 * level.obstacles);
   for (let n = 0; n < obsCount; n++) {
     const x = 400 + rand() * (level.length - 800);
+    // Reject if too close to another obstacle or a ramp peak.
+    let bad = false;
+    for (const other of obstacles) {
+      if (Math.abs(other.x - x) < 110) { bad = true; break; }
+    }
+    if (!bad) for (const ramp of ramps) {
+      if (Math.abs(ramp.x - x) < 130) { bad = true; break; }
+    }
+    if (bad) continue;
     const i = Math.floor(x / TERRAIN_DX);
     const y = heights[i];
     const r = rand();
@@ -1102,7 +1117,14 @@ function updateBike(dt) {
 
     // throttle
     let thrust = 0;
-    if (inp.throttle) thrust = 950 * stats.accel / stats.weight;
+    // Throttle: ramps up over the first ~0.4s of holding so it feels
+    // mechanical rather than flicking on/off.
+    if (inp.throttle) {
+      b.throttleHold = Math.min(1, (b.throttleHold || 0) + dt * 2.5);
+      thrust = 950 * stats.accel / stats.weight * (0.45 + 0.55 * b.throttleHold);
+    } else {
+      b.throttleHold = Math.max(0, (b.throttleHold || 0) - dt * 5);
+    }
     if (inp.brake) thrust = -700;
     // boost
     const boosting = inp.boost && b.boost > 1 && (inp.throttle || b.vx > 50);
@@ -1234,14 +1256,37 @@ function updateBike(dt) {
   r.comboTimer -= dt;
   if (r.comboTimer <= 0 && r.combo > 1) r.combo = 1;
 
-  // obstacle collision
+  // Obstacle collision. Soft props (cone/tire) just slow you and spark.
+  // Hard props (rock/log) crash you UNLESS you're committed (fast + level
+  // angle), in which case you smash through with a score bonus.
   for (const obs of r.terrain.obstacles) {
     if (obs.hit) continue;
     const dx = b.x - obs.x;
     const dy = b.y - obs.y;
     const d2 = dx*dx + dy*dy;
-    if (d2 < (obs.r + 18) * (obs.r + 18)) {
-      obs.hit = true;
+    if (d2 >= (obs.r + 16) * (obs.r + 16)) continue;
+    obs.hit = true;
+    const speed = Math.abs(b.vx);
+    const slopeNow = terrainSlopeAt(r.terrain, b.x);
+    const angOk = Math.abs(wrapAngle(b.angle - slopeNow)) < 0.6; // ~34°
+    const isSoft = obs.type === "tire";
+    if (isSoft || (speed > 200 && angOk)) {
+      // Smash / plow through — keep going.
+      const reward = isSoft ? 25 : 60;
+      r.score += reward;
+      r.cashEarned += Math.floor(reward * 0.1);
+      b.health = Math.max(0, b.health - (isSoft ? 4 : 12));
+      b.vx *= isSoft ? 0.92 : 0.78;
+      pushFloating(`SMASH +${reward}`, obs.x, obs.y - 30, "#ffb020");
+      Sound.boostHit && Sound.boostHit();
+      if (r.shake) r.shake.mag = Math.max(r.shake.mag, isSoft ? 4 : 8);
+      spawnSmashParticles(obs.x, obs.y, obs.type);
+      // health depletion still ends the run via wipeout.
+      if (b.health <= 0 && !b.finished) {
+        b.finished = true;
+        setTimeout(() => wipeoutRun(), 600);
+      }
+    } else {
       crash(`Hit a ${obs.type}!`);
       return;
     }
@@ -1549,6 +1594,38 @@ function spawnExhaustParticles(isBoost) {
     });
   }
 }
+function spawnSmashParticles(x, y, type) {
+  if (!runtime) return;
+  const r = runtime;
+  const palette = type === "rock"
+    ? ["#9aa3b3", "#666e80", "#3d4150", "#cccccc"]
+    : type === "log"
+    ? ["#925a2c", "#6a3e1f", "#3b2412", "#d8a13a"]
+    : ["#1a1a1a", "#3b3b3b", "#888"];
+  for (let i = 0; i < 18; i++) {
+    r.particles.push({
+      x: x + (Math.random() - 0.5) * 14,
+      y: y + (Math.random() - 0.5) * 14,
+      vx: (Math.random() - 0.4) * 480,
+      vy: -120 - Math.random() * 240,
+      life: 0.6 + Math.random() * 0.4, maxLife: 1.0,
+      color: palette[Math.floor(Math.random() * palette.length)],
+      size: 2 + Math.random() * 4,
+    });
+  }
+  // Add a quick bright flash particle to read as impact.
+  for (let i = 0; i < 6; i++) {
+    r.particles.push({
+      x: x, y: y - 14,
+      vx: (Math.random() - 0.5) * 200,
+      vy: -60 - Math.random() * 80,
+      life: 0.25, maxLife: 0.25,
+      color: "rgba(255, 230, 120, 0.9)",
+      size: 5 + Math.random() * 4,
+    });
+  }
+}
+
 function spawnLandingDust(intensity) {
   if (!runtime) return;
   const r = runtime;
@@ -1668,13 +1745,55 @@ function render() {
   ctx.restore();
 
   // foreground (screen-space) overlays
+  drawSunRays(theme);
   drawForegroundFog(theme);
   if (input().boost && runtime.bike.boost > 1) drawSpeedLines();
+  drawColorGrade(theme);
   drawVignette();
   if (r.countdown > 0) drawCountdown(r.countdown);
   if (r.powerup) drawPowerupBadge(r.powerup);
 
   updateHUD();
+}
+
+function drawColorGrade(theme) {
+  if (!theme.tint) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "soft-light";
+  ctx.fillStyle = theme.tint;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+function drawSunRays(theme) {
+  if (!theme.rays || theme.rays <= 0) return;
+  const s = theme.sun;
+  const sx = W * s.x, sy = H * s.y;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = theme.rays;
+  const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, Math.max(W, H) * 0.9);
+  grad.addColorStop(0,    "rgba(255, 240, 180, 0.55)");
+  grad.addColorStop(0.4,  "rgba(255, 200, 120, 0.20)");
+  grad.addColorStop(1,    "rgba(255, 180, 80, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+  // A few discrete light shafts.
+  ctx.lineCap = "round";
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * 0.6 - 0.3 + Math.sin(performance.now() / 4000 + i) * 0.05;
+    const dx = Math.cos(a), dy = Math.sin(a);
+    const grad2 = ctx.createLinearGradient(sx, sy, sx + dx * 800, sy + dy * 800);
+    grad2.addColorStop(0, "rgba(255, 230, 160, 0.40)");
+    grad2.addColorStop(1, "rgba(255, 230, 160, 0)");
+    ctx.strokeStyle = grad2;
+    ctx.lineWidth = 60;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx + dx * 800, sy + dy * 800);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawCountdown(countdown) {
@@ -2344,6 +2463,28 @@ function paintBike(g, opts) {
   const lean = opts.lean || { x: 0, y: 0 };
   const squash = opts.squash || 0;
   const boosting = !!opts.boosting;
+  const dark = !!opts.dark;       // theme is dark → draw a headlight beam
+  const braking = !!opts.braking; // brake light when slowing down
+
+  // ----- Headlight beam (dark themes only) — drawn first so the bike
+  // covers its base. Cone of light projecting forward.
+  if (dark) {
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    const beamGrad = g.createLinearGradient(28, -10, 200, -10);
+    beamGrad.addColorStop(0,   "rgba(255, 240, 200, 0.55)");
+    beamGrad.addColorStop(0.4, "rgba(255, 230, 160, 0.20)");
+    beamGrad.addColorStop(1,   "rgba(255, 220, 140, 0)");
+    g.fillStyle = beamGrad;
+    g.beginPath();
+    g.moveTo(26, -14);
+    g.lineTo(220, -50);
+    g.lineTo(220, 30);
+    g.lineTo(26, -2);
+    g.closePath();
+    g.fill();
+    g.restore();
+  }
 
   // ----- Wheels ----------------------------------------------------------
   const wheelR = 13;
@@ -2389,13 +2530,14 @@ function paintBike(g, opts) {
   g.beginPath(); g.moveTo(-24, 0); g.lineTo(-6, -6); g.stroke();
   // Lower frame
   g.beginPath(); g.moveTo(-6, -6); g.lineTo(14, -8); g.stroke();
-  // Front fork (with two stanchions)
+  // Front fork (with two stanchions). Compresses on landing impact (squash).
+  const forkLen = 16 - squash * 6;
   g.strokeStyle = "#cfd6e3";
   g.lineWidth = 2.5;
-  g.beginPath(); g.moveTo(24, 0); g.lineTo(20, -16); g.stroke();
+  g.beginPath(); g.moveTo(24, 0); g.lineTo(20, -forkLen); g.stroke();
   g.strokeStyle = "#7d8898";
   g.lineWidth = 2;
-  g.beginPath(); g.moveTo(26, 0); g.lineTo(22, -16); g.stroke();
+  g.beginPath(); g.moveTo(26, 0); g.lineTo(22, -forkLen); g.stroke();
   // Front fender
   g.fillStyle = paint;
   g.beginPath();
@@ -2548,6 +2690,27 @@ function paintBike(g, opts) {
   g.fillStyle = boots;
   g.beginPath(); g.ellipse(-7, -2, 3, 2, 0, 0, Math.PI * 2); g.fill();
 
+  // Brake light (rear) when braking — small red glow.
+  if (braking) {
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    const grad = g.createRadialGradient(-22, -8, 0, -22, -8, 12);
+    grad.addColorStop(0, "rgba(255, 60, 60, 0.85)");
+    grad.addColorStop(1, "rgba(255, 60, 60, 0)");
+    g.fillStyle = grad;
+    g.fillRect(-36, -22, 28, 28);
+    g.restore();
+    g.fillStyle = "#ff3030";
+    g.beginPath(); g.arc(-22, -8, 1.6, 0, Math.PI * 2); g.fill();
+  }
+
+  // Drive chain — a thin link line between sprockets. Subtle but adds detail.
+  g.strokeStyle = "rgba(40, 40, 50, 0.7)";
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(-22, 0); g.lineTo(-3, -2);
+  g.stroke();
+
   // Boost flame from exhaust
   if (boosting) {
     const t = performance.now() / 60;
@@ -2621,6 +2784,7 @@ function drawBike(b, stats) {
     tilt = b.wheelie.dir * Math.min(0.55, b.wheelie.time * 1.6);
   }
   ctx.rotate(b.angle + tilt);
+  const theme = runtime ? THEMES[runtime.level.theme] : null;
   paintBike(ctx, {
     paint: stats.paint,
     accent: stats.charAccent,
@@ -2628,6 +2792,8 @@ function drawBike(b, stats) {
     wheelAngle: b.wheelAngle || 0,
     lean: { x: leanX, y: leanY },
     squash, boosting,
+    dark: !!(theme && theme.dark),
+    braking: !!inp.brake && b.onGround,
   });
   ctx.restore();
 }
@@ -2663,7 +2829,11 @@ function updateHUD() {
   const speedMph = Math.round(r.bike.vx / 6);
   document.getElementById("hud-speed").textContent = Math.max(0, speedMph);
   document.getElementById("hud-boost").style.width = `${(r.bike.boost / r.stats.boostCap) * 100}%`;
-  document.getElementById("hud-health").style.width = `${(r.bike.health / r.stats.durability) * 100}%`;
+  const healthPct = (r.bike.health / r.stats.durability) * 100;
+  const healthEl = document.getElementById("hud-health");
+  healthEl.style.width = `${healthPct}%`;
+  // Pulse low health.
+  healthEl.parentElement.classList.toggle("low", healthPct < 35);
   document.getElementById("hud-combo").textContent = r.combo;
   document.getElementById("hud-score").textContent = r.score;
   document.getElementById("hud-cash").textContent = r.cashEarned;
