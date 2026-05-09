@@ -366,20 +366,31 @@ function refreshQuestStates(runStats = null) {
 //==========================================================
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
-const W = canvas.width;
-const H = canvas.height;
+// W and H reflect the *logical* (CSS-pixel) canvas size and are recomputed
+// on every resize so the game fills the viewport without letterboxing.
+let W = canvas.width;
+let H = canvas.height;
+let DPR = window.devicePixelRatio || 1;
 
-// scale-to-fit handler — letterbox
 function resizeCanvas() {
-  const ratio = W / H;
-  const wRatio = window.innerWidth / window.innerHeight;
-  let cw, ch;
-  if (wRatio > ratio) { ch = window.innerHeight; cw = ch * ratio; }
-  else { cw = window.innerWidth; ch = cw / ratio; }
-  document.getElementById("app").style.width = cw + "px";
-  document.getElementById("app").style.height = ch + "px";
+  const cw = window.innerWidth;
+  const ch = window.innerHeight;
+  DPR = window.devicePixelRatio || 1;
+  W = cw; H = ch;
+  canvas.width  = Math.round(cw * DPR);
+  canvas.height = Math.round(ch * DPR);
+  canvas.style.width  = cw + "px";
+  canvas.style.height = ch + "px";
+  // Map drawing coordinates 1:1 with CSS pixels.
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // Recompute the visible-world dimensions used by the camera + culling.
+  if (typeof updateViewport === "function") updateViewport();
+  // App container also tracks the viewport (no fixed letterbox).
+  const app = document.getElementById("app");
+  if (app) { app.style.width = cw + "px"; app.style.height = ch + "px"; }
 }
 window.addEventListener("resize", resizeCanvas);
+window.addEventListener("orientationchange", resizeCanvas);
 resizeCanvas();
 
 //==========================================================
@@ -1446,8 +1457,10 @@ function wrapAngle(a) {
 }
 
 const WORLD_ZOOM = 1.55;        // global render zoom for the playfield
-const VW = W / WORLD_ZOOM;      // visible world width
-const VH = H / WORLD_ZOOM;      // visible world height
+let VW = W / WORLD_ZOOM;        // visible world width (recomputed on resize)
+let VH = H / WORLD_ZOOM;        // visible world height
+function updateViewport() { VW = W / WORLD_ZOOM; VH = H / WORLD_ZOOM; }
+updateViewport();
 
 function render() {
   const r = runtime;
@@ -1628,13 +1641,20 @@ function drawCloud(x, y, w) {
 
 function drawParallax(theme, camX, sx, sy) {
   // Layer 1 — far mountains (slowest)
+  // Layer baselines are anchored to H so the parallax stays positioned
+  // relative to the screen (and the ground band) at any aspect ratio.
+  const farY  = H * 0.44;
+  const midY  = H * 0.57;
+  const nearY = H * 0.68;
+  const treeY = H * 0.79;
+
   const p1 = camX * 0.10 + sx * 0.2;
   ctx.fillStyle = theme.mtnFar;
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (let x = 0; x <= W + 200; x += 70) {
     const wx = x + p1;
-    const y = 320 + Math.sin(wx * 0.0035) * 60 + Math.sin(wx * 0.011 + 1.2) * 26;
+    const y = farY + Math.sin(wx * 0.0035) * 60 + Math.sin(wx * 0.011 + 1.2) * 26;
     ctx.lineTo(x, y);
   }
   ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
@@ -1646,7 +1666,7 @@ function drawParallax(theme, camX, sx, sy) {
   ctx.moveTo(0, H);
   for (let x = 0; x <= W + 200; x += 60) {
     const wx = x + p2;
-    const y = 410 + Math.sin(wx * 0.005) * 48 + Math.sin(wx * 0.013 + 0.6) * 22;
+    const y = midY + Math.sin(wx * 0.005) * 48 + Math.sin(wx * 0.013 + 0.6) * 22;
     ctx.lineTo(x, y);
   }
   ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
@@ -1658,7 +1678,7 @@ function drawParallax(theme, camX, sx, sy) {
   ctx.moveTo(0, H);
   for (let x = 0; x <= W + 200; x += 50) {
     const wx = x + p3;
-    const y = 490 + Math.sin(wx * 0.008 + 2.1) * 38 + Math.sin(wx * 0.017) * 16;
+    const y = nearY + Math.sin(wx * 0.008 + 2.1) * 38 + Math.sin(wx * 0.017) * 16;
     ctx.lineTo(x, y);
   }
   ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
@@ -1669,7 +1689,7 @@ function drawParallax(theme, camX, sx, sy) {
   for (let x = (-p4 % 50); x < W + 60; x += 50) {
     const seed = Math.floor((x + p4) / 50);
     const h = 22 + ((seed * 13) % 28);
-    const baseY = 565 + ((seed * 7) % 8);
+    const baseY = treeY + ((seed * 7) % 8);
     ctx.beginPath();
     ctx.moveTo(x - 9, baseY);
     ctx.lineTo(x, baseY - h);
