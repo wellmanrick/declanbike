@@ -124,7 +124,11 @@ button {
   cursor: pointer;
   border-radius: 8px;
   transition: transform 80ms ease, background 120ms ease, box-shadow 120ms ease;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: manipulation;
 }
+.overlay button { cursor: pointer; touch-action: manipulation; }
 button:hover { background: linear-gradient(180deg, #344066, #1f2748); transform: translateY(-1px); box-shadow: var(--shadow); }
 button:active { transform: translateY(0); }
 button.primary { background: linear-gradient(180deg, var(--accent), #b87b00); color: #1a1206; border-color: rgba(0,0,0,0.2); font-weight: bold; }
