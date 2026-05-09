@@ -3,12 +3,48 @@
  * No external libraries.
  */
 
+// On-screen diagnostic banner — ALWAYS visible until init succeeds. Lets us
+// see from a phone whether the script is loading and where it crashes.
+(function () {
+  function ensureBanner() {
+    var d = document.getElementById("__diag");
+    if (d) return d;
+    d = document.createElement("div");
+    d.id = "__diag";
+    d.style.cssText = "position:fixed;left:8px;right:8px;top:8px;background:rgba(255,90,58,0.92);color:#1a0606;padding:6px 10px;font:bold 11px ui-monospace,monospace;z-index:99999;white-space:pre-wrap;max-height:36vh;overflow:auto;border-radius:6px;line-height:1.4;";
+    if (document.body) document.body.appendChild(d);
+    else document.addEventListener("DOMContentLoaded", function () { document.body.appendChild(d); });
+    return d;
+  }
+  window.__diag = function (msg) {
+    try {
+      var d = ensureBanner();
+      d.textContent += msg + "\n";
+    } catch (e) { /* swallow */ }
+  };
+  window.__diagClear = function () {
+    var d = document.getElementById("__diag");
+    if (d) d.parentNode.removeChild(d);
+  };
+  window.addEventListener("error", function (e) {
+    window.__diag("[ERROR] " + (e.message || (e.error && e.error.message) || "?") +
+                  " @ " + (e.filename || "?") + ":" + (e.lineno || "?"));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    window.__diag("[REJ] " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+  window.__diag("[boot] script loaded");
+})();
+
 // Polyfill structuredClone for older iOS / Safari builds. Without this the
 // script throws on the very first load and nothing else runs.
 if (typeof structuredClone === "undefined") {
   window.structuredClone = function (obj) {
     return JSON.parse(JSON.stringify(obj));
   };
+  window.__diag && window.__diag("[boot] structuredClone polyfilled");
+} else {
+  window.__diag && window.__diag("[boot] structuredClone native");
 }
 
 //==========================================================
@@ -60,6 +96,7 @@ function persistSave() {
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {}
 }
 let save = loadSave();
+window.__diag && window.__diag("[boot] save loaded, cash=" + (save && save.cash));
 
 //==========================================================
 // PARTS CATALOG
@@ -2685,6 +2722,7 @@ function bindMenuActions() {
   }).observe(document.body, { childList: true, subtree: true });
 }
 bindMenuActions();
+window.__diag && window.__diag("[boot] menu actions bound to " + document.querySelectorAll("[data-action]").length + " buttons");
 // Visible heartbeat so we can tell from the page whether JS finished
 // initializing — a tiny marker in the corner of the menu footer.
 try {
@@ -2793,7 +2831,19 @@ window.addEventListener("blur", () => {
 });
 
 // Boot
+window.__diag && window.__diag("[boot] entering boot block");
 showOnly("menu");
 setupTouchControls();
 refreshQuestStates();
 requestAnimationFrame(loop);
+window.__diag && window.__diag("[boot] init complete ✓");
+// Auto-dismiss the diagnostic banner after a short delay so it doesn't
+// clutter the menu once everything is healthy. Tap the banner to keep it.
+setTimeout(function () {
+  var d = document.getElementById("__diag");
+  if (d && !d.dataset.pin) d.parentNode && d.parentNode.removeChild(d);
+}, 4000);
+document.addEventListener("click", function (e) {
+  var d = document.getElementById("__diag");
+  if (d && d.contains(e.target)) d.dataset.pin = "1";
+});
