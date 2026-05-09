@@ -2637,9 +2637,7 @@ function showResult(completed, extra) {
 }
 
 function bindMenuActions() {
-  // Single dispatcher used by both pointerup (touch + mouse) and click.
-  // pointerup is the more reliable signal on iOS Safari; click is kept
-  // as a fallback for keyboard (Enter / Space activations).
+  // Single dispatcher used by all activations.
   let lastDispatchAt = 0;
   function dispatch(target) {
     if (!target) return;
@@ -2668,17 +2666,46 @@ function bindMenuActions() {
         break;
     }
   }
-  function handle(e) {
-    const t = e.target && e.target.closest && e.target.closest("[data-action]");
-    if (!t) return;
+
+  function handleEvent(e) {
+    // Tolerate Event objects with target / currentTarget either present.
+    const node = (e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.action)
+      ? e.currentTarget
+      : (e.target && e.target.closest ? e.target.closest("[data-action]") : null);
+    if (!node) return;
     e.preventDefault();
+    e.stopPropagation();
     Sound.ensure();
-    dispatch(t);
+    dispatch(node);
   }
-  // pointerup catches taps + mouse releases on every modern browser.
-  document.body.addEventListener("pointerup", handle);
-  // Click as a backup for keyboard + assistive activations.
-  document.body.addEventListener("click", handle);
+
+  // Direct binding: every [data-action] button gets its own handlers.
+  // Safari/iOS body-level delegation has been unreliable, so listen on the
+  // button itself for both pointerup (touch) and click (keyboard / mouse).
+  function bindOne(el) {
+    if (el.__menuBound) return;
+    el.__menuBound = true;
+    el.addEventListener("pointerup", handleEvent);
+    el.addEventListener("click", handleEvent);
+  }
+  document.querySelectorAll("[data-action]").forEach(bindOne);
+
+  // Re-scan for any newly-rendered [data-action] buttons (e.g. inside
+  // result / pause overlays after first run).
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.dataset && node.dataset.action) bindOne(node);
+        node.querySelectorAll && node.querySelectorAll("[data-action]").forEach(bindOne);
+      }
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  // Body-level fallback (in case the direct binding ever misses).
+  document.body.addEventListener("pointerup", handleEvent);
+  document.body.addEventListener("click", handleEvent);
 }
 bindMenuActions();
 
