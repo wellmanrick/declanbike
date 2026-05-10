@@ -2509,6 +2509,54 @@ function fpDrawAimArc(state, originSX, originSY, color) {
 //----------------------------------------------------------
 // FIELD GOAL KICK (first-person flick)
 //----------------------------------------------------------
+// Read the current drag state without consuming it (fpProcessFlick
+// clears dragStart on "up"). Returns the same flick descriptor
+// fpProcessFlick would, or null if the drag hasn't crossed the
+// release threshold yet. Used by render() to preview the kick.
+function fgFlickPreview(state) {
+  if (!state.dragStart || !state.dragNow) return null;
+  const sx = state.dragStart.x, sy = state.dragStart.y;
+  const ex = state.dragNow.x,   ey = state.dragNow.y;
+  const dx = ex - sx, dy = ey - sy;
+  const dist = Math.hypot(dx, dy);
+  if (dy > -25 || dist < 60) return null;
+  const power = Math.min(1, dist / 360);
+  const lateral = Math.max(-1, Math.min(1, dx / Math.max(60, -dy)));
+  const upward = -dy / dist;
+  return { power, lateral, upward };
+}
+
+// Forward-simulate the kick that would result from the current drag
+// and return an array of {sx, sy} screen positions sampled along the
+// trajectory. Mirrors the physics in FieldGoal.update (gravity, wind,
+// Magnus curve) so the preview matches the actual flight.
+function fgPredictTrajectory(g, flick) {
+  const p = g.posts;
+  const distScale = Math.max(0.7, p.z / 25);
+  // Virtual ball mirroring the values FieldGoal.handlePointer would set.
+  let bx = 0, by = 0, bz = 4;
+  let vx = flick.lateral * 5 * flick.power;
+  let vy = 5 + flick.power * 8 * flick.upward;
+  let vz = (12 + flick.power * 14) * distScale * (0.6 + 0.4 * flick.upward);
+  let spin = flick.lateral * flick.power * 4;
+  const out = [];
+  const dt = 0.04;
+  for (let i = 0; i < 50; i++) {
+    vy -= 9.8 * dt;
+    vx += g.wind * 0.6 * dt;
+    vx += spin * vz * 0.025 * dt;
+    spin -= spin * 0.5 * dt;
+    bx += vx * dt;
+    by += vy * dt;
+    bz += vz * dt;
+    if (by < 0) break;
+    if (bz >= p.z + 1) break;
+    const proj = fpProject(bx, by, bz);
+    out.push({ sx: proj.sx, sy: proj.sy });
+  }
+  return out;
+}
+
 const FieldGoal = {
   name: "Field Goal Kick",
   desc: "Flick UP from the ball to kick. Curve with the angle. Mind the wind.",
@@ -2613,7 +2661,11 @@ const FieldGoal = {
     // (the player may not have armed anything yet at this point).
     if (g.powerup) g.powerup.activeEffect = null;
     g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0,
-               kicked: false, scored: false, gone: false, t: 0 };
+               kicked: false, scored: false, gone: false, t: 0,
+               // Integrated visual rotation (radians). Updated per tick
+               // from spin + base tumble, used by render for the ball
+               // sprite rotation.
+               angle: 0 };
     g.message = ""; g.messageTimer = 0;
     g.cameraZ = 0;
     g.kickFx = 0;
@@ -2653,12 +2705,15 @@ const FieldGoal = {
     // Power scales with target distance so a long kick needs more flick.
     const distScale = Math.max(0.7, g.posts.z / 25);
     // Ball follows the *line* of the flick: forward speed from upward
-    // component, lateral speed straight from horizontal component, no
-    // continuous spin. The curve only comes from wind.
+    // component, smaller direct lateral push, and a Magnus-style spin
+    // proportional to lateral × power. The spin curves the ball through
+    // the air in update(); together the initial vx + Magnus curve land
+    // close to where the flick aimed, but the ball traces a banana
+    // path instead of a straight diagonal.
     g.ball.vz = (12 + power * 14) * distScale * (0.6 + 0.4 * upward);
     g.ball.vy = 5 + power * 8 * upward;
-    g.ball.vx = lateral * 9 * power;
-    g.ball.spin = 0;
+    g.ball.vx = lateral * 5 * power;
+    g.ball.spin = lateral * power * 4;
     g.ball.kicked = true;
     g.kickFx = 0.25;
     Sound.boostHit && Sound.boostHit();
@@ -2725,6 +2780,16 @@ const FieldGoal = {
       b.vy -= 9.8 * dt;
       // Wind nudges the ball laterally; tamed so it's a factor not a coin flip.
       b.vx += g.wind * 0.6 * dt;
+      // Magnus curve — spin × forward velocity produces a perpendicular
+      // lateral force. The 0.025 constant is tuned so a max-power off-axis
+      // flick (spin ~4, vz ~20) curves about 2.5m laterally over a 1.5s
+      // flight on top of the reduced direct vx. Spin decays so late
+      // flight curves less than early flight.
+      b.vx += b.spin * b.vz * 0.025 * dt;
+      b.spin -= b.spin * 0.5 * dt;
+      // Visual rotation: base end-over-end tumble plus extra gyration
+      // from active spin. Integrates so slow-mo smoothly slows rotation.
+      b.angle += (7 + Math.abs(b.spin) * 1.5) * dt;
       // Crosswind gust: flip the wind direction once mid-flight. Toast
       // the player so the change is legible.
       if (g.condition === "crosswind" && !g.gusted && b.t >= g.gustAt) {
@@ -3228,7 +3293,45 @@ const FieldGoal = {
     const restSX = W / 2;
     const restSY = H * 0.84;
     const restR  = Math.min(72, Math.max(48, W * 0.10));
-    if (!g.ball.kicked) fpDrawAimArc(g, restSX, restSY);
+    // Aim guide. While the drag has crossed the release threshold the
+    // guide draws the *real* predicted trajectory by forward-simulating
+    // the kick physics; otherwise it falls back to the schematic arc
+    // helper so the player still gets feedback during a soft drag.
+    if (!g.ball.kicked) {
+      const preview = fgFlickPreview(g);
+      if (preview) {
+        const path = fgPredictTrajectory(g, preview);
+        if (path.length >= 2) {
+          // Trail color brightens with power so a strong flick feels louder.
+          const alpha = 0.55 + 0.40 * preview.power;
+          ctx.strokeStyle = `rgba(255, 220, 80, ${alpha})`;
+          ctx.lineWidth = 3;
+          ctx.setLineDash([7, 6]);
+          ctx.beginPath();
+          ctx.moveTo(restSX, restSY);
+          for (const pt of path) ctx.lineTo(pt.sx, pt.sy);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Endpoint reticle so the player can read the projected impact.
+          const last = path[path.length - 1];
+          ctx.strokeStyle = `rgba(255, 220, 80, ${alpha + 0.1})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(last.sx, last.sy, 8, 0, Math.PI * 2);
+          ctx.stroke();
+          // Power bar (top-right). Mirrors fpDrawAimArc's so the read is
+          // consistent across mini-games.
+          ctx.fillStyle = "rgba(0,0,0,0.4)";
+          ctx.fillRect(W - 130, 20, 110, 10);
+          ctx.fillStyle = "#ffb020";
+          ctx.fillRect(W - 130, 20, 110 * preview.power, 10);
+        } else {
+          fpDrawAimArc(g, restSX, restSY);
+        }
+      } else {
+        fpDrawAimArc(g, restSX, restSY);
+      }
+    }
 
     // Razor Wire — translucent red band at the upper edge of the legal
     // clearance window. Anything above this line is "Sailed!" in two_point.
@@ -3278,7 +3381,7 @@ const FieldGoal = {
     }
     ctx.save();
     ctx.translate(bx, by);
-    ctx.rotate(b.kicked ? b.t * 7 : 0);
+    ctx.rotate(b.kicked ? b.angle : 0);
     const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
     grad.addColorStop(0, "#9b5a2c"); grad.addColorStop(1, "#5a2a0e");
     ctx.fillStyle = grad;
