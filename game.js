@@ -3802,6 +3802,37 @@ const CanBash = {
     else        { g.score += 10; }
     Sound.pickup && Sound.pickup();
   },
+  // After any cascade, walk the stack and topple any can that has lost
+  // its supporting can / table. Repeat until nothing falls.
+  resolveSupport(g) {
+    let pass = 0;
+    while (pass++ < 8) {
+      let droppedSomething = false;
+      for (const c of g.cans) {
+        if (c.hit) continue;
+        // Bottom of this can in world coords.
+        const bottomY = c.y - c.h * 0.5;
+        // Supported by the table?
+        if (bottomY <= g.tableTopY + 0.06) continue;
+        // Supported by another standing can directly below?
+        let supported = false;
+        for (const o of g.cans) {
+          if (o === c || o.hit) continue;
+          const oTop = o.y + o.h * 0.5;
+          const dy = bottomY - oTop;            // gap between bottoms
+          const dx = Math.abs(c.x - o.x);
+          if (dy >= -0.05 && dy <= 0.20 && dx < c.w * 0.85) {
+            supported = true; break;
+          }
+        }
+        if (!supported) {
+          CanBash.knock(g, c, (Math.random() - 0.5) * 0.8, -0.4);
+          droppedSomething = true;
+        }
+      }
+      if (!droppedSomething) break;
+    }
+  },
   payout(g) {
     const cleared = g.cans.every(c => c.hit);
     return g.knocked * 30 + (cleared ? 100 : 0);
@@ -3816,12 +3847,23 @@ const CanBash = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    // Ball follows the line of the flick — no continuous spin curve.
-    g.ball.vz = (10 + power * 16) * (0.6 + 0.4 * upward);
-    g.ball.vy = 2 + power * 6 * upward;
-    g.ball.vx = lateral * 7 * power;
+    // Map the flick to a real release vector (speed + loft + horizontal
+    // angle) so different flicks produce visibly different paths instead
+    // of a near-constant arc.
+    const speed = 8 + power * 22;                       // 8 → 30 m/s
+    const loft  = (0.18 + upward * 0.85) * (Math.PI / 2); // ~10° → 95°
+    const yaw   = lateral * (Math.PI / 4);              // ±45°
+    g.ball.vz = speed * Math.cos(loft) * Math.cos(yaw);
+    g.ball.vy = speed * Math.sin(loft);
+    g.ball.vx = speed * Math.cos(loft) * Math.sin(yaw);
+    // Power tax on accuracy: hard flicks wobble. Soft flicks stay precise.
+    const wildness = power * power * 0.45;
+    g.ball.vx += (Math.random() - 0.5) * 4.5 * wildness;
+    g.ball.vy += (Math.random() - 0.5) * 3.0 * wildness;
+    g.ball.vz += (Math.random() - 0.5) * 2.0 * wildness;
     g.ball.spin = 0;
     g.ball.thrown = true;
+    g.ball.trail = [];
     g.thrown++;
     g._knockedAtThrow = g.knocked;
     Sound.boostHit && Sound.boostHit();
@@ -3836,17 +3878,25 @@ const CanBash = {
       b.y += b.vy * dt;
       b.z += b.vz * dt;
       if (b.z >= g.tableZ - 0.5 && !b.didHit) {
+        const impactSpeed = Math.hypot(b.vx, b.vy, b.vz);
+        const KNOCK_THRESHOLD = 9;   // m/s — soft tosses bounce off
         let directHits = [];
         for (const c of g.cans) {
           if (c.hit) continue;
           const dx = b.x - c.x;
           const dy = b.y - c.y;
           if (Math.abs(dx) < c.w * 0.55 + 0.18 && Math.abs(dy) < c.h * 0.6 + 0.18) {
-            CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
-            directHits.push(c);
-            // Ball loses serious energy each hit so a single throw won't
-            // plow through the whole pyramid.
-            b.vx *= 0.35; b.vy *= 0.35; b.vz *= 0.25;
+            if (impactSpeed >= KNOCK_THRESHOLD) {
+              CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
+              directHits.push(c);
+            } else {
+              // Bounce — show a glance message once.
+              if (!g.message) {
+                g.message = "Bounced off!"; g.messageTimer = 1.0;
+                Sound.crash && Sound.crash();
+              }
+            }
+            b.vx *= 0.30; b.vy *= 0.30; b.vz *= 0.20;
           }
         }
         // Cascade — only the can directly above each direct hit topples
@@ -3859,7 +3909,7 @@ const CanBash = {
               if (c.hit) continue;
               const dx = c.x - src.x;
               const dy = c.y - src.y;       // positive dy = c is BELOW src
-              const above = dy < 0;          // negative = above
+              const above = dy < 0;
               if (above && Math.abs(dx) < src.w * 0.8 &&
                   Math.abs(dy) < src.h * 1.3) {
                 CanBash.knock(g, c,
@@ -3872,7 +3922,11 @@ const CanBash = {
           if (newly.length === 0) break;
           directHits = newly;
         }
-        // Per-throw bonus only kicks in for big takedowns now (5+).
+        // After a hit, run gravity-support resolution: any can that has
+        // nothing under it (no other unhit can within reach AND not on
+        // the table) topples. Loop until stable.
+        CanBash.resolveSupport(g);
+        // Per-throw bonus for big takedowns.
         const knockedThisThrow = g.knocked - (g._knockedAtThrow || 0);
         if (knockedThisThrow >= 5) {
           const bonus = Math.min(80, knockedThisThrow * 10);
@@ -4033,6 +4087,20 @@ const CanBash = {
     } else {
       const bp = fpProject(b.x, b.y, b.z);
       bx = bp.sx; by = bp.sy; br = Math.max(5, 18 * bp.scale);
+    }
+    // Trail: render fading ghosts of the ball so the arc reads.
+    if (b.thrown) {
+      b.trail = b.trail || [];
+      b.trail.push({ x: bx, y: by, r: br });
+      if (b.trail.length > 12) b.trail.shift();
+      for (let i = 0; i < b.trail.length - 1; i++) {
+        const tp = b.trail[i];
+        const a = (i + 1) / b.trail.length;
+        ctx.fillStyle = `rgba(255, 255, 255, ${a * 0.45})`;
+        ctx.beginPath();
+        ctx.arc(tp.x, tp.y, tp.r * (0.45 + 0.55 * a), 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.save();
     ctx.translate(bx, by);
