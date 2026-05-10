@@ -3373,10 +3373,13 @@ const FieldGoal = {
     const { power, lateral, upward } = flick;
     // Power scales with target distance so a long kick needs more flick.
     const distScale = Math.max(0.7, g.posts.z / 25);
-    g.ball.vz = (14 + power * 12) * distScale;
-    g.ball.vy = 5 + power * 7 * upward;
-    g.ball.vx = lateral * 4 * power;
-    g.ball.spin = lateral * 1.4;
+    // Ball follows the *line* of the flick: forward speed from upward
+    // component, lateral speed straight from horizontal component, no
+    // continuous spin. The curve only comes from wind.
+    g.ball.vz = (12 + power * 14) * distScale * (0.6 + 0.4 * upward);
+    g.ball.vy = 5 + power * 8 * upward;
+    g.ball.vx = lateral * 9 * power;
+    g.ball.spin = 0;
     g.ball.kicked = true;
     g.kickFx = 0.25;
     Sound.boostHit && Sound.boostHit();
@@ -3388,7 +3391,8 @@ const FieldGoal = {
     if (b.kicked && !b.gone) {
       b.t += dt;
       b.vy -= 9.8 * dt;
-      b.vx += g.wind * dt + b.spin * dt;
+      // Wind nudges the ball laterally; tamed so it's a factor not a coin flip.
+      b.vx += g.wind * 0.6 * dt;
       b.x  += b.vx * dt;
       b.y  += b.vy * dt;
       b.z  += b.vz * dt;
@@ -3609,10 +3613,11 @@ const CanBash = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    g.ball.vz = 12 + power * 14;
-    g.ball.vy = 2 + power * 5 * upward;
-    g.ball.vx = lateral * 3 * power;
-    g.ball.spin = lateral * 0.8;
+    // Ball follows the line of the flick — no continuous spin curve.
+    g.ball.vz = (10 + power * 16) * (0.6 + 0.4 * upward);
+    g.ball.vy = 2 + power * 6 * upward;
+    g.ball.vx = lateral * 7 * power;
+    g.ball.spin = 0;
     g.ball.thrown = true;
     g.thrown++;
     Sound.boostHit && Sound.boostHit();
@@ -3623,7 +3628,6 @@ const CanBash = {
     if (b.thrown && !b.gone) {
       b.t += dt;
       b.vy -= 9.8 * dt;
-      b.vx += b.spin * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.z += b.vz * dt;
