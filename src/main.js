@@ -2081,7 +2081,11 @@ function buildQuests() {
       const lvls = save.fieldGoalLevels || {};
       const totalStars = FG_LEVELS.reduce((s, l) => s + ((lvls[l.id]?.stars) || 0), 0);
       const maxStars = FG_LEVELS.length * 3;
-      summary = `Stars: ${totalStars} / ${maxStars}`;
+      const best = save.fieldGoalBest || {};
+      const tail = (best.longestMake || best.bestStreak)
+        ? ` • Long ${best.longestMake || 0}yd • Streak ${best.bestStreak || 0}`
+        : "";
+      summary = `Stars: ${totalStars} / ${maxStars}${tail}`;
     } else {
       const best = (save.minigameBest && save.minigameBest[id]) || 0;
       summary = `Best: ${best} pts`;
@@ -2113,12 +2117,13 @@ function buildCanBashLevelGrid() {
   const grid = document.getElementById("cb-level-grid");
   grid.innerHTML = "";
   const progress = save.canBashLevels || {};
-  for (const lvl of CAN_LEVELS) {
+  CAN_LEVELS.forEach((lvl, idx) => {
     const unlocked = isCanLevelUnlocked(progress, lvl.id);
     const rec = progress[lvl.id];
     const stars = (rec && rec.stars) || 0;
     const card = document.createElement("div");
     card.className = "level-card" + (unlocked ? "" : " locked");
+    card.style.setProperty("--i", idx);
     const starsHtml =
       `<span class="lc-stars">` +
       `<span${stars >= 1 ? "" : ' class="empty"'}>★</span>` +
@@ -2134,7 +2139,7 @@ function buildCanBashLevelGrid() {
     `;
     if (unlocked) card.addEventListener("click", () => startMinigame("can_bash", lvl.id));
     grid.appendChild(card);
-  }
+  });
 }
 
 function openFieldGoalLevels() {
@@ -2147,12 +2152,26 @@ function buildFieldGoalLevelGrid() {
   const grid = document.getElementById("fg-level-grid");
   grid.innerHTML = "";
   const progress = save.fieldGoalLevels || {};
-  for (const lvl of FG_LEVELS) {
+  // Header row showing the player's lifetime FG records.
+  const best = save.fieldGoalBest || {};
+  const totalStars = FG_LEVELS.reduce((s, l) => s + ((progress[l.id]?.stars) || 0), 0);
+  const maxStars = FG_LEVELS.length * 3;
+  const header = document.createElement("div");
+  header.className = "fg-bests";
+  header.innerHTML = `
+    <span><strong>${totalStars}/${maxStars}</strong> ★</span>
+    <span><strong>${best.longestMake || 0}</strong> yd long</span>
+    <span><strong>${best.bestStreak || 0}</strong> streak</span>
+    <span><strong>${best.totalMakes || 0}</strong> makes</span>
+  `;
+  grid.appendChild(header);
+  FG_LEVELS.forEach((lvl, idx) => {
     const unlocked = isFgLevelUnlocked(progress, lvl.id);
     const rec = progress[lvl.id];
     const stars = (rec && rec.stars) || 0;
     const card = document.createElement("div");
     card.className = "level-card" + (unlocked ? "" : " locked");
+    card.style.setProperty("--i", idx);
     const starsHtml =
       `<span class="lc-stars">` +
       `<span${stars >= 1 ? "" : ' class="empty"'}>★</span>` +
@@ -2169,7 +2188,7 @@ function buildFieldGoalLevelGrid() {
     `;
     if (unlocked) card.addEventListener("click", () => startMinigame("field_goal", lvl.id));
     grid.appendChild(card);
-  }
+  });
 }
 
 function showResult(completed, extra) {
@@ -2363,6 +2382,7 @@ function dispatchMinigamePointer(kind, e) {
       }
       if (rt.id === "field_goal") {
         if (inBtn(rt._btnNextLevel)) {
+          Sound.click && Sound.click();
           const idx = FG_LEVELS.findIndex(l => l.id === rt.level.id);
           const next = (idx >= 0 && idx + 1 < FG_LEVELS.length) ? FG_LEVELS[idx + 1] : null;
           const progress = save.fieldGoalLevels || {};
@@ -2374,10 +2394,12 @@ function dispatchMinigamePointer(kind, e) {
             openFieldGoalLevels();
           }
         } else if (inBtn(rt._btnRetry)) {
+          Sound.click && Sound.click();
           const lvlId = rt.level.id;
           G.minigameRuntime = null;
           startMinigame("field_goal", lvlId);
         } else if (inBtn(rt._btnLevels)) {
+          Sound.click && Sound.click();
           G.minigameRuntime = null;
           openFieldGoalLevels();
         }
@@ -3005,6 +3027,14 @@ const FieldGoal = {
         if (madeIt) {
           g.streak++;
           if (g.streak > g.bestStreak) g.bestStreak = g.streak;
+          // Track longest converted distance globally. Only updated on
+          // a clean make so doinks/triple-decoys don't qualify.
+          const lvlYards = Math.round(g.level.distance * 1.094);
+          save.fieldGoalBest = save.fieldGoalBest ||
+            { longestMake: 0, bestStreak: 0, totalMakes: 0 };
+          if (lvlYards > (save.fieldGoalBest.longestMake || 0)) {
+            save.fieldGoalBest.longestMake = lvlYards;
+          }
           const big = g.message.startsWith("BULLSEYE") ||
                       g.message.indexOf("x2") >= 0;
           Sound.cheer && Sound.cheer(big);
@@ -3045,6 +3075,15 @@ const FieldGoal = {
           const cash = FieldGoal.payout(g);
           save.cash += cash;
           g.cashEarned = cash;
+          // Roll global bests forward — best-streak high-water mark and
+          // lifetime makes counter. longestMake is updated per-make in
+          // the make branch; this is the round-end bookkeeping.
+          save.fieldGoalBest = save.fieldGoalBest ||
+            { longestMake: 0, bestStreak: 0, totalMakes: 0 };
+          if (g.bestStreak > (save.fieldGoalBest.bestStreak || 0)) {
+            save.fieldGoalBest.bestStreak = g.bestStreak;
+          }
+          save.fieldGoalBest.totalMakes = (save.fieldGoalBest.totalMakes || 0) + g.made;
           persistSave();
         } else {
           FieldGoal.reset(g);
@@ -5354,18 +5393,26 @@ function drawMinigameFinishedOverlay(g) {
 // makes/attempts/score line, cash earned, and Next/Retry/Levels buttons.
 // Layout mirrors the Can Bash overlay.
 function drawFieldGoalFinishedOverlay(g) {
-  ctx.fillStyle = "rgba(0,0,0,0.78)";
+  // Backdrop fades in with the held-for timer for a smoother entrance.
+  const heldFor = Math.max(0, performance.now() - (g.finishHoldUntil - 600));
+  const bgAlpha = Math.min(0.78, heldFor / 240 * 0.78);
+  ctx.fillStyle = `rgba(0,0,0,${bgAlpha})`;
   ctx.fillRect(0, 0, W, H);
   const cleared = g.stars > 0;
   ctx.textAlign = "center";
-  ctx.fillStyle = cleared ? "#ffd03a" : "#ff8a3a";
+  // Title slides down + fades in over the first 240ms.
+  const titleA = Math.min(1, heldFor / 240);
+  const titleY = H * 0.20 - (1 - titleA) * 18;
+  ctx.fillStyle = cleared
+    ? `rgba(255, 208, 58, ${titleA})`
+    : `rgba(255, 138, 58, ${titleA})`;
   ctx.font = "bold 34px ui-monospace, monospace";
-  ctx.fillText(cleared ? "Round Done!" : "Out of Kicks", W / 2, H * 0.20);
-  ctx.fillStyle = "#cfd6e3";
+  ctx.fillText(cleared ? "Round Done!" : "Out of Kicks", W / 2, titleY);
+  // Subtitle fades in 100ms after the title.
+  const subA = Math.min(1, Math.max(0, (heldFor - 100) / 240));
+  ctx.fillStyle = `rgba(207, 214, 227, ${subA})`;
   ctx.font = "bold 18px ui-monospace, monospace";
   ctx.fillText(`${g.level.name}`, W / 2, H * 0.25);
-  // Stars — three slots, gold or hollow, popped in left-to-right.
-  const heldFor = Math.max(0, performance.now() - (g.finishHoldUntil - 600));
   const starSize = Math.min(56, W * 0.085);
   const starGap = starSize * 1.7;
   const starY = H * 0.38;
@@ -5392,19 +5439,32 @@ function drawFieldGoalFinishedOverlay(g) {
     ctx.fill(); ctx.stroke();
     ctx.restore();
   }
-  // Stats line + cash earned.
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 18px ui-monospace, monospace";
-  ctx.fillText(
-    `${g.made} / ${g.attempts} made  •  ${g.score} pts`,
-    W / 2, H * 0.53
-  );
-  if (g.cashEarned) {
-    ctx.fillStyle = "#4ddc8c";
-    ctx.font = "bold 22px ui-monospace, monospace";
-    ctx.fillText(`+$${g.cashEarned}`, W / 2, H * 0.59);
+  // Stats line — fades in 1100ms after the held-for clock starts so
+  // it lands after the stars resolve.
+  const statsA = Math.min(1, Math.max(0, (heldFor - 1100) / 220));
+  if (statsA > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${statsA})`;
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(
+      `${g.made} / ${g.attempts} made  •  ${g.score} pts`,
+      W / 2, H * 0.53
+    );
+    if (g.bestStreak >= 2) {
+      ctx.fillStyle = `rgba(255, 220, 80, ${statsA})`;
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.fillText(`Best streak this round: x${g.bestStreak}`, W / 2, H * 0.575);
+    }
   }
-  // Buttons. Layout drops Next when there's no next level.
+  if (g.cashEarned) {
+    const cashA = Math.min(1, Math.max(0, (heldFor - 1300) / 220));
+    if (cashA > 0) {
+      ctx.fillStyle = `rgba(77, 220, 140, ${cashA})`;
+      ctx.font = "bold 22px ui-monospace, monospace";
+      ctx.fillText(`+$${g.cashEarned}`, W / 2, H * 0.62);
+    }
+  }
+  // Buttons. Layout drops Next when there's no next level. Each button
+  // fades in with a stagger so the eye lands on Next first.
   const idx = FG_LEVELS.findIndex(l => l.id === g.level.id);
   const hasNext = cleared && idx >= 0 && idx + 1 < FG_LEVELS.length;
   const labels = hasNext
@@ -5417,12 +5477,22 @@ function drawFieldGoalFinishedOverlay(g) {
   const startX = W / 2 - totalW / 2;
   const cy = H * 0.70;
   labels.forEach(([key, label, fill], i) => {
+    const btnA = Math.min(1, Math.max(0, (heldFor - 1500 - i * 120) / 220));
+    if (btnA <= 0) return;
     const x = startX + i * (bw + gap);
-    const rect = { x, y: cy, w: bw, h: bh };
+    const rect = { x, y: cy + (1 - btnA) * 12, w: bw, h: bh };
     if (key === "next")   g._btnNextLevel = rect;
     if (key === "retry")  g._btnRetry     = rect;
     if (key === "levels") g._btnLevels    = rect;
-    ctx.fillStyle = fill;
+    // Pulse the Next Level button gently to draw the eye.
+    let drawFill = fill;
+    if (key === "next") {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 220);
+      const lift = Math.floor(20 * pulse);
+      drawFill = `rgba(${77 + lift}, 220, ${140 + lift}, ${btnA})`;
+    }
+    ctx.globalAlpha = btnA;
+    ctx.fillStyle = drawFill;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12);
     else ctx.rect(rect.x, rect.y, rect.w, rect.h);
@@ -5430,6 +5500,7 @@ function drawFieldGoalFinishedOverlay(g) {
     ctx.fillStyle = (fill === "#2a3350") ? "#fff" : "#1a1206";
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6);
+    ctx.globalAlpha = 1;
   });
   if (!hasNext) g._btnNextLevel = null;
   ctx.textAlign = "start";

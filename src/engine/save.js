@@ -39,6 +39,11 @@ export const DEFAULT_SAVE = {
                                   // (drives the first-encounter tutorial).
   fieldGoalSeenPowers: {},        // power-up slug -> true once the player has
                                   // collected one (drives the use-it tutorial).
+  fieldGoalBest: {                // Lifetime Field Goal records.
+    longestMake: 0,               //   farthest converted kick in yards
+    bestStreak: 0,                //   longest in-round consecutive-make streak
+    totalMakes: 0,                //   lifetime makes across all rounds
+  },
 };
 
 function _load() {
@@ -60,6 +65,7 @@ function _load() {
       fieldGoalLevels: parsed.fieldGoalLevels || {},
       fieldGoalSeenConditions: parsed.fieldGoalSeenConditions || {},
       fieldGoalSeenPowers: parsed.fieldGoalSeenPowers || {},
+      fieldGoalBest: Object.assign({}, DEFAULT_SAVE.fieldGoalBest, parsed.fieldGoalBest || {}),
     });
   } catch (e) {
     console.warn("Save load failed", e);
