@@ -114,6 +114,31 @@ function perfectSnd(){ blip(1320, 0.10, "triangle", 0.20); blip(1760, 0.18, "tri
 function crashSnd()  { noise(0.45, 0.40, 900); sweep(260, 60, 0.32, "sawtooth", 0.22); }
 function boostHit()  { noise(0.20, 0.18, 3000); sweep(800, 1600, 0.18, "sine", 0.10); }
 function click()     { blip(900, 0.04, "square", 0.10); }
+// Crowd cheer — layered noise base + pitched sweeps emulating a stadium
+// roar. `big` doubles the duration and stacks an extra octave for a
+// bigger "wow" reaction.
+function cheerSnd(big) {
+  const dur = big ? 1.2 : 0.8;
+  noise(dur, big ? 0.30 : 0.22, 1400);
+  sweep(380, 620, dur * 0.85, "sawtooth", big ? 0.07 : 0.05);
+  sweep(440, 720, dur * 0.95, "triangle", big ? 0.06 : 0.04);
+  if (big) {
+    sweep(880, 1320, dur * 0.85, "triangle", 0.05);
+    blip(1320, 0.20, "triangle", 0.07, 0.15);
+  }
+}
+// Crowd groan — descending sweeps + muffled noise. Played on misses.
+function groanSnd() {
+  noise(0.65, 0.20, 700);
+  sweep(420, 220, 0.6, "sawtooth", 0.05);
+  sweep(360, 200, 0.7, "triangle", 0.04);
+}
+// Tiny firework crackle — short noise + chirped blip cluster. Layered
+// per burst when streak fireworks fire.
+function fireworkSnd() {
+  noise(0.18, 0.18, 5000);
+  blip(2200 + Math.random() * 400, 0.10, "triangle", 0.10, 0.05);
+}
 
 // ----- Background music ---------------------------------------------------
 let musicTimer = null;
@@ -208,5 +233,6 @@ export const Sound = {
   ensure, startEngine, setEngine, stopEngine,
   jump, pickup, gem, flip: flipSnd, land: landSnd, perfect: perfectSnd,
   crash: crashSnd, boostHit, click, toggleMute, isMuted,
+  cheer: cheerSnd, groan: groanSnd, firework: fireworkSnd,
   startMusic, stopMusic,
 };

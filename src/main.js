@@ -2081,7 +2081,11 @@ function buildQuests() {
       const lvls = save.fieldGoalLevels || {};
       const totalStars = FG_LEVELS.reduce((s, l) => s + ((lvls[l.id]?.stars) || 0), 0);
       const maxStars = FG_LEVELS.length * 3;
-      summary = `Stars: ${totalStars} / ${maxStars}`;
+      const best = save.fieldGoalBest || {};
+      const tail = (best.longestMake || best.bestStreak)
+        ? ` • Long ${best.longestMake || 0}yd • Streak ${best.bestStreak || 0}`
+        : "";
+      summary = `Stars: ${totalStars} / ${maxStars}${tail}`;
     } else {
       const best = (save.minigameBest && save.minigameBest[id]) || 0;
       summary = `Best: ${best} pts`;
@@ -2113,12 +2117,13 @@ function buildCanBashLevelGrid() {
   const grid = document.getElementById("cb-level-grid");
   grid.innerHTML = "";
   const progress = save.canBashLevels || {};
-  for (const lvl of CAN_LEVELS) {
+  CAN_LEVELS.forEach((lvl, idx) => {
     const unlocked = isCanLevelUnlocked(progress, lvl.id);
     const rec = progress[lvl.id];
     const stars = (rec && rec.stars) || 0;
     const card = document.createElement("div");
     card.className = "level-card" + (unlocked ? "" : " locked");
+    card.style.setProperty("--i", idx);
     const starsHtml =
       `<span class="lc-stars">` +
       `<span${stars >= 1 ? "" : ' class="empty"'}>★</span>` +
@@ -2134,7 +2139,7 @@ function buildCanBashLevelGrid() {
     `;
     if (unlocked) card.addEventListener("click", () => startMinigame("can_bash", lvl.id));
     grid.appendChild(card);
-  }
+  });
 }
 
 function openFieldGoalLevels() {
@@ -2147,12 +2152,26 @@ function buildFieldGoalLevelGrid() {
   const grid = document.getElementById("fg-level-grid");
   grid.innerHTML = "";
   const progress = save.fieldGoalLevels || {};
-  for (const lvl of FG_LEVELS) {
+  // Header row showing the player's lifetime FG records.
+  const best = save.fieldGoalBest || {};
+  const totalStars = FG_LEVELS.reduce((s, l) => s + ((progress[l.id]?.stars) || 0), 0);
+  const maxStars = FG_LEVELS.length * 3;
+  const header = document.createElement("div");
+  header.className = "fg-bests";
+  header.innerHTML = `
+    <span><strong>${totalStars}/${maxStars}</strong> ★</span>
+    <span><strong>${best.longestMake || 0}</strong> yd long</span>
+    <span><strong>${best.bestStreak || 0}</strong> streak</span>
+    <span><strong>${best.totalMakes || 0}</strong> makes</span>
+  `;
+  grid.appendChild(header);
+  FG_LEVELS.forEach((lvl, idx) => {
     const unlocked = isFgLevelUnlocked(progress, lvl.id);
     const rec = progress[lvl.id];
     const stars = (rec && rec.stars) || 0;
     const card = document.createElement("div");
     card.className = "level-card" + (unlocked ? "" : " locked");
+    card.style.setProperty("--i", idx);
     const starsHtml =
       `<span class="lc-stars">` +
       `<span${stars >= 1 ? "" : ' class="empty"'}>★</span>` +
@@ -2169,7 +2188,7 @@ function buildFieldGoalLevelGrid() {
     `;
     if (unlocked) card.addEventListener("click", () => startMinigame("field_goal", lvl.id));
     grid.appendChild(card);
-  }
+  });
 }
 
 function showResult(completed, extra) {
@@ -2363,6 +2382,7 @@ function dispatchMinigamePointer(kind, e) {
       }
       if (rt.id === "field_goal") {
         if (inBtn(rt._btnNextLevel)) {
+          Sound.click && Sound.click();
           const idx = FG_LEVELS.findIndex(l => l.id === rt.level.id);
           const next = (idx >= 0 && idx + 1 < FG_LEVELS.length) ? FG_LEVELS[idx + 1] : null;
           const progress = save.fieldGoalLevels || {};
@@ -2374,10 +2394,12 @@ function dispatchMinigamePointer(kind, e) {
             openFieldGoalLevels();
           }
         } else if (inBtn(rt._btnRetry)) {
+          Sound.click && Sound.click();
           const lvlId = rt.level.id;
           G.minigameRuntime = null;
           startMinigame("field_goal", lvlId);
         } else if (inBtn(rt._btnLevels)) {
+          Sound.click && Sound.click();
           G.minigameRuntime = null;
           openFieldGoalLevels();
         }
@@ -2509,6 +2531,54 @@ function fpDrawAimArc(state, originSX, originSY, color) {
 //----------------------------------------------------------
 // FIELD GOAL KICK (first-person flick)
 //----------------------------------------------------------
+// Read the current drag state without consuming it (fpProcessFlick
+// clears dragStart on "up"). Returns the same flick descriptor
+// fpProcessFlick would, or null if the drag hasn't crossed the
+// release threshold yet. Used by render() to preview the kick.
+function fgFlickPreview(state) {
+  if (!state.dragStart || !state.dragNow) return null;
+  const sx = state.dragStart.x, sy = state.dragStart.y;
+  const ex = state.dragNow.x,   ey = state.dragNow.y;
+  const dx = ex - sx, dy = ey - sy;
+  const dist = Math.hypot(dx, dy);
+  if (dy > -25 || dist < 60) return null;
+  const power = Math.min(1, dist / 360);
+  const lateral = Math.max(-1, Math.min(1, dx / Math.max(60, -dy)));
+  const upward = -dy / dist;
+  return { power, lateral, upward };
+}
+
+// Forward-simulate the kick that would result from the current drag
+// and return an array of {sx, sy} screen positions sampled along the
+// trajectory. Mirrors the physics in FieldGoal.update (gravity, wind,
+// Magnus curve) so the preview matches the actual flight.
+function fgPredictTrajectory(g, flick) {
+  const p = g.posts;
+  const distScale = Math.max(0.7, p.z / 25);
+  // Virtual ball mirroring the values FieldGoal.handlePointer would set.
+  let bx = 0, by = 0, bz = 4;
+  let vx = flick.lateral * 5 * flick.power;
+  let vy = 5 + flick.power * 8 * flick.upward;
+  let vz = (12 + flick.power * 14) * distScale * (0.6 + 0.4 * flick.upward);
+  let spin = flick.lateral * flick.power * 4;
+  const out = [];
+  const dt = 0.04;
+  for (let i = 0; i < 50; i++) {
+    vy -= 9.8 * dt;
+    vx += g.wind * 0.6 * dt;
+    vx += spin * vz * 0.025 * dt;
+    spin -= spin * 0.5 * dt;
+    bx += vx * dt;
+    by += vy * dt;
+    bz += vz * dt;
+    if (by < 0) break;
+    if (bz >= p.z + 1) break;
+    const proj = fpProject(bx, by, bz);
+    out.push({ sx: proj.sx, sy: proj.sy });
+  }
+  return out;
+}
+
 const FieldGoal = {
   name: "Field Goal Kick",
   desc: "Flick UP from the ball to kick. Curve with the angle. Mind the wind.",
@@ -2569,6 +2639,14 @@ const FieldGoal = {
         ? { type: powerType, charges: 1, armed: false, activeEffect: null,
             badge: null, badgeUntil: 0 }
         : null,
+      // Make streak — consecutive successful makes within this round.
+      // Drives crowd reactions and the firework celebration when it
+      // hits 5. The session-best streak is folded into the global
+      // save record on level finish.
+      streak: 0, bestStreak: 0,
+      // Firework particles — purely visual, spawned by the streak
+      // milestone and stepped each frame in update().
+      fireworks: [],
       // Snow particles persist across attempts so the storm feels continuous.
       snow: condition === "snowstorm" ? FieldGoal.makeSnow() : null,
       // Crosswind gust schedule — set per-attempt in reset().
@@ -2580,6 +2658,30 @@ const FieldGoal = {
       tutorialQueue,
       _tutorialNextAt: 0.5,
     };
+  },
+  // Spawn a 3-burst firework display centered above the goal posts.
+  // Each burst is 30 radial particles with a randomized hue. Bursts
+  // are staggered with a delay field so they pop in sequence.
+  spawnFireworks(g) {
+    const top = fpProject(g.posts.x || 0, g.posts.top + 4, g.posts.z);
+    for (let burst = 0; burst < 3; burst++) {
+      const cx = top.sx + (Math.random() - 0.5) * W * 0.4;
+      const cy = top.sy + (Math.random() - 0.5) * 60 - 60;
+      const hue = Math.random() * 360;
+      const t0 = burst * 0.25;
+      for (let i = 0; i < 28; i++) {
+        const angle = (i / 28) * Math.PI * 2 + Math.random() * 0.1;
+        const speed = 90 + Math.random() * 110;
+        g.fireworks.push({
+          x: cx, y: cy,
+          vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+          life: 1.4 + Math.random() * 0.4,
+          hue,
+          delay: t0,
+          played: false,
+        });
+      }
+    }
   },
   // Build a fresh snow field — small particles falling at a steady rate
   // across the screen volume, used for the snowstorm condition's render
@@ -2613,7 +2715,11 @@ const FieldGoal = {
     // (the player may not have armed anything yet at this point).
     if (g.powerup) g.powerup.activeEffect = null;
     g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0,
-               kicked: false, scored: false, gone: false, t: 0 };
+               kicked: false, scored: false, gone: false, t: 0,
+               // Integrated visual rotation (radians). Updated per tick
+               // from spin + base tumble, used by render for the ball
+               // sprite rotation.
+               angle: 0 };
     g.message = ""; g.messageTimer = 0;
     g.cameraZ = 0;
     g.kickFx = 0;
@@ -2624,6 +2730,13 @@ const FieldGoal = {
       g.gustAt = 0.4 + Math.random() * 0.5;
       g.gusted = false;
     }
+    // Subtle random gusts — reroll the wind value mid-flight at random
+    // intervals so each kick feels less static. Skipped for crosswind
+    // (which has its own scripted reversal) and for zero-wind levels.
+    g.nextGustAt = 0.4 + Math.random() * 0.4;
+    g.windBaseline = g.wind;
+    // Apex flag for cinematic slow-mo on long kicks. Reset per attempt.
+    g.apexFired = false;
     // Triple: pick the live (gold) post set, 0=left, 1=center, 2=right.
     if (g.condition === "triple") {
       g.liveSlot = Math.floor(Math.random() * 3);
@@ -2653,12 +2766,15 @@ const FieldGoal = {
     // Power scales with target distance so a long kick needs more flick.
     const distScale = Math.max(0.7, g.posts.z / 25);
     // Ball follows the *line* of the flick: forward speed from upward
-    // component, lateral speed straight from horizontal component, no
-    // continuous spin. The curve only comes from wind.
+    // component, smaller direct lateral push, and a Magnus-style spin
+    // proportional to lateral × power. The spin curves the ball through
+    // the air in update(); together the initial vx + Magnus curve land
+    // close to where the flick aimed, but the ball traces a banana
+    // path instead of a straight diagonal.
     g.ball.vz = (12 + power * 14) * distScale * (0.6 + 0.4 * upward);
     g.ball.vy = 5 + power * 8 * upward;
-    g.ball.vx = lateral * 9 * power;
-    g.ball.spin = 0;
+    g.ball.vx = lateral * 5 * power;
+    g.ball.spin = lateral * power * 4;
     g.ball.kicked = true;
     g.kickFx = 0.25;
     Sound.boostHit && Sound.boostHit();
@@ -2708,6 +2824,21 @@ const FieldGoal = {
         g._tutorialNextAt = 2.5;
       }
     }
+    // Step firework particles. They live in screen space (sx, sy)
+    // because they anchor to the burst point captured at spawn time;
+    // gravity drags them down. Played-once sound flag triggers the
+    // crackle when each burst's delay expires.
+    if (g.fireworks && g.fireworks.length > 0) {
+      for (const fw of g.fireworks) {
+        if (fw.delay > 0) { fw.delay -= dt; continue; }
+        if (!fw.played) { fw.played = true; if (Math.random() < 0.18) Sound.firework && Sound.firework(); }
+        fw.x += fw.vx * dt;
+        fw.y += fw.vy * dt;
+        fw.vy += 220 * dt;
+        fw.life -= dt;
+      }
+      g.fireworks = g.fireworks.filter(f => f.life > 0);
+    }
     // Snowstorm: the snow keeps falling whether or not the ball is in flight.
     if (g.snow) {
       for (const f of g.snow) {
@@ -2725,6 +2856,16 @@ const FieldGoal = {
       b.vy -= 9.8 * dt;
       // Wind nudges the ball laterally; tamed so it's a factor not a coin flip.
       b.vx += g.wind * 0.6 * dt;
+      // Magnus curve — spin × forward velocity produces a perpendicular
+      // lateral force. The 0.025 constant is tuned so a max-power off-axis
+      // flick (spin ~4, vz ~20) curves about 2.5m laterally over a 1.5s
+      // flight on top of the reduced direct vx. Spin decays so late
+      // flight curves less than early flight.
+      b.vx += b.spin * b.vz * 0.025 * dt;
+      b.spin -= b.spin * 0.5 * dt;
+      // Visual rotation: base end-over-end tumble plus extra gyration
+      // from active spin. Integrates so slow-mo smoothly slows rotation.
+      b.angle += (7 + Math.abs(b.spin) * 1.5) * dt;
       // Crosswind gust: flip the wind direction once mid-flight. Toast
       // the player so the change is legible.
       if (g.condition === "crosswind" && !g.gusted && b.t >= g.gustAt) {
@@ -2732,6 +2873,24 @@ const FieldGoal = {
         g.gusted = true;
         pushToast("GUST!", "red", 700);
         cbJuice(g, { shake: 4, vibrate: [0, 15, 25, 15] });
+      }
+      // Subtle wind gusts — every 0.3-0.7s of flight (other than crosswind),
+      // jitter the wind around its baseline. Magnitude scales with the
+      // level's windRange so calm levels stay calm.
+      const lvlWind = (g.level && g.level.windRange) || 0;
+      if (g.condition !== "crosswind" && lvlWind > 0 && b.t >= g.nextGustAt) {
+        const jitter = (Math.random() * 2 - 1) * lvlWind * 0.4;
+        g.wind = Math.max(-lvlWind * 1.6,
+                  Math.min(lvlWind * 1.6, g.windBaseline + jitter));
+        g.nextGustAt = b.t + 0.3 + Math.random() * 0.4;
+      }
+      // Apex slow-mo on long kicks — when the ball crosses the apex
+      // (vy goes from positive to negative) on a >38m kick, drop into
+      // a brief cinematic slow-mo so the player can savor the hang
+      // time. Once-per-kick.
+      if (!g.apexFired && b.kicked && p.z > 38 && b.vy < 0 && b.t > 0.25) {
+        cbJuice(g, { slowT: 0.40 });
+        g.apexFired = true;
       }
       // Snowstorm: extra air drag in all axes simulates pushing through snow.
       // Tuned light so the level is challenging-but-fair: ~20% energy loss
@@ -2745,23 +2904,31 @@ const FieldGoal = {
       b.y  += b.vy * dt;
       b.z  += b.vz * dt;
       // Close-call slow-mo: when the ball is in the last few meters
-      // before the posts AND its trajectory looks borderline (offset
-      // close to an upright OR ball just below the bar), trip slow-mo
-      // once to let the player savor the moment. Triggered via the
-      // shared juice helper so it stacks with shake/haptics later.
+      // before the posts AND its trajectory looks notable (close to an
+      // upright, just below the bar, or threading dead center), trip
+      // slow-mo once so the player can savor the moment. Dead-center
+      // gets a slightly longer window — it's a rewarding outcome.
       if (!g.slowFired && b.kicked && !b.scored && b.z > p.z - 5) {
         const offset = b.x - ((p.x || 0) +
           (g.condition === "triple" ? [-5, 0, 5][g.liveSlot] : 0));
         const nearPost = Math.abs(Math.abs(offset) - p.gap / 2) < 0.6;
         const nearBar = Math.abs(b.y - p.crossbar) < 0.6;
-        if (nearPost || nearBar) {
+        const deadCenter = Math.abs(offset) < 0.5
+                           && b.y > p.crossbar + 0.4
+                           && b.y < p.crossbar + 1.4;
+        if (deadCenter) {
+          cbJuice(g, { slowT: 0.60 });
+          g.slowFired = true;
+        } else if (nearPost || nearBar) {
           cbJuice(g, { slowT: 0.45 });
           g.slowFired = true;
         }
       }
-      // Camera trails the ball ~6m back so the goalposts grow as the kick
-      // approaches them.
-      const targetCam = Math.max(0, b.z - 6);
+      // Camera trails the ball — deeper trail on long kicks so the goal
+      // grows more dramatically and the player gets a cinematic read of
+      // the flight. 6m baseline; 10m on >38m kicks.
+      const cinTrail = p.z > 38 ? 10 : 6;
+      const targetCam = Math.max(0, b.z - cinTrail);
       g.cameraZ = g.cameraZ + (targetCam - g.cameraZ) * Math.min(1, dt * 4);
       if (b.z >= p.z && !b.scored) {
         b.scored = true;
@@ -2797,10 +2964,15 @@ const FieldGoal = {
           ringHit = b.y > ringYLow && b.y < ringYHigh
                     && Math.abs(offset) < ringXHalf;
         }
+        // Track make / miss for crowd reactions, streak, and firework
+        // celebration. Set inside the branches so doinks (partial) and
+        // misses both tally correctly.
+        let madeIt = false;
         if (g.condition === "two_point" && through && !tightWindow) {
           g.message = "Sailed!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 6, vibrate: 35 });
         } else if (through && liveOK) {
+          madeIt = true;
           g.made++;
           let pts = 7;
           let msg = "GOOD!";
@@ -2849,6 +3021,35 @@ const FieldGoal = {
           g.message = "Wide!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 5, vibrate: 30 });
         }
+        // Streak + crowd reaction. Doinks (partial credit) don't count
+        // toward the streak — only clean makes do — but they also
+        // don't reset it. Anything else that isn't a make resets to 0.
+        if (madeIt) {
+          g.streak++;
+          if (g.streak > g.bestStreak) g.bestStreak = g.streak;
+          // Track longest converted distance globally. Only updated on
+          // a clean make so doinks/triple-decoys don't qualify.
+          const lvlYards = Math.round(g.level.distance * 1.094);
+          save.fieldGoalBest = save.fieldGoalBest ||
+            { longestMake: 0, bestStreak: 0, totalMakes: 0 };
+          if (lvlYards > (save.fieldGoalBest.longestMake || 0)) {
+            save.fieldGoalBest.longestMake = lvlYards;
+          }
+          const big = g.message.startsWith("BULLSEYE") ||
+                      g.message.indexOf("x2") >= 0;
+          Sound.cheer && Sound.cheer(big);
+          // Streak milestone: every 5 in a row triggers the firework
+          // celebration over the goal posts and a louder roar.
+          if (g.streak % 5 === 0) {
+            FieldGoal.spawnFireworks(g);
+            Sound.cheer && Sound.cheer(true);
+            cbJuice(g, { shake: 12, vibrate: [0, 30, 30, 30, 30, 30, 30, 80] });
+            pushToast(`STREAK x${g.streak}!`, "gold", 1600);
+          }
+        } else if (g.message !== "Doink! +3" && g.message !== "Doink! +6") {
+          g.streak = 0;
+          Sound.groan && Sound.groan();
+        }
       }
       if (b.y < 0 || b.z > p.z + 12) b.gone = true;
     }
@@ -2874,6 +3075,15 @@ const FieldGoal = {
           const cash = FieldGoal.payout(g);
           save.cash += cash;
           g.cashEarned = cash;
+          // Roll global bests forward — best-streak high-water mark and
+          // lifetime makes counter. longestMake is updated per-make in
+          // the make branch; this is the round-end bookkeeping.
+          save.fieldGoalBest = save.fieldGoalBest ||
+            { longestMake: 0, bestStreak: 0, totalMakes: 0 };
+          if (g.bestStreak > (save.fieldGoalBest.bestStreak || 0)) {
+            save.fieldGoalBest.bestStreak = g.bestStreak;
+          }
+          save.fieldGoalBest.totalMakes = (save.fieldGoalBest.totalMakes || 0) + g.made;
           persistSave();
         } else {
           FieldGoal.reset(g);
@@ -3138,6 +3348,16 @@ const FieldGoal = {
         ctx.fillText(info.label, 16, 134);
       }
     }
+    // Streak indicator — only visible once the player has 2+ in a row.
+    // Pulses to draw the eye when the streak reaches a multiple of 5
+    // (which also fires fireworks).
+    if (g.streak >= 2) {
+      const milestone = g.streak % 5 === 0;
+      const pulse = milestone ? (1 + Math.sin(performance.now() / 110) * 0.12) : 1;
+      ctx.font = `bold ${Math.round(15 * pulse)}px ui-monospace, monospace`;
+      ctx.fillStyle = milestone ? "#ffd03a" : "rgba(255, 220, 80, 0.95)";
+      ctx.fillText(`🔥 Streak x${g.streak}`, 16, 156);
+    }
     // Power-up badge — top-right corner. Tap-target rect is cached on
     // g.powerup.badge so handlePointer can hit-test the same area.
     // States:
@@ -3228,7 +3448,45 @@ const FieldGoal = {
     const restSX = W / 2;
     const restSY = H * 0.84;
     const restR  = Math.min(72, Math.max(48, W * 0.10));
-    if (!g.ball.kicked) fpDrawAimArc(g, restSX, restSY);
+    // Aim guide. While the drag has crossed the release threshold the
+    // guide draws the *real* predicted trajectory by forward-simulating
+    // the kick physics; otherwise it falls back to the schematic arc
+    // helper so the player still gets feedback during a soft drag.
+    if (!g.ball.kicked) {
+      const preview = fgFlickPreview(g);
+      if (preview) {
+        const path = fgPredictTrajectory(g, preview);
+        if (path.length >= 2) {
+          // Trail color brightens with power so a strong flick feels louder.
+          const alpha = 0.55 + 0.40 * preview.power;
+          ctx.strokeStyle = `rgba(255, 220, 80, ${alpha})`;
+          ctx.lineWidth = 3;
+          ctx.setLineDash([7, 6]);
+          ctx.beginPath();
+          ctx.moveTo(restSX, restSY);
+          for (const pt of path) ctx.lineTo(pt.sx, pt.sy);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Endpoint reticle so the player can read the projected impact.
+          const last = path[path.length - 1];
+          ctx.strokeStyle = `rgba(255, 220, 80, ${alpha + 0.1})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(last.sx, last.sy, 8, 0, Math.PI * 2);
+          ctx.stroke();
+          // Power bar (top-right). Mirrors fpDrawAimArc's so the read is
+          // consistent across mini-games.
+          ctx.fillStyle = "rgba(0,0,0,0.4)";
+          ctx.fillRect(W - 130, 20, 110, 10);
+          ctx.fillStyle = "#ffb020";
+          ctx.fillRect(W - 130, 20, 110 * preview.power, 10);
+        } else {
+          fpDrawAimArc(g, restSX, restSY);
+        }
+      } else {
+        fpDrawAimArc(g, restSX, restSY);
+      }
+    }
 
     // Razor Wire — translucent red band at the upper edge of the legal
     // clearance window. Anything above this line is "Sailed!" in two_point.
@@ -3278,7 +3536,7 @@ const FieldGoal = {
     }
     ctx.save();
     ctx.translate(bx, by);
-    ctx.rotate(b.kicked ? b.t * 7 : 0);
+    ctx.rotate(b.kicked ? b.angle : 0);
     const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
     grad.addColorStop(0, "#9b5a2c"); grad.addColorStop(1, "#5a2a0e");
     ctx.fillStyle = grad;
@@ -3335,6 +3593,23 @@ const FieldGoal = {
       fog.addColorStop(1, "rgba(245, 248, 255, 0.45)");
       ctx.fillStyle = fog;
       ctx.fillRect(0, 0, W, H);
+    }
+    // Firework particles — drawn over the field but below the message
+    // banner. Alpha fades with remaining life; a small bright core
+    // makes them legible at distance.
+    if (g.fireworks && g.fireworks.length > 0) {
+      for (const fw of g.fireworks) {
+        if (fw.delay > 0) continue;
+        const a = Math.max(0, Math.min(1, fw.life / 1.4));
+        ctx.fillStyle = `hsla(${fw.hue}, 90%, 65%, ${a})`;
+        ctx.beginPath();
+        ctx.arc(fw.x, fw.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `hsla(${fw.hue}, 100%, 90%, ${a * 0.7})`;
+        ctx.beginPath();
+        ctx.arc(fw.x, fw.y, 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     if (g.message && g.messageTimer > 0) {
       ctx.font = "bold 56px ui-monospace, monospace";
@@ -5118,18 +5393,26 @@ function drawMinigameFinishedOverlay(g) {
 // makes/attempts/score line, cash earned, and Next/Retry/Levels buttons.
 // Layout mirrors the Can Bash overlay.
 function drawFieldGoalFinishedOverlay(g) {
-  ctx.fillStyle = "rgba(0,0,0,0.78)";
+  // Backdrop fades in with the held-for timer for a smoother entrance.
+  const heldFor = Math.max(0, performance.now() - (g.finishHoldUntil - 600));
+  const bgAlpha = Math.min(0.78, heldFor / 240 * 0.78);
+  ctx.fillStyle = `rgba(0,0,0,${bgAlpha})`;
   ctx.fillRect(0, 0, W, H);
   const cleared = g.stars > 0;
   ctx.textAlign = "center";
-  ctx.fillStyle = cleared ? "#ffd03a" : "#ff8a3a";
+  // Title slides down + fades in over the first 240ms.
+  const titleA = Math.min(1, heldFor / 240);
+  const titleY = H * 0.20 - (1 - titleA) * 18;
+  ctx.fillStyle = cleared
+    ? `rgba(255, 208, 58, ${titleA})`
+    : `rgba(255, 138, 58, ${titleA})`;
   ctx.font = "bold 34px ui-monospace, monospace";
-  ctx.fillText(cleared ? "Round Done!" : "Out of Kicks", W / 2, H * 0.20);
-  ctx.fillStyle = "#cfd6e3";
+  ctx.fillText(cleared ? "Round Done!" : "Out of Kicks", W / 2, titleY);
+  // Subtitle fades in 100ms after the title.
+  const subA = Math.min(1, Math.max(0, (heldFor - 100) / 240));
+  ctx.fillStyle = `rgba(207, 214, 227, ${subA})`;
   ctx.font = "bold 18px ui-monospace, monospace";
   ctx.fillText(`${g.level.name}`, W / 2, H * 0.25);
-  // Stars — three slots, gold or hollow, popped in left-to-right.
-  const heldFor = Math.max(0, performance.now() - (g.finishHoldUntil - 600));
   const starSize = Math.min(56, W * 0.085);
   const starGap = starSize * 1.7;
   const starY = H * 0.38;
@@ -5156,19 +5439,32 @@ function drawFieldGoalFinishedOverlay(g) {
     ctx.fill(); ctx.stroke();
     ctx.restore();
   }
-  // Stats line + cash earned.
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 18px ui-monospace, monospace";
-  ctx.fillText(
-    `${g.made} / ${g.attempts} made  •  ${g.score} pts`,
-    W / 2, H * 0.53
-  );
-  if (g.cashEarned) {
-    ctx.fillStyle = "#4ddc8c";
-    ctx.font = "bold 22px ui-monospace, monospace";
-    ctx.fillText(`+$${g.cashEarned}`, W / 2, H * 0.59);
+  // Stats line — fades in 1100ms after the held-for clock starts so
+  // it lands after the stars resolve.
+  const statsA = Math.min(1, Math.max(0, (heldFor - 1100) / 220));
+  if (statsA > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${statsA})`;
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(
+      `${g.made} / ${g.attempts} made  •  ${g.score} pts`,
+      W / 2, H * 0.53
+    );
+    if (g.bestStreak >= 2) {
+      ctx.fillStyle = `rgba(255, 220, 80, ${statsA})`;
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.fillText(`Best streak this round: x${g.bestStreak}`, W / 2, H * 0.575);
+    }
   }
-  // Buttons. Layout drops Next when there's no next level.
+  if (g.cashEarned) {
+    const cashA = Math.min(1, Math.max(0, (heldFor - 1300) / 220));
+    if (cashA > 0) {
+      ctx.fillStyle = `rgba(77, 220, 140, ${cashA})`;
+      ctx.font = "bold 22px ui-monospace, monospace";
+      ctx.fillText(`+$${g.cashEarned}`, W / 2, H * 0.62);
+    }
+  }
+  // Buttons. Layout drops Next when there's no next level. Each button
+  // fades in with a stagger so the eye lands on Next first.
   const idx = FG_LEVELS.findIndex(l => l.id === g.level.id);
   const hasNext = cleared && idx >= 0 && idx + 1 < FG_LEVELS.length;
   const labels = hasNext
@@ -5181,12 +5477,22 @@ function drawFieldGoalFinishedOverlay(g) {
   const startX = W / 2 - totalW / 2;
   const cy = H * 0.70;
   labels.forEach(([key, label, fill], i) => {
+    const btnA = Math.min(1, Math.max(0, (heldFor - 1500 - i * 120) / 220));
+    if (btnA <= 0) return;
     const x = startX + i * (bw + gap);
-    const rect = { x, y: cy, w: bw, h: bh };
+    const rect = { x, y: cy + (1 - btnA) * 12, w: bw, h: bh };
     if (key === "next")   g._btnNextLevel = rect;
     if (key === "retry")  g._btnRetry     = rect;
     if (key === "levels") g._btnLevels    = rect;
-    ctx.fillStyle = fill;
+    // Pulse the Next Level button gently to draw the eye.
+    let drawFill = fill;
+    if (key === "next") {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 220);
+      const lift = Math.floor(20 * pulse);
+      drawFill = `rgba(${77 + lift}, 220, ${140 + lift}, ${btnA})`;
+    }
+    ctx.globalAlpha = btnA;
+    ctx.fillStyle = drawFill;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12);
     else ctx.rect(rect.x, rect.y, rect.w, rect.h);
@@ -5194,6 +5500,7 @@ function drawFieldGoalFinishedOverlay(g) {
     ctx.fillStyle = (fill === "#2a3350") ? "#fff" : "#1a1206";
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6);
+    ctx.globalAlpha = 1;
   });
   if (!hasNext) g._btnNextLevel = null;
   ctx.textAlign = "start";

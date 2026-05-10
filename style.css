@@ -87,6 +87,10 @@ canvas#game {
 @keyframes toast-out { to { opacity: 0; transform: translateY(-6px); } }
 
 /* Overlays */
+@keyframes overlay-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1);    }
+}
 .overlay {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -95,6 +99,7 @@ canvas#game {
   padding: 30px;
   overflow: auto;
 }
+.overlay:not(.hidden) { animation: overlay-in 0.22s ease-out; }
 /* Menu uses a translucent backdrop so the demo bike scrolls behind it. */
 #menu.overlay {
   background: radial-gradient(ellipse at center, rgba(11,13,18,0.35) 0%, rgba(8,10,16,0.78) 75%);
@@ -155,6 +160,12 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   transition: transform 80ms ease, border-color 120ms ease;
 }
 .level-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+.level-card:active { transform: translateY(0) scale(0.97); transition: transform 60ms ease; }
+@keyframes lc-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+}
+.level-card { animation: lc-pop 0.32s ease-out backwards; animation-delay: calc(var(--i, 0) * 30ms); }
 .level-card .lc-name { font-size: 16px; color: var(--accent); }
 .level-card .lc-meta { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; }
 .level-card .lc-best { font-size: 12px; color: var(--ink); }
@@ -167,6 +178,21 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   text-shadow: 0 0 6px rgba(255, 200, 60, 0.35);
 }
 .level-card .lc-stars .empty { color: rgba(255, 255, 255, 0.18); text-shadow: none; }
+
+/* Field Goal global-bests header — sits above the level grid as a
+   single full-width row. The level grid's grid-template-columns is
+   3 columns; grid-column: 1 / -1 spans all of them. */
+.fg-bests {
+  grid-column: 1 / -1;
+  display: flex; flex-wrap: wrap; gap: 12px 22px;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, rgba(255,176,32,0.10), rgba(255,90,58,0.06));
+  border: 1px solid rgba(255, 176, 32, 0.22);
+  border-radius: 10px;
+  font-size: 12px; color: var(--ink-dim);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.fg-bests strong { color: var(--accent); font-size: 16px; letter-spacing: 0; }
 
 /* Garage */
 .garage-grid {
