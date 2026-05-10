@@ -51,6 +51,10 @@ jobs:
 
   deploy:
     needs: check
+    # Only the main branch is authorized to deploy to the Pages environment.
+    # Branch pushes still run the check job for fast feedback, but skip the
+    # deploy step (which would otherwise fail in 2s on environment auth).
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
