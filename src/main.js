@@ -3734,7 +3734,7 @@ const PP_GRAVITY    = 9.8;
 // Ball is held at chest height in front of the player at the table edge.
 // y > TABLE_Y so the ball spawns above the play surface; z just outside
 // the front edge so the trajectory starts visible in the FP frame.
-const PP_BALL_SPAWN = { x: 0, y: 1.4, z: 0.55 };
+const PP_BALL_SPAWN = { x: 0, y: 1.5, z: 0.55 };
 
 // Geometry constants — re-exported aliases of the levels.js exports
 // so the rest of this file can read them without the import names
@@ -3807,13 +3807,14 @@ const PartyPong = {
     const { power, lateral, upward } = flick;
     // Calibrated so a max-power, full-upward flick lands the ball at
     // the back of the rack. distScale linearly maps the level's zBack
-    // (1.5m–2.4m) so harder racks need stronger flicks. vy is bounded
-    // (0–2.5 m/s) so the arc time stays around 0.6–0.7s, matching the
-    // vz needed to reach zBack.
+    // (1.5m–2.4m) so harder racks need stronger flicks. With the new
+    // table height (1.0m) and ball spawn (y=1.5) the cup top is at
+    // y=1.28; a vy of ~2.5 produces a ~0.59s flight time, and the
+    // 1.7 vz coefficient lands the ball within the rack at any zBack.
     const zBack = g.level.rack.zBack || 2.0;
     const distScale = Math.max(0.6, (zBack - 0.5));
     g.ball.vy = power * (1.0 + 1.5 * upward);
-    g.ball.vz = power * 1.5 * distScale * (0.5 + 0.5 * upward);
+    g.ball.vz = power * 1.7 * distScale * (0.5 + 0.5 * upward);
     g.ball.vx = lateral * power * 1.2;
     g.ball.thrown = true;
     g.ball.prevY = g.ball.y;
@@ -4133,7 +4134,7 @@ function ppPredictTrajectory(g, flick) {
   let bx = PP_BALL_SPAWN.x, by = PP_BALL_SPAWN.y, bz = PP_BALL_SPAWN.z;
   let vx = flick.lateral * flick.power * 1.2;
   let vy = flick.power * (1.0 + 1.5 * flick.upward);
-  let vz = flick.power * 1.5 * distScale * (0.5 + 0.5 * flick.upward);
+  let vz = flick.power * 1.7 * distScale * (0.5 + 0.5 * flick.upward);
   const out = [];
   const dt = 0.04;
   for (let i = 0; i < 50; i++) {

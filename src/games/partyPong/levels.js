@@ -126,7 +126,12 @@ export const PP_LEVELS = [
 export const CUP_BASE_R    = 0.10;   // outer rim radius at scale 1.0
 export const CUP_HEIGHT    = 0.28;
 export const CUP_LIP       = 0.012;  // rim thickness (rim hit zone)
-export const TABLE_Y       = 0.70;   // bar-table top (camera 0.9m above)
+export const TABLE_Y       = 1.00;   // chest-high table (camera 0.6m above)
+                                     // — sized for visual composition,
+                                     // not realism. With camera at 1.6m
+                                     // a real 0.7m table is too low and
+                                     // the rack ends up squashed at the
+                                     // bottom of the screen.
 export const TABLE_W       = 1.4;    // lateral table width (meters)
 export const TABLE_Z_NEAR  = 0.6;    // front edge of table
 
