@@ -16,8 +16,9 @@
 //                       3★ if made >= 5, 2★ if made >= 4, 1★ if made >= 2,
 //                       0★ otherwise.
 //
-// Phase 1 keeps every level as standard mechanics. Phase 2 introduces
-// per-level kick conditions (crosswind gust, snowstorm, doink-bonus, etc.).
+// Each level may carry a `condition` flag (defaults to "standard") that
+// modifies physics, scoring, or rendering. See FG_CONDITION_INFO below
+// for the full list and the first-encounter tutorial labels.
 
 export const FG_LEVELS = [
   {
@@ -56,12 +57,13 @@ export const FG_LEVELS = [
   {
     id: "fg_04_crosswind",
     name: "Crosswind",
-    subtitle: "Hard wind, no angle. Read the flag.",
+    subtitle: "A gust shifts mid-flight. Trust the read.",
     attempts: 5,
     distance: 25,
     gap: 5.4,
     windRange: 5,
     offCenterRange: 0,
+    condition: "crosswind",
     parStars: { 3: 5, 2: 4, 1: 2 },
   },
   {
@@ -111,12 +113,13 @@ export const FG_LEVELS = [
   {
     id: "fg_09_storm_day",
     name: "Storm Day",
-    subtitle: "Real wind. The flag's going sideways.",
+    subtitle: "Snowstorm — low vis, drag through the snow.",
     attempts: 5,
     distance: 36,
     gap: 4.8,
     windRange: 7,
     offCenterRange: 4,
+    condition: "snowstorm",
     parStars: { 3: 4, 2: 3, 1: 1 },
   },
   {
@@ -130,7 +133,74 @@ export const FG_LEVELS = [
     offCenterRange: 6,
     parStars: { 3: 4, 2: 3, 1: 1 },
   },
+  {
+    id: "fg_11_doink_city",
+    name: "Doink City",
+    subtitle: "Hit the upright = +3. Get aggressive.",
+    attempts: 5,
+    distance: 30,
+    gap: 5.0,
+    windRange: 3,
+    offCenterRange: 3,
+    condition: "doink",
+    parStars: { 3: 5, 2: 4, 1: 2 },
+  },
+  {
+    id: "fg_12_gold_standard",
+    name: "Gold Standard",
+    subtitle: "Thread the gold ring above the bar = +5.",
+    attempts: 5,
+    distance: 32,
+    gap: 5.2,
+    windRange: 2,
+    offCenterRange: 2,
+    condition: "bullseye",
+    parStars: { 3: 4, 2: 3, 1: 1 },
+  },
+  {
+    id: "fg_13_three_doors",
+    name: "Three Doors",
+    subtitle: "Three goals, one is live. Pick the gold posts.",
+    attempts: 5,
+    distance: 32,
+    gap: 4.8,
+    windRange: 2,
+    offCenterRange: 0,
+    condition: "triple",
+    parStars: { 3: 4, 2: 3, 1: 1 },
+  },
+  {
+    id: "fg_14_razor_wire",
+    name: "Razor Wire",
+    subtitle: "Must clear the bar by 1m or less.",
+    attempts: 5,
+    distance: 38,
+    gap: 4.6,
+    windRange: 3,
+    offCenterRange: 3,
+    condition: "two_point",
+    parStars: { 3: 4, 2: 3, 1: 1 },
+  },
 ];
+
+// Per-condition catalog. The label is shown as a one-time tutorial toast
+// the first time a player encounters a level with that condition. Adding
+// a new condition means: an entry here, a branch in FieldGoal physics
+// (update + render), and a level that uses it.
+//   crosswind  — wind direction flips once mid-flight (gust)
+//   snowstorm  — visual whiteout + ball drag through the air
+//   doink      — clipping the upright = +3 instead of a miss
+//   bullseye   — gold ring above the crossbar = +5 bonus on top of the make
+//   triple     — three goal sets, only the gold one scores; others are walls
+//   two_point  — must clear the crossbar by 1m or less
+export const FG_CONDITION_INFO = {
+  crosswind: { label: "Crosswind — a gust will shift mid-flight" },
+  snowstorm: { label: "Snowstorm — low visibility and drag through the snow" },
+  doink:     { label: "Doink Bonus — clip the upright for +3" },
+  bullseye:  { label: "Gold Ring — clear the bar through the ring for +5" },
+  triple:    { label: "Three Doors — only the gold uprights score" },
+  two_point: { label: "Razor Wire — clear the bar by 1m or less" },
+};
 
 // Stars earned for a finished level given the makes count.
 export function starsFor(level, made) {

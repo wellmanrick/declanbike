@@ -34,6 +34,9 @@ export const DEFAULT_SAVE = {
                                   // has collected one (drives the use-it
                                   // tutorial toast).
   fieldGoalLevels: {},            // levelId -> { stars, made, attempts, score }
+  fieldGoalSeenConditions: {},    // condition slug -> true once the player has
+                                  // played a level featuring that condition
+                                  // (drives the first-encounter tutorial).
 };
 
 function _load() {
@@ -53,6 +56,7 @@ function _load() {
       canBashSeenTypes: parsed.canBashSeenTypes || {},
       canBashSeenPowers: parsed.canBashSeenPowers || {},
       fieldGoalLevels: parsed.fieldGoalLevels || {},
+      fieldGoalSeenConditions: parsed.fieldGoalSeenConditions || {},
     });
   } catch (e) {
     console.warn("Save load failed", e);

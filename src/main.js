@@ -29,7 +29,7 @@ import { mulberry32 } from "./engine/rng.js";
 import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE } from "./world/terrain.js";
 import { STATE, G } from "./state.js";
 import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO, POWER_INFO } from "./games/canBash/levels.js";
-import { FG_LEVELS, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
+import { FG_LEVELS, FG_CONDITION_INFO, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -2516,8 +2516,22 @@ const FieldGoal = {
   color: "#4ddc8c",
   init(level) {
     const lvl = level || FG_LEVELS[0];
+    // Surface a one-time tutorial when the player first encounters this
+    // condition. Mirrors Can Bash's first-encounter type tutorials.
+    const condition = lvl.condition || "standard";
+    const tutorialQueue = [];
+    if (condition !== "standard") {
+      save.fieldGoalSeenConditions = save.fieldGoalSeenConditions || {};
+      if (!save.fieldGoalSeenConditions[condition]) {
+        const info = FG_CONDITION_INFO[condition];
+        if (info && info.label) tutorialQueue.push({ label: info.label });
+        save.fieldGoalSeenConditions[condition] = true;
+        persistSave();
+      }
+    }
     return {
       level: lvl,
+      condition,
       ball: null,
       // Posts: distance, gap, crossbar height, top of uprights. Distance
       // and gap come from the level; reset() picks the lateral offset
@@ -2529,7 +2543,34 @@ const FieldGoal = {
       stars: 0,
       cameraZ: 0,
       kickFx: 0,
+      // Snow particles persist across attempts so the storm feels continuous.
+      snow: condition === "snowstorm" ? FieldGoal.makeSnow() : null,
+      // Crosswind gust schedule — set per-attempt in reset().
+      gustAt: 0,
+      gusted: false,
+      // Triple condition: which of the three goal slots is live (gold).
+      // Re-rolled per attempt in reset() so the player has to re-read.
+      liveSlot: 0,
+      tutorialQueue,
+      _tutorialNextAt: 0.5,
     };
+  },
+  // Build a fresh snow field — small particles falling at a steady rate
+  // across the screen volume, used for the snowstorm condition's render
+  // and for ball drag.
+  makeSnow() {
+    const n = 140;
+    const flakes = new Array(n);
+    for (let i = 0; i < n; i++) {
+      flakes[i] = {
+        x: (Math.random() * 2 - 1) * 30,
+        y: Math.random() * 12,
+        z: 4 + Math.random() * 50,
+        vy: -2 - Math.random() * 1.5,
+        vx: (Math.random() - 0.5) * 0.6,
+      };
+    }
+    return flakes;
   },
   payout(g) { return Math.floor((g.score || 0) * 1.0); },
   reset(g) {
@@ -2546,6 +2587,16 @@ const FieldGoal = {
     g.message = ""; g.messageTimer = 0;
     g.cameraZ = 0;
     g.kickFx = 0;
+    // Crosswind: schedule the gust at 0.4–0.9s into flight; flag we
+    // haven't gusted yet so update() flips the wind exactly once.
+    if (g.condition === "crosswind") {
+      g.gustAt = 0.4 + Math.random() * 0.5;
+      g.gusted = false;
+    }
+    // Triple: pick the live (gold) post set, 0=left, 1=center, 2=right.
+    if (g.condition === "triple") {
+      g.liveSlot = Math.floor(Math.random() * 3);
+    }
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
@@ -2571,11 +2622,48 @@ const FieldGoal = {
     if (!g.ball) FieldGoal.reset(g);
     const b = g.ball, p = g.posts;
     if (g.kickFx > 0) g.kickFx = Math.max(0, g.kickFx - dt);
+    // First-encounter tutorial pop. Mirrors Can Bash: only fires while the
+    // player hasn't kicked yet so it doesn't fight gameplay messages.
+    if (g.tutorialQueue && g.tutorialQueue.length > 0 && !b.kicked) {
+      g._tutorialNextAt -= dt;
+      if (g._tutorialNextAt <= 0) {
+        const next = g.tutorialQueue.shift();
+        pushToast(next.label, "gold", 2400);
+        g._tutorialNextAt = 2.5;
+      }
+    }
+    // Snowstorm: the snow keeps falling whether or not the ball is in flight.
+    if (g.snow) {
+      for (const f of g.snow) {
+        f.y += f.vy * dt;
+        f.x += f.vx * dt;
+        if (f.y < 0) {
+          f.y = 10 + Math.random() * 2;
+          f.x = (Math.random() * 2 - 1) * 30;
+          f.z = 4 + Math.random() * 50;
+        }
+      }
+    }
     if (b.kicked && !b.gone) {
       b.t += dt;
       b.vy -= 9.8 * dt;
       // Wind nudges the ball laterally; tamed so it's a factor not a coin flip.
       b.vx += g.wind * 0.6 * dt;
+      // Crosswind gust: flip the wind direction once mid-flight. Toast
+      // the player so the change is legible.
+      if (g.condition === "crosswind" && !g.gusted && b.t >= g.gustAt) {
+        g.wind = -g.wind * 1.4;
+        g.gusted = true;
+        pushToast("GUST!", "red", 700);
+      }
+      // Snowstorm: extra air drag in all axes simulates pushing through snow.
+      // Tuned light so the level is challenging-but-fair: ~20% energy loss
+      // per second on the horizontal axes, lighter on the vertical.
+      if (g.condition === "snowstorm") {
+        b.vx -= b.vx * 0.20 * dt;
+        b.vy -= b.vy * 0.08 * dt;
+        b.vz -= b.vz * 0.20 * dt;
+      }
       b.x  += b.vx * dt;
       b.y  += b.vy * dt;
       b.z  += b.vz * dt;
@@ -2585,15 +2673,58 @@ const FieldGoal = {
       g.cameraZ = g.cameraZ + (targetCam - g.cameraZ) * Math.min(1, dt * 4);
       if (b.z >= p.z && !b.scored) {
         b.scored = true;
-        const offset = b.x - (p.x || 0);
-        const through = Math.abs(offset) < p.gap / 2
-                       && b.y > p.crossbar
-                       && b.y < p.top + 1;
-        if (through) {
-          g.made++; g.score += 7;
-          g.message = "GOOD!"; g.messageTimer = 1.4;
+        const tripleOffsets = [-5, 0, 5];
+        // Triple: hit detection is anchored to the LIVE slot's center, not
+        // posts.x. Decoy slots register as "Wrong door!" misses if the
+        // ball passes through them; everything else is a "Wide!".
+        const liveCenter = (p.x || 0) + (g.condition === "triple" ? tripleOffsets[g.liveSlot] : 0);
+        const offset = b.x - liveCenter;
+        const between = Math.abs(offset) < p.gap / 2;
+        const aboveBar = b.y > p.crossbar;
+        const belowTop = b.y < p.top + 1;
+        const through  = between && aboveBar && belowTop;
+        // Two-point: must clear bar by 1m or less. Going higher = "Sailed!".
+        const tightWindow = b.y < p.crossbar + 1.0;
+        // Triple: did the ball pass through one of the decoy slots?
+        let throughDecoy = false;
+        if (g.condition === "triple" && aboveBar && belowTop) {
+          for (let i = 0; i < tripleOffsets.length; i++) {
+            if (i === g.liveSlot) continue;
+            const decoyCenter = (p.x || 0) + tripleOffsets[i];
+            if (Math.abs(b.x - decoyCenter) < p.gap / 2) { throughDecoy = true; break; }
+          }
+        }
+        const liveOK = true; // Through-test is already anchored to live slot.
+        // Bullseye: gold ring is centered above the crossbar. Compute
+        // hit before scoring so we can stack +5 onto a clean make.
+        let ringHit = false;
+        if (g.condition === "bullseye" && between) {
+          const ringYLow  = p.crossbar + 0.4;
+          const ringYHigh = p.crossbar + 1.8;
+          const ringXHalf = p.gap * 0.18;
+          ringHit = b.y > ringYLow && b.y < ringYHigh
+                    && Math.abs(offset) < ringXHalf;
+        }
+        if (g.condition === "two_point" && through && !tightWindow) {
+          g.message = "Sailed!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+        } else if (through && liveOK) {
+          g.made++;
+          let pts = 7;
+          let msg = "GOOD!";
+          if (ringHit) { pts += 5; msg = "BULLSEYE!"; }
+          g.score += pts;
+          g.message = msg; g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
-        } else if (Math.abs(offset) < p.gap / 2 && b.y <= p.crossbar) {
+        } else if (throughDecoy) {
+          g.message = "Wrong door!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+        } else if (g.condition === "doink" && Math.abs(offset) >= p.gap / 2
+                   && Math.abs(offset) < p.gap / 2 + 0.4
+                   && b.y > p.crossbar && b.y < p.top + 0.5) {
+          // Doink condition turns the post hit into a +3 partial reward.
+          g.score += 3;
+          g.message = "Doink! +3"; g.messageTimer = 1.4;
+          Sound.boostHit && Sound.boostHit();
+        } else if (between && b.y <= p.crossbar) {
           g.message = "Short!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
         } else if (Math.abs(offset) < p.gap) {
           g.message = "Doinked!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
@@ -2635,7 +2766,13 @@ const FieldGoal = {
   render(g) {
     if (!g.ball) FieldGoal.reset(g);
     fpSetCam(g.cameraZ || 0);
-    fpDrawSky("#7fbcff", "#cfeaff", "#4d8d2a");
+    if (g.condition === "snowstorm") {
+      // Heavy overcast sky for the snowstorm condition. Lighter fog tint
+      // also overlays at the end of render to wash out distant geometry.
+      fpDrawSky("#9aa6b3", "#e8edf2", "#9bb39a");
+    } else {
+      fpDrawSky("#7fbcff", "#cfeaff", "#4d8d2a");
+    }
 
     // Stadium stands behind the field — three banked tiers with a crowd
     // pattern, then a back-wall scoreboard. The whole structure projects
@@ -2749,26 +2886,66 @@ const FieldGoal = {
 
     const p = g.posts;
     const px = p.x || 0;
-    const stemBase = fpProject(px, 0, p.z);
-    const stemTop  = fpProject(px, p.crossbar, p.z);
-    const crossL   = fpProject(px - p.gap / 2, p.crossbar, p.z);
-    const crossR   = fpProject(px + p.gap / 2, p.crossbar, p.z);
-    const upL      = fpProject(px - p.gap / 2, p.top, p.z);
-    const upR      = fpProject(px + p.gap / 2, p.top, p.z);
+    // Helper — draw one goal-post set (stem, crossbar, two uprights).
+    // Color is the post tint; live posts are bright yellow, decoy posts
+    // in triple mode are silver-white so the live set stands out.
+    function drawPostSet(centerX, postZ, gap, color) {
+      const sBase = fpProject(centerX, 0, postZ);
+      const sTop  = fpProject(centerX, p.crossbar, postZ);
+      const cL    = fpProject(centerX - gap / 2, p.crossbar, postZ);
+      const cR    = fpProject(centerX + gap / 2, p.crossbar, postZ);
+      const uL    = fpProject(centerX - gap / 2, p.top, postZ);
+      const uR    = fpProject(centerX + gap / 2, p.top, postZ);
+      ctx.lineCap = "round";
+      ctx.strokeStyle = color;
+      const w = Math.max(3, 8 * sBase.scale * 6);
+      ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(sBase.sx, sBase.sy); ctx.lineTo(sTop.sx, sTop.sy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cL.sx, cL.sy); ctx.lineTo(cR.sx, cR.sy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cL.sx, cL.sy); ctx.lineTo(uL.sx, uL.sy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cR.sx, cR.sy); ctx.lineTo(uR.sx, uR.sy); ctx.stroke();
+      ctx.lineCap = "butt";
+      const padNear = fpProject(centerX - 0.4, 0, postZ + 0.4);
+      const padFar  = fpProject(centerX + 0.4, 0, postZ - 0.4);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(padFar.sx, padFar.sy - 8, Math.max(4, padNear.sx - padFar.sx), 10);
+    }
     const postYellow = "#ffd03a";
-    ctx.lineCap = "round";
-    ctx.strokeStyle = postYellow;
-    const stroke = Math.max(3, 8 * stemBase.scale * 6);
-    ctx.lineWidth = stroke;
-    ctx.beginPath(); ctx.moveTo(stemBase.sx, stemBase.sy); ctx.lineTo(stemTop.sx, stemTop.sy); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(crossR.sx, crossR.sy); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(upL.sx, upL.sy); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(crossR.sx, crossR.sy); ctx.lineTo(upR.sx, upR.sy); ctx.stroke();
-    ctx.lineCap = "butt";
-    const padNear = fpProject(px - 0.4, 0, p.z + 0.4);
-    const padFar  = fpProject(px + 0.4, 0, p.z - 0.4);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(padFar.sx, padFar.sy - 8, Math.max(4, padNear.sx - padFar.sx), 10);
+    if (g.condition === "triple") {
+      // Three goal sets at fixed offsets relative to the active center.
+      // Only the live slot scores (the live slot's posts are gold; decoys
+      // are silver-white). Offsets must match the hit-detection table in
+      // update().
+      const tripleOffsets = [-5, 0, 5];
+      const liveSlot = g.liveSlot;
+      tripleOffsets.forEach((dx, i) => {
+        if (i === liveSlot) return;
+        drawPostSet(px + dx, p.z, p.gap, "#cfd6e3");
+      });
+      drawPostSet(px + tripleOffsets[liveSlot], p.z, p.gap, postYellow);
+    } else {
+      drawPostSet(px, p.z, p.gap, postYellow);
+    }
+    // Bullseye ring — gold loop centered above the crossbar; cleared
+    // through the ring stacks +5 onto the make.
+    if (g.condition === "bullseye") {
+      const ringYMid = p.crossbar + 1.1;
+      const ringXHalf = p.gap * 0.18;
+      const ringTop  = fpProject(px, ringYMid + 0.7, p.z);
+      const ringBot  = fpProject(px, ringYMid - 0.7, p.z);
+      const ringLft  = fpProject(px - ringXHalf, ringYMid, p.z);
+      const ringRgt  = fpProject(px + ringXHalf, ringYMid, p.z);
+      ctx.strokeStyle = postYellow;
+      ctx.lineWidth = Math.max(2, 4 * ringTop.scale * 6);
+      ctx.beginPath();
+      ctx.ellipse(
+        (ringLft.sx + ringRgt.sx) / 2, (ringTop.sy + ringBot.sy) / 2,
+        Math.max(2, (ringRgt.sx - ringLft.sx) / 2),
+        Math.max(2, (ringBot.sy - ringTop.sy) / 2),
+        0, 0, Math.PI * 2
+      );
+      ctx.stroke();
+    }
 
     // Wind flag — pole + waving flag at the back of the end zone, behind
     // and slightly offset from the goalposts. Bends in the wind direction.
@@ -2827,6 +3004,14 @@ const FieldGoal = {
       ctx.fillStyle = "rgba(0,0,0,0.55)";
       ctx.fillText(g.level.name, 16, 116);
     }
+    if (g.condition && g.condition !== "standard") {
+      const info = FG_CONDITION_INFO[g.condition];
+      if (info) {
+        ctx.font = "bold 13px ui-monospace, monospace";
+        ctx.fillStyle = "rgba(255, 90, 60, 0.85)";
+        ctx.fillText(info.label, 16, 134);
+      }
+    }
 
     // Aim preview — when the ball is at rest, originate from its fixed
     // bottom-of-screen sprite position. Once kicked, switch to perspective.
@@ -2834,6 +3019,35 @@ const FieldGoal = {
     const restSY = H * 0.84;
     const restR  = Math.min(72, Math.max(48, W * 0.10));
     if (!g.ball.kicked) fpDrawAimArc(g, restSX, restSY);
+
+    // Razor Wire — translucent red band at the upper edge of the legal
+    // clearance window. Anything above this line is "Sailed!" in two_point.
+    if (g.condition === "two_point") {
+      const bandY = p.crossbar + 1.0;
+      const wireL = fpProject(px - p.gap / 2, bandY, p.z);
+      const wireR = fpProject(px + p.gap / 2, bandY, p.z);
+      ctx.strokeStyle = "rgba(255, 60, 60, 0.85)";
+      ctx.lineWidth = Math.max(1.5, 3 * wireL.scale * 6);
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath();
+      ctx.moveTo(wireL.sx, wireL.sy);
+      ctx.lineTo(wireR.sx, wireR.sy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Snowstorm flakes — drawn after the field/posts so they appear in
+    // front, but before the football so the ball stays legible. Each
+    // flake projects through the perspective helper so depth reads.
+    if (g.snow) {
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      for (const f of g.snow) {
+        const proj = fpProject(f.x, f.y, f.z);
+        if (!proj || proj.sy < 0 || proj.sy > H) continue;
+        const sz = Math.max(1, 2.4 * proj.scale * 6);
+        ctx.fillRect(proj.sx - sz / 2, proj.sy - sz / 2, sz, sz);
+      }
+    }
 
     // Football
     const b = g.ball;
@@ -2901,12 +3115,25 @@ const FieldGoal = {
       ctx.globalAlpha = 1;
     }
 
+    // Snowstorm fog wash — soft white vignette over the whole frame so
+    // the storm reads as low visibility. Drawn after the football so the
+    // ball gets dimmed too, but before message text so the result still
+    // pops.
+    if (g.condition === "snowstorm") {
+      const fog = ctx.createRadialGradient(W/2, H/2, W * 0.15, W/2, H/2, W * 0.75);
+      fog.addColorStop(0, "rgba(245, 248, 255, 0.05)");
+      fog.addColorStop(1, "rgba(245, 248, 255, 0.45)");
+      ctx.fillStyle = fog;
+      ctx.fillRect(0, 0, W, H);
+    }
     if (g.message && g.messageTimer > 0) {
       ctx.font = "bold 56px ui-monospace, monospace";
       ctx.textAlign = "center";
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.fillText(g.message, W/2 + 3, H/2 + 3);
-      ctx.fillStyle = g.message === "GOOD!" ? "#4ddc8c" : "#ff5470";
+      const positive = g.message === "GOOD!" || g.message === "BULLSEYE!" ||
+                       g.message.startsWith("Doink! ");
+      ctx.fillStyle = positive ? "#4ddc8c" : "#ff5470";
       ctx.fillText(g.message, W/2, H/2);
       ctx.textAlign = "start";
     }
