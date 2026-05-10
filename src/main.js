@@ -3731,7 +3731,10 @@ const FieldGoal = {
 const PP_BALL_R     = 0.045;
 const PP_TABLE_LEN  = 2.6;
 const PP_GRAVITY    = 9.8;
-const PP_BALL_SPAWN = { x: 0, y: 0.55, z: 0.30 };
+// Ball is held at chest height in front of the player at the table edge.
+// y > TABLE_Y so the ball spawns above the play surface; z just outside
+// the front edge so the trajectory starts visible in the FP frame.
+const PP_BALL_SPAWN = { x: 0, y: 1.4, z: 0.55 };
 
 // Geometry constants — re-exported aliases of the levels.js exports
 // so the rest of this file can read them without the import names
@@ -3802,13 +3805,16 @@ const PartyPong = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    // Tune the flick → throw mapping so a "max" flick lands at the
-    // back of the rack (~z = 2.4m). vz scales primarily with power
-    // and the upward component (a flatter flick travels less far).
-    const distScale = Math.max(0.7, (g.level.rack.zBack || 2.0) / 2.0);
-    g.ball.vz = (3.0 + power * 4.5) * distScale * (0.55 + 0.45 * upward);
-    g.ball.vy = 2.4 + power * 3.6 * upward;
-    g.ball.vx = lateral * 1.6 * power;
+    // Calibrated so a max-power, full-upward flick lands the ball at
+    // the back of the rack. distScale linearly maps the level's zBack
+    // (1.5m–2.4m) so harder racks need stronger flicks. vy is bounded
+    // (0–2.5 m/s) so the arc time stays around 0.6–0.7s, matching the
+    // vz needed to reach zBack.
+    const zBack = g.level.rack.zBack || 2.0;
+    const distScale = Math.max(0.6, (zBack - 0.5));
+    g.ball.vy = power * (1.0 + 1.5 * upward);
+    g.ball.vz = power * 1.5 * distScale * (0.5 + 0.5 * upward);
+    g.ball.vx = lateral * power * 1.2;
     g.ball.thrown = true;
     g.ball.prevY = g.ball.y;
     Sound.boostHit && Sound.boostHit();
@@ -4122,11 +4128,12 @@ const PartyPong = {
 // Forward-simulate the throw matching PartyPong physics so the aim
 // guide reads honestly. Mirrors fgPredictTrajectory.
 function ppPredictTrajectory(g, flick) {
-  const distScale = Math.max(0.7, (g.level.rack.zBack || 2.0) / 2.0);
+  const zBack = g.level.rack.zBack || 2.0;
+  const distScale = Math.max(0.6, (zBack - 0.5));
   let bx = PP_BALL_SPAWN.x, by = PP_BALL_SPAWN.y, bz = PP_BALL_SPAWN.z;
-  let vx = flick.lateral * 1.6 * flick.power;
-  let vy = 2.4 + flick.power * 3.6 * flick.upward;
-  let vz = (3.0 + flick.power * 4.5) * distScale * (0.55 + 0.45 * flick.upward);
+  let vx = flick.lateral * flick.power * 1.2;
+  let vy = flick.power * (1.0 + 1.5 * flick.upward);
+  let vz = flick.power * 1.5 * distScale * (0.5 + 0.5 * flick.upward);
   const out = [];
   const dt = 0.04;
   for (let i = 0; i < 50; i++) {
