@@ -3180,19 +3180,24 @@ function startMinigame(id) {
   }
 }
 
+function settleMinigame() {
+  if (!minigameRuntime || minigameRuntime._settled) return;
+  const mg = MINIGAMES[minigameRuntime.id];
+  if (!mg) return;
+  const score = minigameRuntime.score || 0;
+  const best = save.minigameBest && save.minigameBest[minigameRuntime.id];
+  const cash = mg.payout ? mg.payout(minigameRuntime) : Math.floor(score / 2);
+  save.cash += cash;
+  save.minigameBest = save.minigameBest || {};
+  if (!best || score > best) save.minigameBest[minigameRuntime.id] = score;
+  persistSave();
+  pushToast(`${mg.name}: ${score} pts • +$${cash}`, "gold", 2200);
+  minigameRuntime._settled = true;
+}
+
 function endMinigame() {
   if (!minigameRuntime) return;
-  const mg = MINIGAMES[minigameRuntime.id];
-  if (mg) {
-    const score = minigameRuntime.score || 0;
-    const best = save.minigameBest && save.minigameBest[minigameRuntime.id];
-    const cash = mg.payout ? mg.payout(minigameRuntime) : Math.floor(score / 2);
-    save.cash += cash;
-    save.minigameBest = save.minigameBest || {};
-    if (!best || score > best) save.minigameBest[minigameRuntime.id] = score;
-    persistSave();
-    pushToast(`${mg.name}: ${score} pts • +$${cash}`, "gold", 2200);
-  }
+  settleMinigame();
   minigameRuntime = null;
   state = STATE.QUESTS;
   buildQuests();
@@ -3209,14 +3214,24 @@ function canvasPointerToWorld(clientX, clientY) {
 function dispatchMinigamePointer(kind, e) {
   if (state !== STATE.MINIGAME || !minigameRuntime) return;
   e.preventDefault && e.preventDefault();
-  // If the round is over, any tap returns to the mini-game menu.
+  const p = canvasPointerToWorld(e.clientX, e.clientY);
+  // If the round is over, route the click through the Game Over buttons.
   if (minigameRuntime.finished) {
-    if (kind === "down" && (!minigameRuntime.finishHoldUntil || performance.now() > minigameRuntime.finishHoldUntil)) {
-      endMinigame();
+    if (kind === "down" && (!minigameRuntime.finishHoldUntil ||
+        performance.now() > minigameRuntime.finishHoldUntil)) {
+      const inBtn = (b) => b && p.x >= b.x && p.x <= b.x + b.w
+                              && p.y >= b.y && p.y <= b.y + b.h;
+      if (inBtn(minigameRuntime._btnPlayAgain)) {
+        const id = minigameRuntime.id;
+        settleMinigame();
+        minigameRuntime = null;
+        startMinigame(id);
+      } else if (inBtn(minigameRuntime._btnMenu)) {
+        endMinigame();
+      }
     }
     return;
   }
-  const p = canvasPointerToWorld(e.clientX, e.clientY);
   const mg = MINIGAMES[minigameRuntime.id];
   if (mg && mg.handlePointer) mg.handlePointer(minigameRuntime, kind, p.x, p.y);
 }
@@ -3468,6 +3483,48 @@ const FieldGoal = {
     ctx.fillStyle = "#fff";
     ctx.fillRect(padFar.sx, padFar.sy - 8, Math.max(4, padNear.sx - padFar.sx), 10);
 
+    // Wind flag — pole + waving flag at the back of the end zone, behind
+    // and slightly offset from the goalposts. Bends in the wind direction.
+    {
+      const flagX = px - 8;            // 8m to the left of the goal center
+      const flagZ = p.z + 6;            // a few meters behind the posts
+      const flagH = 4.5;                // pole height (m)
+      const poleBase = fpProject(flagX, 0, flagZ);
+      const poleTop  = fpProject(flagX, flagH, flagZ);
+      // Pole
+      ctx.strokeStyle = "#fff";
+      ctx.lineCap = "round";
+      ctx.lineWidth = Math.max(1.5, 4 * poleBase.scale * 6);
+      ctx.beginPath();
+      ctx.moveTo(poleBase.sx, poleBase.sy);
+      ctx.lineTo(poleTop.sx, poleTop.sy);
+      ctx.stroke();
+      ctx.lineCap = "butt";
+      // Flag — drawn as a quad anchored at top of pole, swept in wind
+      // direction. wsign = +1 for wind blowing right, -1 for wind left.
+      const wsign = g.wind >= 0 ? 1 : -1;
+      const wpow  = Math.min(1, Math.abs(g.wind) / 9);
+      const flagLen = 1.4 + wpow * 1.2;       // longer when stronger
+      const flagDrop = 1.0 - wpow * 0.5;      // higher when stronger (less droop)
+      const flagTip  = fpProject(flagX + wsign * flagLen, flagH - flagDrop, flagZ);
+      const flagBot  = fpProject(flagX,                   flagH - 1.4,      flagZ);
+      const wave = Math.sin(performance.now() / 120) * 4;
+      ctx.fillStyle = "#ff5a3a";
+      ctx.beginPath();
+      ctx.moveTo(poleTop.sx, poleTop.sy);
+      ctx.lineTo(flagTip.sx, flagTip.sy + wave);
+      ctx.lineTo(flagBot.sx, flagBot.sy);
+      ctx.closePath(); ctx.fill();
+      // White stripe across the flag
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = Math.max(1, 1.5 * poleBase.scale * 6);
+      ctx.beginPath();
+      ctx.moveTo((poleTop.sx + flagBot.sx) / 2, (poleTop.sy + flagBot.sy) / 2);
+      ctx.lineTo(flagTip.sx * 0.7 + (poleTop.sx + flagBot.sx) * 0.15,
+                 (flagTip.sy + wave) * 0.7 + (poleTop.sy + flagBot.sy) * 0.15);
+      ctx.stroke();
+    }
+
     // HUD — wind, distance, score, attempts left.
     ctx.fillStyle = "rgba(0,0,0,0.7)";
     ctx.font = "bold 16px ui-monospace, monospace";
@@ -3586,6 +3643,7 @@ const CanBash = {
     const canHeight = 0.55;
     const canWidth  = 0.45;
     const rows = 4;
+    let total = 0;
     for (let row = 0; row < rows; row++) {
       const count = rows - row;
       const yy = tableTopY + row * canHeight + canHeight / 2;
@@ -3594,15 +3652,33 @@ const CanBash = {
         cans.push({
           x: xx, y: yy, z: tableZ, w: canWidth, h: canHeight,
           hit: false, fallVx: 0, fallVy: 0, angle: 0, angVel: 0, fallT: 0,
+          gold: false,
         });
+        total++;
       }
     }
+    // Pick one random can to be the gold can (worth +50 if knocked).
+    const goldIdx = Math.floor(Math.random() * total);
+    cans[goldIdx].gold = true;
     return {
       cans, ball: null, throws: 3, thrown: 0, score: 0, knocked: 0,
       tableZ, tableTopY,
       message: "", messageTimer: 0, finished: false,
       dragStart: null, dragNow: null,
+      _knockedAtThrow: 0,
     };
+  },
+  knock(g, c, vx, vy) {
+    if (c.hit) return;
+    c.hit = true;
+    c.fallVx = vx + (Math.random() - 0.5) * 0.6;
+    c.fallVy = vy;
+    c.angle  = (Math.random() - 0.5) * 0.6;
+    c.angVel = (Math.random() - 0.5) * 6;
+    g.knocked++;
+    if (c.gold) { g.score += 60; }
+    else        { g.score += 10; }
+    Sound.pickup && Sound.pickup();
   },
   payout(g) {
     const cleared = g.cans.every(c => c.hit);
@@ -3625,6 +3701,7 @@ const CanBash = {
     g.ball.spin = 0;
     g.ball.thrown = true;
     g.thrown++;
+    g._knockedAtThrow = g.knocked;
     Sound.boostHit && Sound.boostHit();
   },
   update(g, dt) {
@@ -3637,21 +3714,46 @@ const CanBash = {
       b.y += b.vy * dt;
       b.z += b.vz * dt;
       if (b.z >= g.tableZ - 0.5 && !b.didHit) {
+        let directHits = [];
         for (const c of g.cans) {
           if (c.hit) continue;
           const dx = b.x - c.x;
           const dy = b.y - c.y;
           if (Math.abs(dx) < c.w * 0.55 + 0.18 && Math.abs(dy) < c.h * 0.6 + 0.18) {
-            c.hit = true;
-            c.fallVx = b.vx * 0.4 + dx * 4;
-            c.fallVy = -b.vy * 0.5 + 1;
-            c.angle = (Math.random() - 0.5) * 0.6;
-            c.angVel = (Math.random() - 0.5) * 6;
-            g.knocked++; g.score += 10;
-            Sound.pickup && Sound.pickup();
+            CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
+            directHits.push(c);
             b.vx *= 0.5; b.vy *= 0.5; b.vz *= 0.4;
           }
         }
+        // Cascade: each direct hit propagates to its neighbors. Repeat
+        // a few rounds so the chain spreads through the stack.
+        for (let pass = 0; pass < 4; pass++) {
+          const newly = [];
+          for (const src of directHits) {
+            for (const c of g.cans) {
+              if (c.hit) continue;
+              const dx = c.x - src.x;
+              const dy = c.y - src.y;
+              if (Math.abs(dx) < src.w * 1.6 && Math.abs(dy) < src.h * 1.4) {
+                CanBash.knock(g, c,
+                  src.fallVx * 0.55 + dx * 2,
+                  -1.5 - Math.random() * 1.0);
+                newly.push(c);
+              }
+            }
+          }
+          if (newly.length === 0) break;
+          directHits = newly;
+        }
+        // Per-throw bonus for multi-knocks.
+        const knockedThisThrow = g.knocked - (g._knockedAtThrow || 0);
+        if (knockedThisThrow >= 3) {
+          const bonus = Math.min(50, knockedThisThrow * 8);
+          g.score += bonus;
+          g.message = `${knockedThisThrow}-can KO! +${bonus}`;
+          g.messageTimer = 1.6;
+        }
+        g._knockedAtThrow = g.knocked;
         b.didHit = true;
       }
       if (b.z > g.tableZ + 4 || b.y < -1) b.gone = true;
@@ -3678,7 +3780,52 @@ const CanBash = {
   render(g) {
     if (!g.ball) CanBash.resetBall(g);
     fpSetCam(0);
-    fpDrawSky("#3a3050", "#5a3340", "#3a2516");
+    // Carnival sky — warm gradient, with a striped tent banner pinned to
+    // the top and a string of bulbs swaying gently across the upper half.
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, "#3a1a30"); sky.addColorStop(0.55, "#9b3a4a"); sky.addColorStop(1, "#3a2516");
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+    // Striped tent roof — alternating red/cream triangles
+    const tentH = Math.max(40, H * 0.10);
+    const tentSegs = 12;
+    for (let i = 0; i < tentSegs; i++) {
+      const x0 = (i / tentSegs) * W;
+      const x1 = ((i + 1) / tentSegs) * W;
+      ctx.fillStyle = i % 2 === 0 ? "#e94c3a" : "#fff4d6";
+      ctx.beginPath();
+      ctx.moveTo(x0, 0); ctx.lineTo(x1, 0);
+      ctx.lineTo((x0 + x1) / 2, tentH);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(0, tentH, W, 4);
+    // String of bulbs hanging from the tent edge
+    {
+      const t = performance.now() / 1000;
+      const sag = (x) => tentH + 10 + Math.sin(x * 0.018 + t * 0.6) * 6 + 22;
+      ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 8) {
+        const y = sag(x);
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      const bulbColors = ["#ffd03a", "#ff5a3a", "#6ee7ff", "#4ddc8c", "#fff"];
+      for (let x = 30; x < W - 10; x += 60) {
+        const y = sag(x) + 10;
+        const c = bulbColors[Math.floor(x / 60) % bulbColors.length];
+        // Glow
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, 20);
+        grad.addColorStop(0, c); grad.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - 22, y - 22, 44, 44);
+        // Bulb
+        ctx.fillStyle = c;
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // Ground (sawdust feel)
     fpDrawField("#5a3818", "rgba(255, 200, 100, 0.18)");
 
     // Table — wooden box at z=tableZ.
@@ -3717,14 +3864,30 @@ const CanBash = {
       ctx.translate(proj.sx, proj.sy);
       if (c.hit) ctx.rotate(c.angle);
       const can = ctx.createLinearGradient(-w/2, 0, w/2, 0);
-      can.addColorStop(0, "#888"); can.addColorStop(0.5, "#dadada"); can.addColorStop(1, "#666");
+      if (c.gold && !c.hit) {
+        // Pulsing golden can — bonus target.
+        const pulse = 0.85 + 0.15 * Math.sin(performance.now() / 250);
+        can.addColorStop(0, `rgba(180, 130, 30, ${pulse})`);
+        can.addColorStop(0.5, `rgba(255, 220, 80, ${pulse})`);
+        can.addColorStop(1, `rgba(180, 130, 30, ${pulse})`);
+      } else {
+        can.addColorStop(0, "#888"); can.addColorStop(0.5, "#dadada"); can.addColorStop(1, "#666");
+      }
       ctx.fillStyle = can;
       ctx.fillRect(-w/2, -h/2, w, h);
-      ctx.fillStyle = "#e94c3a";
+      ctx.fillStyle = c.gold ? "#7a4f00" : "#e94c3a";
       ctx.fillRect(-w/2, -h * 0.18, w, h * 0.4);
       ctx.fillStyle = "#fff";
       ctx.fillRect(-w/2, -h * 0.22, w, 1.5);
       ctx.fillRect(-w/2,  h * 0.22, w, 1.5);
+      // Gold star marking
+      if (c.gold) {
+        ctx.fillStyle = "#fff";
+        ctx.font = `bold ${Math.max(8, 12 * proj.scale)}px ui-monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText("★", 0, h * 0.07);
+        ctx.textAlign = "start";
+      }
       ctx.strokeStyle = "rgba(0,0,0,0.5)";
       ctx.lineWidth = Math.max(0.5, 1.2 * proj.scale);
       ctx.beginPath(); ctx.ellipse(0, -h/2, w/2, h * 0.07, 0, 0, Math.PI * 2); ctx.stroke();
@@ -3796,28 +3959,41 @@ const DuckHunt = {
       ducks: [], shots: 10, fired: 0, hits: 0, score: 0, time: 0,
       spawnTimer: 0, finished: false, message: "", messageTimer: 0,
       muzzle: 0, // briefly flash on shot
+      cursor: { x: W / 2, y: H / 2, active: false },
+      streak: 0,
     };
   },
   payout(g) { return g.hits * 25; },
   spawnDuck(g) {
     const fromLeft = Math.random() < 0.5;
-    const speed = 220 + Math.random() * 180;
+    // 12% gold, 18% small/fast, rest standard.
+    const r = Math.random();
+    const gold  = r < 0.12;
+    const small = !gold && r < 0.30;
+    const speedMul = small ? 1.7 : 1.0;
+    const speed = (220 + Math.random() * 180) * speedMul;
     g.ducks.push({
       x: fromLeft ? -30 : W + 30,
       y: H * (0.25 + Math.random() * 0.45),
       vx: fromLeft ? speed : -speed,
       vy: -20 - Math.random() * 40,
       hit: false, alpha: 1, t: 0,
+      gold, small,
+      size: small ? 0.7 : 1.0,
     });
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
+    // Track cursor for crosshair render on every pointer event.
+    if (kind === "down" || kind === "move") {
+      g.cursor.x = x; g.cursor.y = y; g.cursor.active = true;
+    }
     if (kind !== "down") return;
     if (g.fired >= g.shots) return;
     g.fired++; g.muzzle = 0.12;
     Sound.boostHit && Sound.boostHit();
-    // Hit-test ducks (closest within 40px wins).
-    let best = null, bestD = 40 * 40;
+    // Hit-test ducks (closest within 44px wins).
+    let best = null, bestD = 44 * 44;
     for (const d of g.ducks) {
       if (d.hit) continue;
       const dx = d.x - x, dy = d.y - y;
@@ -3826,13 +4002,23 @@ const DuckHunt = {
     }
     if (best) {
       best.hit = true; best.vy = 320; best.vx *= 0.3;
-      g.hits++; g.score += 50;
+      g.hits++;
+      const base = best.gold ? 200 : (best.small ? 80 : 50);
+      g.streak++;
+      const mult = Math.min(3, 1 + g.streak * 0.25);
+      const earn = Math.round(base * mult);
+      g.score += earn;
+      g.message = `+${earn}${g.streak >= 3 ? "  x" + g.streak : ""}`;
+      g.messageTimer = 0.7;
       Sound.gem && Sound.gem();
+    } else {
+      g.streak = 0;
     }
   },
   update(g, dt) {
     g.time += dt;
     g.muzzle = Math.max(0, g.muzzle - dt);
+    if (g.messageTimer > 0) g.messageTimer = Math.max(0, g.messageTimer - dt);
     // Spawn
     g.spawnTimer -= dt;
     if (g.spawnTimer <= 0 && g.fired < g.shots) {
@@ -3872,24 +4058,42 @@ const DuckHunt = {
     ctx.fillStyle = "#1a3010";
     for (let x = 0; x < W; x += 14) ctx.fillRect(x, H * 0.84, 2, 14);
 
+    // Drifting clouds for some sky depth.
+    {
+      const t = performance.now() / 1000;
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      for (let i = 0; i < 4; i++) {
+        const cx = ((i * 280 + t * (10 + i * 4)) % (W + 200)) - 100;
+        const cy = 60 + (i % 3) * 40;
+        const cw = 36 + (i % 3) * 10;
+        ctx.beginPath();
+        ctx.arc(cx, cy, cw, 0, Math.PI * 2);
+        ctx.arc(cx + cw * 0.7, cy + 4, cw * 0.7, 0, Math.PI * 2);
+        ctx.arc(cx - cw * 0.7, cy + 4, cw * 0.65, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     // Ducks
     for (const d of g.ducks) {
       ctx.save();
       ctx.translate(d.x, d.y);
-      ctx.scale(d.vx < 0 ? -1 : 1, 1);
+      ctx.scale((d.vx < 0 ? -1 : 1) * d.size, d.size);
       ctx.globalAlpha = d.alpha;
+      const bodyCol = d.gold ? "#ffce6e" : (d.hit ? "#7a4a14" : "#4a3018");
+      const headCol = d.gold ? "#a07020" : "#1a4f2a";
+      const wingCol = d.gold ? "#7a4a00" : "#2a1a08";
       // Body
-      ctx.fillStyle = d.hit ? "#7a4a14" : "#4a3018";
+      ctx.fillStyle = bodyCol;
       ctx.beginPath(); ctx.ellipse(0, 0, 18, 10, 0, 0, Math.PI * 2); ctx.fill();
       // Head
-      ctx.fillStyle = "#1a4f2a";
+      ctx.fillStyle = headCol;
       ctx.beginPath(); ctx.arc(14, -8, 7, 0, Math.PI * 2); ctx.fill();
       // Beak
       ctx.fillStyle = "#ffb020";
       ctx.fillRect(20, -8, 7, 3);
       // Wing flap
       const flap = d.hit ? -0.3 : Math.sin(d.t * 18) * 0.6;
-      ctx.fillStyle = "#2a1a08";
+      ctx.fillStyle = wingCol;
       ctx.save();
       ctx.rotate(flap);
       ctx.beginPath(); ctx.ellipse(0, -6, 14, 6, 0, 0, Math.PI * 2); ctx.fill();
@@ -3897,13 +4101,47 @@ const DuckHunt = {
       // Eye
       ctx.fillStyle = "#fff";
       ctx.beginPath(); ctx.arc(16, -10, 1.5, 0, Math.PI * 2); ctx.fill();
+      // Gold halo
+      if (d.gold && !d.hit) {
+        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 36);
+        grad.addColorStop(0, "rgba(255, 220, 80, 0.55)");
+        grad.addColorStop(1, "rgba(255, 220, 80, 0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(-44, -44, 88, 88);
+      }
       ctx.restore();
     }
-    // Crosshair where pointer was last (skip — we don't track it)
     // Muzzle flash
     if (g.muzzle > 0) {
       ctx.fillStyle = `rgba(255, 230, 120, ${g.muzzle * 5})`;
       ctx.fillRect(0, 0, W, H);
+    }
+    // Crosshair — follows the player's finger / pointer.
+    if (g.cursor.active && g.fired < g.shots) {
+      const cx = g.cursor.x, cy = g.cursor.y;
+      ctx.strokeStyle = "rgba(255, 80, 80, 0.95)";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(cx, cy, 18, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, 28, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx - 28, cy); ctx.lineTo(cx - 8, cy);
+      ctx.moveTo(cx + 8, cy);  ctx.lineTo(cx + 28, cy);
+      ctx.moveTo(cx, cy - 28); ctx.lineTo(cx, cy - 8);
+      ctx.moveTo(cx, cy + 8);  ctx.lineTo(cx, cy + 28);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255, 80, 80, 0.85)";
+      ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2); ctx.fill();
+    }
+    // Floating "+pts" message
+    if (g.message && g.messageTimer > 0) {
+      const a = Math.min(1, g.messageTimer / 0.7);
+      ctx.globalAlpha = a;
+      ctx.font = "bold 22px ui-monospace, monospace";
+      ctx.fillStyle = "#ffe680";
+      ctx.textAlign = "center";
+      ctx.fillText(g.message, W / 2, H * 0.18);
+      ctx.textAlign = "start";
+      ctx.globalAlpha = 1;
     }
     // HUD
     ctx.fillStyle = "rgba(0,0,0,0.6)";
@@ -3926,22 +4164,49 @@ const MINIGAMES = {
 };
 
 function drawMinigameFinishedOverlay(g) {
-  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillStyle = "rgba(0,0,0,0.70)";
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = "#ffb020";
   ctx.font = "bold 36px ui-monospace, monospace";
   ctx.textAlign = "center";
-  ctx.fillText("Game Over", W/2, H * 0.38);
+  ctx.fillText("Game Over", W/2, H * 0.32);
   ctx.fillStyle = "#fff";
   ctx.font = "bold 24px ui-monospace, monospace";
-  ctx.fillText(`Score: ${g.score || 0}`, W/2, H * 0.46);
+  ctx.fillText(`Score: ${g.score || 0}`, W/2, H * 0.40);
   const mg = MINIGAMES[g.id];
   const cash = mg && mg.payout ? mg.payout(g) : Math.floor((g.score||0) / 2);
+  const best = (save.minigameBest && save.minigameBest[g.id]) || 0;
+  if ((g.score || 0) > best) {
+    ctx.fillStyle = "#ffe680";
+    ctx.fillText(`NEW BEST!`, W/2, H * 0.475);
+  } else {
+    ctx.fillStyle = "#cfd6e3";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(`Best: ${best}`, W/2, H * 0.475);
+  }
   ctx.fillStyle = "#4ddc8c";
+  ctx.font = "bold 24px ui-monospace, monospace";
   ctx.fillText(`+$${cash}`, W/2, H * 0.54);
-  ctx.fillStyle = "#cfd6e3";
-  ctx.font = "bold 16px ui-monospace, monospace";
-  ctx.fillText("Tap to continue", W/2, H * 0.66);
+  // Buttons (regions stored on the game state for click detection).
+  const bw = Math.min(220, W * 0.35);
+  const bh = 60;
+  const gap = 20;
+  const cy = H * 0.66;
+  g._btnPlayAgain = { x: W/2 - bw - gap/2, y: cy, w: bw, h: bh };
+  g._btnMenu      = { x: W/2 + gap/2,      y: cy, w: bw, h: bh };
+  for (const [btn, label, fill] of [
+    [g._btnPlayAgain, "Play Again ▶", "#ffb020"],
+    [g._btnMenu,      "Menu",          "#2a3350"],
+  ]) {
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 12);
+    else ctx.rect(btn.x, btn.y, btn.w, btn.h);
+    ctx.fill();
+    ctx.fillStyle = label === "Menu" ? "#fff" : "#1a1206";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(label, btn.x + btn.w / 2, btn.y + btn.h / 2 + 6);
+  }
   ctx.textAlign = "start";
 }
 
