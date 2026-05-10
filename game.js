@@ -3844,27 +3844,69 @@ const CanBash = {
     if (g.finished) return;
     if (!g.ball) CanBash.resetBall(g);
     if (g.ball.thrown) return;
-    const flick = fpProcessFlick(g, kind, x, y);
-    if (!flick) return;
-    const { power, lateral, upward } = flick;
-    // Map the flick to a real release vector. Loft is capped at a sane
-    // throwing band (5°–25°) so the ball actually carries forward to the
-    // cans instead of going almost straight up the way the previous
-    // unbounded mapping did.
-    const speed = 10 + power * 24;                                 // 10 → 34 m/s
-    const loft  = (5 + upward * 20) * (Math.PI / 180);             // 5° → 25°
-    const yaw   = lateral * (Math.PI / 4);                          // ±45°
+    const now = performance.now();
+    if (kind === "down") {
+      g.dragStart = { x, y, t: now };
+      g.dragNow = { x, y };
+      g.dragHistory = [{ x, y, t: now }];
+      return;
+    }
+    if (kind === "move" && g.dragStart) {
+      g.dragNow = { x, y };
+      g.dragHistory.push({ x, y, t: now });
+      // Keep only recent history (last 200ms) so the velocity sample
+      // tracks how fast the finger is moving RIGHT NOW.
+      const cutoff = now - 200;
+      while (g.dragHistory.length > 0 && g.dragHistory[0].t < cutoff) {
+        g.dragHistory.shift();
+      }
+      return;
+    }
+    if (kind !== "up" || !g.dragStart) return;
+
+    // Release: where the finger landed is the AIM point. How fast the
+    // finger was moving over the last ~100ms is the POWER.
+    const hist = g.dragHistory || [];
+    let fingerSpeed = 0; // px/s
+    if (hist.length >= 2) {
+      const last = hist[hist.length - 1];
+      const cutoff = now - 110;
+      const start = hist.find(p => p.t >= cutoff) || hist[0];
+      const dt = (last.t - start.t) / 1000;
+      if (dt > 0.005) {
+        fingerSpeed = Math.hypot(last.x - start.x, last.y - start.y) / dt;
+      }
+    }
+    g.dragStart = null; g.dragNow = null; g.dragHistory = null;
+
+    // Aim direction: vector from the ball's rest position to the finger's
+    // release position. Up = high arc target; lateral = side aim.
+    const ballSX = W / 2;
+    const ballSY = H * 0.84;
+    const dx = x - ballSX;
+    const dy = y - ballSY;
+    if (dy > -40) return;     // ignore if release wasn't above the ball
+    const dist = Math.hypot(dx, dy);
+    const nx = dx / dist;
+    const ny = dy / dist;     // negative (above ball)
+
+    // Power from finger speed. ~600 px/s = soft, ~2400 px/s = full.
+    const power = Math.max(0.18, Math.min(1, fingerSpeed / 2200));
+
+    // Map aim direction → release angles. The more vertical the aim, the
+    // higher the loft. The more sideways, the bigger the yaw.
+    const yaw  = nx * (Math.PI / 4);                          // ±45°
+    const loft = (8 + (-ny) * 22) * (Math.PI / 180);          // 8° → 30°
+    const speed = 11 + power * 23;                            // 11 → 34 m/s
     g.ball.vz = speed * Math.cos(loft) * Math.cos(yaw);
     g.ball.vy = speed * Math.sin(loft);
     g.ball.vx = speed * Math.cos(loft) * Math.sin(yaw);
-    // Make sure the ball always has real forward speed (defensive — keeps
-    // a wobbly mostly-sideways flick from stalling).
     if (g.ball.vz < 6) g.ball.vz = 6;
     // Power tax on accuracy: hard flicks wobble; soft flicks stay precise.
-    const wildness = power * power * 0.25;
+    const wildness = power * power * 0.22;
     g.ball.vx += (Math.random() - 0.5) * 3.0 * wildness;
-    g.ball.vy += (Math.random() - 0.5) * 1.6 * wildness;
-    g.ball.vz += (Math.random() - 0.5) * 1.2 * wildness;
+    g.ball.vy += (Math.random() - 0.5) * 1.4 * wildness;
+    g.ball.vz += (Math.random() - 0.5) * 1.0 * wildness;
     g.ball.spin = 0;
     g.ball.thrown = true;
     g.ball.trail = [];
