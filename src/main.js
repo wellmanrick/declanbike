@@ -4177,23 +4177,95 @@ function ppDrawScene(g) {
   const wallBot = fpProject(0, PP_TABLE_Y, wallZ);
   ctx.fillStyle = "#1a1230";
   ctx.fillRect(0, wallTop.sy, W, wallBot.sy - wallTop.sy);
-  // Neon LED strip along the wall.
+  // Crowd silhouettes — five overlapping head-and-shoulder shapes on
+  // each side of the wall, bobbing slightly to feel alive. Anchored
+  // in world coords at the wall plane so they scale with perspective.
+  {
+    const headTopP = fpProject(0, 1.95, wallZ);
+    const headBotP = fpProject(0, 1.30, wallZ);
+    const headR    = Math.max(6, (headBotP.sy - headTopP.sy) * 0.42);
+    const baseY    = wallBot.sy - headR * 0.5;
+    const tNow     = performance.now() / 600;
+    ctx.fillStyle  = "rgba(0, 0, 0, 0.50)";
+    for (let side = -1; side <= 1; side += 2) {
+      // Anchor each cluster at the screen-projected wall edge.
+      const edge = fpProject(side * 3.4, PP_TABLE_Y, wallZ);
+      for (let i = 0; i < 5; i++) {
+        const sx = edge.sx + side * i * headR * 1.5;
+        const bob = Math.sin(tNow + i * 1.3 + side * 0.7) * 4;
+        const cy = baseY + bob;
+        ctx.beginPath();
+        ctx.arc(sx, cy, headR * (0.85 + (i % 3) * 0.05), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillRect(sx - headR * 1.2, cy + headR * 0.4, headR * 2.4, headR * 1.6);
+      }
+    }
+  }
+  // Neon "PARTY PONG" marquee centered above the LED strip. Stylized
+  // as two stacked text lines with a soft outer glow + inner highlight
+  // so it reads as neon at any screen size.
+  {
+    const sign  = fpProject(0, 2.05, wallZ);
+    const fontPx = Math.max(18, Math.min(48, sign.scale * 60 * 0.55));
+    const tNow = performance.now() / 480;
+    const pulse = 0.85 + 0.15 * Math.sin(tNow);
+    ctx.textAlign = "center";
+    ctx.font = `900 ${fontPx}px ui-monospace, monospace`;
+    // Outer glow
+    ctx.shadowBlur = 18;
+    ctx.shadowColor = `rgba(255, 105, 180, ${0.85 * pulse})`;
+    ctx.fillStyle = `rgba(255, 105, 180, ${0.95 * pulse})`;
+    ctx.fillText("PARTY", sign.sx, sign.sy);
+    ctx.shadowColor = `rgba(125, 200, 255, ${0.85 * pulse})`;
+    ctx.fillStyle = `rgba(125, 200, 255, ${0.95 * pulse})`;
+    ctx.fillText("PONG", sign.sx, sign.sy + fontPx * 1.05);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = "start";
+  }
+  // String lights — a chain of glowing dots arcing across the top of
+  // the wall. Each bulb cycles through party colors in sequence.
+  {
+    const arcCount = 11;
+    const arcL = fpProject(-3.0, 2.30, wallZ);
+    const arcR = fpProject( 3.0, 2.30, wallZ);
+    const arcMid = fpProject(0, 2.20, wallZ);
+    const colors = ["#ff5a7a", "#ffd03a", "#4ddc8c", "#6ee7ff", "#c79bff"];
+    const tNow = performance.now() / 320;
+    for (let i = 0; i < arcCount; i++) {
+      const t = i / (arcCount - 1);
+      // Linear interp endpoints, lift the middle for a sag-arc feel.
+      const sx = arcL.sx + (arcR.sx - arcL.sx) * t;
+      const arcLift = -Math.sin(t * Math.PI) * (arcL.sy - arcMid.sy);
+      const sy = arcL.sy + (arcR.sy - arcL.sy) * t + arcLift;
+      const colorIdx = (i + Math.floor(tNow)) % colors.length;
+      const color = colors[colorIdx];
+      const r = Math.max(2.5, sign_scale_safe(arcMid.scale) * 5);
+      ctx.fillStyle = color;
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = color;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+  }
+  // Neon LED strip along the wall — pulses subtly with the beat.
   const stripL = fpProject(-3, 1.6, wallZ);
   const stripR = fpProject( 3, 1.6, wallZ);
-  ctx.strokeStyle = "rgba(125, 93, 255, 0.85)";
+  const ledPulse = 0.7 + 0.3 * Math.sin(performance.now() / 280);
+  ctx.strokeStyle = `rgba(125, 93, 255, ${0.85 * ledPulse})`;
   ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(stripL.sx, stripL.sy);
   ctx.lineTo(stripR.sx, stripR.sy);
   ctx.stroke();
-  ctx.strokeStyle = "rgba(255, 105, 180, 0.55)";
+  ctx.strokeStyle = `rgba(255, 105, 180, ${0.55 * ledPulse})`;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(stripL.sx, stripL.sy + 14);
   ctx.lineTo(stripR.sx, stripR.sy + 14);
   ctx.stroke();
   // Floor — visible under the table front edge.
-  const floorBot = fpProject(0, 0, PP_TABLE_Z_NEAR);
   ctx.fillStyle = "#0a0518";
   ctx.fillRect(0, wallBot.sy, W, H - wallBot.sy);
   // Pong table — perspective quad. Draw as a polygon then add an
@@ -4224,16 +4296,27 @@ function ppDrawScene(g) {
   ctx.lineTo(rNR.sx, rNR.sy);
   ctx.lineTo(rNL.sx, rNL.sy);
   ctx.closePath(); ctx.fill();
-  // Center stripe down the table — adds a focal axis for depth.
-  const cN = fpProject(0, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR);
-  const cF = fpProject(0, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
-  ctx.strokeStyle = "rgba(180, 220, 255, 0.16)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(cN.sx, cN.sy);
-  ctx.lineTo(cF.sx, cF.sy);
-  ctx.stroke();
+  // Center stripe — drawn as a thin perspective trapezoid (wider at
+  // the player end, narrowing toward the rack) so it reads as a lane
+  // marking on the table top instead of a vertical thread on screen.
+  {
+    const stripeR = 0.04;
+    const sNL = fpProject(-stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR);
+    const sNR = fpProject( stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR);
+    const sFL = fpProject(-stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
+    const sFR = fpProject( stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
+    ctx.fillStyle = "rgba(180, 220, 255, 0.10)";
+    ctx.beginPath();
+    ctx.moveTo(sNL.sx, sNL.sy);
+    ctx.lineTo(sNR.sx, sNR.sy);
+    ctx.lineTo(sFR.sx, sFR.sy);
+    ctx.lineTo(sFL.sx, sFL.sy);
+    ctx.closePath(); ctx.fill();
+  }
 }
+// Defensive helper — fpProject's scale collapses past the camera; clamp
+// so glow / dot radii stay drawable when projected far away.
+function sign_scale_safe(s) { return Math.max(0.15, Math.min(s, 4)); }
 
 // Draw a single cup. Side as a trapezoid with a gradient; top opening
 // as a perspective ellipse. Removed cups skipped.
