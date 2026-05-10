@@ -2543,6 +2543,12 @@ const FieldGoal = {
       stars: 0,
       cameraZ: 0,
       kickFx: 0,
+      // Game-feel state: screen shake intensity, hit-pause window,
+      // slow-mo timer. cbJuice() writes these; update() and render()
+      // read them.
+      shake: 0, pauseT: 0, slowT: 0,
+      // Close-call slow-mo only fires once per kick.
+      slowFired: false,
       // Snow particles persist across attempts so the storm feels continuous.
       snow: condition === "snowstorm" ? FieldGoal.makeSnow() : null,
       // Crosswind gust schedule — set per-attempt in reset().
@@ -2587,6 +2593,7 @@ const FieldGoal = {
     g.message = ""; g.messageTimer = 0;
     g.cameraZ = 0;
     g.kickFx = 0;
+    g.slowFired = false;
     // Crosswind: schedule the gust at 0.4–0.9s into flight; flag we
     // haven't gusted yet so update() flips the wind exactly once.
     if (g.condition === "crosswind") {
@@ -2617,11 +2624,29 @@ const FieldGoal = {
     g.ball.kicked = true;
     g.kickFx = 0.25;
     Sound.boostHit && Sound.boostHit();
+    // Kick haptic — a short single tick. The shake-on-impact comes
+    // later in update() when the ball reaches the posts.
+    cbJuice(g, { vibrate: 18 });
   },
   update(g, dt) {
     if (!g.ball) FieldGoal.reset(g);
     const b = g.ball, p = g.posts;
     if (g.kickFx > 0) g.kickFx = Math.max(0, g.kickFx - dt);
+    // Shake decays in real time, regardless of pause/slow-mo, so the
+    // visual settles even during a hit-pause.
+    if (g.shake > 0) g.shake = Math.max(0, g.shake - dt * 12);
+    // Hit-pause: freeze physics for a short window after impact. The
+    // pause counter ticks down in real time so it always resolves.
+    if (g.pauseT > 0) {
+      g.pauseT -= dt;
+      return;
+    }
+    // Slow-mo: scale physics dt by CB_SLOW_FACTOR while active. The
+    // timer itself ticks in real time so it ends predictably.
+    if (g.slowT > 0) {
+      g.slowT -= dt;
+      dt *= CB_SLOW_FACTOR;
+    }
     // First-encounter tutorial pop. Mirrors Can Bash: only fires while the
     // player hasn't kicked yet so it doesn't fight gameplay messages.
     if (g.tutorialQueue && g.tutorialQueue.length > 0 && !b.kicked) {
@@ -2655,6 +2680,7 @@ const FieldGoal = {
         g.wind = -g.wind * 1.4;
         g.gusted = true;
         pushToast("GUST!", "red", 700);
+        cbJuice(g, { shake: 4, vibrate: [0, 15, 25, 15] });
       }
       // Snowstorm: extra air drag in all axes simulates pushing through snow.
       // Tuned light so the level is challenging-but-fair: ~20% energy loss
@@ -2667,6 +2693,21 @@ const FieldGoal = {
       b.x  += b.vx * dt;
       b.y  += b.vy * dt;
       b.z  += b.vz * dt;
+      // Close-call slow-mo: when the ball is in the last few meters
+      // before the posts AND its trajectory looks borderline (offset
+      // close to an upright OR ball just below the bar), trip slow-mo
+      // once to let the player savor the moment. Triggered via the
+      // shared juice helper so it stacks with shake/haptics later.
+      if (!g.slowFired && b.kicked && !b.scored && b.z > p.z - 5) {
+        const offset = b.x - ((p.x || 0) +
+          (g.condition === "triple" ? [-5, 0, 5][g.liveSlot] : 0));
+        const nearPost = Math.abs(Math.abs(offset) - p.gap / 2) < 0.6;
+        const nearBar = Math.abs(b.y - p.crossbar) < 0.6;
+        if (nearPost || nearBar) {
+          cbJuice(g, { slowT: 0.45 });
+          g.slowFired = true;
+        }
+      }
       // Camera trails the ball ~6m back so the goalposts grow as the kick
       // approaches them.
       const targetCam = Math.max(0, b.z - 6);
@@ -2707,16 +2748,24 @@ const FieldGoal = {
         }
         if (g.condition === "two_point" && through && !tightWindow) {
           g.message = "Sailed!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+          cbJuice(g, { shake: 6, vibrate: 35 });
         } else if (through && liveOK) {
           g.made++;
           let pts = 7;
           let msg = "GOOD!";
-          if (ringHit) { pts += 5; msg = "BULLSEYE!"; }
+          let big = false;
+          if (ringHit) { pts += 5; msg = "BULLSEYE!"; big = true; }
           g.score += pts;
           g.message = msg; g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
+          // Make = mid shake + brief slow-mo + ascending haptic.
+          // Bullseye dials all three up.
+          cbJuice(g, big
+            ? { shake: 14, slowT: 0.55, vibrate: [0, 30, 30, 30, 30, 80] }
+            : { shake: 8,  slowT: 0.30, vibrate: [0, 20, 30, 60] });
         } else if (throughDecoy) {
           g.message = "Wrong door!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+          cbJuice(g, { shake: 9, slowT: 0.30, vibrate: [0, 30, 50, 30] });
         } else if (g.condition === "doink" && Math.abs(offset) >= p.gap / 2
                    && Math.abs(offset) < p.gap / 2 + 0.4
                    && b.y > p.crossbar && b.y < p.top + 0.5) {
@@ -2724,12 +2773,19 @@ const FieldGoal = {
           g.score += 3;
           g.message = "Doink! +3"; g.messageTimer = 1.4;
           Sound.boostHit && Sound.boostHit();
+          // Brief hit-pause + clang-shake — sells the upright contact.
+          cbJuice(g, { shake: 10, pauseT: 0.06, vibrate: [0, 35] });
         } else if (between && b.y <= p.crossbar) {
           g.message = "Short!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+          cbJuice(g, { shake: 4, vibrate: 25 });
         } else if (Math.abs(offset) < p.gap) {
           g.message = "Doinked!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+          // Standard doinks (non-doink condition) get a meaty hit-pause
+          // and vibration since the post contact is loud.
+          cbJuice(g, { shake: 12, pauseT: 0.08, vibrate: [0, 35, 30, 35] });
         } else {
           g.message = "Wide!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
+          cbJuice(g, { shake: 5, vibrate: 30 });
         }
       }
       if (b.y < 0 || b.z > p.z + 12) b.gone = true;
@@ -2765,6 +2821,14 @@ const FieldGoal = {
   },
   render(g) {
     if (!g.ball) FieldGoal.reset(g);
+    // Screen-shake — bracket the entire render. Random offset proportional
+    // to g.shake; restored at the end so canvas state stays balanced.
+    ctx.save();
+    if (g.shake > 0.05) {
+      const sx = (Math.random() - 0.5) * g.shake;
+      const sy = (Math.random() - 0.5) * g.shake;
+      ctx.translate(sx, sy);
+    }
     fpSetCam(g.cameraZ || 0);
     if (g.condition === "snowstorm") {
       // Heavy overcast sky for the snowstorm condition. Lighter fog tint
@@ -3144,6 +3208,7 @@ const FieldGoal = {
       ctx.fillText("Flick UP toward the goal — angle curves the kick", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
+    ctx.restore();
   },
 };
 
