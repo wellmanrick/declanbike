@@ -15,6 +15,10 @@
 //                Optional: formation.types = [{ row, col?, type }] applies
 //                per-can type overrides after layout. row = "all" or index;
 //                col = index, [from,to] range, or omitted (whole row).
+//                Optional: formation.powerups = [{ type, row, col? }] binds
+//                pickups to specific cans. type = "bomb"/"multi"/"slow".
+//                Knock the host can to collect the pickup; it arms the
+//                next throw and is consumed when fired.
 //   parStars   — balls-used thresholds for each star tier:
 //                  { 3: 1, 2: 2, 1: 3 } means
 //                  3 stars if cleared with ≤1 ball used,
@@ -40,18 +44,27 @@ export const CAN_LEVELS = [
   {
     id: "cb_02_first_pyramid",
     name: "First Pyramid",
-    subtitle: "Knock 'em all to clear.",
+    subtitle: "Slow-time pickup on the apex — try it.",
     balls: 3,
-    formation: { type: "pyramid", rows: 4 },
+    formation: {
+      type: "pyramid", rows: 4,
+      // Apex of a 4-row pyramid is row=3, col=0. Knocking it grants
+      // slow-time for the next throw.
+      powerups: [{ type: "slow", row: 3, col: 0 }],
+    },
     parStars: { 3: 1, 2: 2, 1: 3 },
     theme: "carnival",
   },
   {
     id: "cb_03_tower",
     name: "Tower",
-    subtitle: "Tall stack — aim low or high.",
+    subtitle: "Bomb-ball pickup on top — wreck the column.",
     balls: 3,
-    formation: { type: "tower", rows: 5 },
+    formation: {
+      type: "tower", rows: 5,
+      // Top of the tower (row 4) carries the bomb pickup.
+      powerups: [{ type: "bomb", row: 4 }],
+    },
     parStars: { 3: 1, 2: 2, 1: 3 },
     theme: "carnival",
   },
@@ -71,9 +84,15 @@ export const CAN_LEVELS = [
   {
     id: "cb_05_split",
     name: "Split Pair",
-    subtitle: "Two stacks. Pick your side or split it.",
+    subtitle: "Multi-ball on the right pyramid apex — clear both stacks.",
     balls: 3,
-    formation: { type: "split", rows: 3, gap: 1.2 },
+    formation: {
+      type: "split", rows: 3, gap: 1.2,
+      // Pickup binds to the LEFT pyramid apex (split-layout cans are
+      // appended left-then-right, and the row+col scanner picks the
+      // first match).
+      powerups: [{ type: "multi", row: 2, col: 0 }],
+    },
     parStars: { 3: 1, 2: 2, 1: 3 },
     theme: "carnival",
   },
@@ -94,9 +113,14 @@ export const CAN_LEVELS = [
   {
     id: "cb_07_big_pyramid",
     name: "Big Pyramid",
-    subtitle: "Six rows. Hit it where it lives.",
+    subtitle: "Bomb-ball on the third row — drop the keystone.",
     balls: 3,
-    formation: { type: "pyramid", rows: 6, gold: "top" },
+    formation: {
+      type: "pyramid", rows: 6, gold: "top",
+      // Mid-row outer can — within reach of a routine flick, payoff is
+      // a bomb-ball that takes a huge bite of the next throw.
+      powerups: [{ type: "bomb", row: 2, col: 0 }],
+    },
     parStars: { 3: 1, 2: 2, 1: 3 },
     theme: "carnival",
   },
@@ -149,13 +173,13 @@ export const CAN_LEVELS = [
   {
     id: "cb_11_glasshouse",
     name: "Glass House",
-    subtitle: "Almost all glass. One soft flick clears the row.",
+    subtitle: "Slow-time for precision — most cans are glass.",
     balls: 2,
     formation: {
       type: "wall", rows: 3, cols: 5,
-      // Top two rows are glass — fragile support. The bottom row stays
-      // standard so the wall doesn't fully collapse from a stray edge.
       types: [{ row: 1, type: "glass" }, { row: 2, type: "glass" }],
+      // Center of the bottom row carries the slow-time pickup.
+      powerups: [{ type: "slow", row: 0, col: 2 }],
     },
     parStars: { 3: 1, 2: 2, 1: 2 },
     theme: "carnival",
@@ -184,13 +208,16 @@ export const CAN_LEVELS = [
   {
     id: "cb_13_powderkeg",
     name: "Powder Keg",
-    subtitle: "Center can detonates. Hit it for a board-clearing chain.",
+    subtitle: "Multi-ball + a center detonator. Make it count.",
     balls: 3,
     formation: {
       type: "wall", rows: 3, cols: 5,
       // Dead-center is the explosive. It's surrounded on every side by
       // standard cans so the AoE on detonation hits ~6-8 neighbors.
       types: [{ row: 1, col: 2, type: "explosive" }],
+      // Multi-ball pickup on a corner — collecting it on throw 1 lets
+      // throw 2 spread three balls into the explosive.
+      powerups: [{ type: "multi", row: 0, col: 0 }],
     },
     parStars: { 3: 1, 2: 2, 1: 3 },
     theme: "carnival",
@@ -226,6 +253,19 @@ export const CAN_TYPE_INFO = {
   lead:      { score: 25, knockSpeed: 16, label: "Lead — needs a hard flick" },
   explosive: { score: 30, knockSpeed:  9, label: "Explosive — clears nearby cans" },
   stacker:   { score: 12, knockSpeed:  9, label: "Coin stack" },
+};
+
+// Power-up catalog. Three types share one inventory slot — collecting a
+// new pickup overwrites the previous one. The active power applies to
+// the NEXT throw and is consumed when that throw fires.
+//   bomb  — next ball detonates on impact (1.0m AoE, ignores support)
+//   multi — next throw splits into 3 balls in a tight yaw spread
+//   slow  — next throw plays in slow-motion for the entire flight
+export const POWER_TYPES = ["bomb", "multi", "slow"];
+export const POWER_INFO = {
+  bomb:  { icon: "💣", label: "Bomb-ball collected — next throw explodes" },
+  multi: { icon: "✕3", label: "Multi-ball collected — next throw splits into 3" },
+  slow:  { icon: "⏱",  label: "Slow-time collected — next throw plays in slow-mo" },
 };
 
 const CAN_W = 0.45;
@@ -304,6 +344,27 @@ export function buildCans(level) {
     pyramid(5, 0, false, "top");
   }
 
+  // Powerup pickups. Each entry is { type: "bomb"|"multi"|"slow", row, col? }
+  // and is bound to the specified can by index. Collecting that can hands
+  // the pickup to the player's inventory. The pickup floats above the can
+  // visually until taken.
+  const pickups = [];
+  const powerups = f.powerups || [];
+  for (const p of powerups) {
+    const matchRow = p.row;
+    const matchCol = p.col == null ? 0 : p.col;
+    let colIdx = 0;
+    let lastRow = -1;
+    let bound = -1;
+    for (let i = 0; i < cans.length; i++) {
+      const c = cans[i];
+      if (c.row !== lastRow) { colIdx = 0; lastRow = c.row; }
+      else colIdx++;
+      if (c.row === matchRow && colIdx === matchCol) { bound = i; break; }
+    }
+    if (bound >= 0) pickups.push({ type: p.type, canIdx: bound });
+  }
+
   // Apply formation-level type overrides. Each entry is { match, type } where
   // `match` selects cans by row ("all" or a row index) plus optional col
   // index/range. Applied in order so later rules can override earlier ones.
@@ -325,7 +386,7 @@ export function buildCans(level) {
     }
   }
 
-  return { cans, tableTopY };
+  return { cans, tableTopY, pickups };
 }
 
 // Compute star count from balls used and cleared status.
