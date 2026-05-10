@@ -33,6 +33,7 @@ export const DEFAULT_SAVE = {
   canBashSeenPowers: {},          // power-up type -> true once the player
                                   // has collected one (drives the use-it
                                   // tutorial toast).
+  fieldGoalLevels: {},            // levelId -> { stars, made, attempts, score }
 };
 
 function _load() {
@@ -51,6 +52,7 @@ function _load() {
       canBashLevels: parsed.canBashLevels || {},
       canBashSeenTypes: parsed.canBashSeenTypes || {},
       canBashSeenPowers: parsed.canBashSeenPowers || {},
+      fieldGoalLevels: parsed.fieldGoalLevels || {},
     });
   } catch (e) {
     console.warn("Save load failed", e);

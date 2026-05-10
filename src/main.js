@@ -29,6 +29,7 @@ import { mulberry32 } from "./engine/rng.js";
 import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE } from "./world/terrain.js";
 import { STATE, G } from "./state.js";
 import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO, POWER_INFO } from "./games/canBash/levels.js";
+import { FG_LEVELS, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -1907,7 +1908,7 @@ function updateHUD() {
 // MENU / UI WIRING
 //==========================================================
 function showOnly(id) {
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels","fg-levels"]) {
     const el = document.getElementById(overlay);
     if (!el) continue;
     if (overlay === id) el.classList.remove("hidden");
@@ -2076,6 +2077,11 @@ function buildQuests() {
       const totalStars = CAN_LEVELS.reduce((s, l) => s + ((lvls[l.id]?.stars) || 0), 0);
       const maxStars = CAN_LEVELS.length * 3;
       summary = `Stars: ${totalStars} / ${maxStars}`;
+    } else if (id === "field_goal") {
+      const lvls = save.fieldGoalLevels || {};
+      const totalStars = FG_LEVELS.reduce((s, l) => s + ((lvls[l.id]?.stars) || 0), 0);
+      const maxStars = FG_LEVELS.length * 3;
+      summary = `Stars: ${totalStars} / ${maxStars}`;
     } else {
       const best = (save.minigameBest && save.minigameBest[id]) || 0;
       summary = `Best: ${best} pts`;
@@ -2086,10 +2092,11 @@ function buildQuests() {
         <div class="qc-desc">${mg.desc}</div>
         <div class="qc-desc">${summary}</div>
       </div>
-      <div class="qc-reward">${id === "can_bash" ? "Levels ▶" : "Play ▶"}</div>
+      <div class="qc-reward">${id === "can_bash" || id === "field_goal" ? "Levels ▶" : "Play ▶"}</div>
     `;
     card.addEventListener("click", () => {
       if (id === "can_bash") openCanBashLevels();
+      else if (id === "field_goal") openFieldGoalLevels();
       else startMinigame(id);
     });
     list.appendChild(card);
@@ -2126,6 +2133,41 @@ function buildCanBashLevelGrid() {
       ${rec && rec.cleared ? `<div class="lc-meta">Best: ${rec.ballsUsed} ball${rec.ballsUsed === 1 ? "" : "s"} • ${rec.score} pts</div>` : ""}
     `;
     if (unlocked) card.addEventListener("click", () => startMinigame("can_bash", lvl.id));
+    grid.appendChild(card);
+  }
+}
+
+function openFieldGoalLevels() {
+  buildFieldGoalLevelGrid();
+  G.state = STATE.FG_LEVELS;
+  showOnly("fg-levels");
+}
+
+function buildFieldGoalLevelGrid() {
+  const grid = document.getElementById("fg-level-grid");
+  grid.innerHTML = "";
+  const progress = save.fieldGoalLevels || {};
+  for (const lvl of FG_LEVELS) {
+    const unlocked = isFgLevelUnlocked(progress, lvl.id);
+    const rec = progress[lvl.id];
+    const stars = (rec && rec.stars) || 0;
+    const card = document.createElement("div");
+    card.className = "level-card" + (unlocked ? "" : " locked");
+    const starsHtml =
+      `<span class="lc-stars">` +
+      `<span${stars >= 1 ? "" : ' class="empty"'}>★</span>` +
+      `<span${stars >= 2 ? "" : ' class="empty"'}>★</span>` +
+      `<span${stars >= 3 ? "" : ' class="empty"'}>★</span>` +
+      `</span>`;
+    const yards = Math.round(lvl.distance * 1.094);
+    card.innerHTML = `
+      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
+      <div class="lc-meta">${yards} yd • ${lvl.attempts} kick${lvl.attempts === 1 ? "" : "s"} • wind ±${lvl.windRange}</div>
+      <div class="lc-best">${lvl.subtitle}</div>
+      ${starsHtml}
+      ${rec ? `<div class="lc-meta">Best: ${rec.made}/${rec.attempts} • ${rec.score} pts</div>` : ""}
+    `;
+    if (unlocked) card.addEventListener("click", () => startMinigame("field_goal", lvl.id));
     grid.appendChild(card);
   }
 }
@@ -2182,6 +2224,7 @@ function bindMenuActions() {
       case "how": G.state = STATE.HOW; showOnly("how"); break;
       case "back-menu": G.runtime = null; G.state = STATE.MENU; showOnly("menu"); break;
       case "cb-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
+      case "fg-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
       case "resume": G.state = STATE.PLAY; showOnly("hud"); break;
       case "retry":
         if (G.runtime) startRun(G.runtime.level.id);
@@ -2239,12 +2282,14 @@ function startMinigame(id, levelId) {
   let level = null;
   if (id === "can_bash") {
     level = (levelId && canLevelById(levelId)) || CAN_LEVELS[0];
+  } else if (id === "field_goal") {
+    level = (levelId && fgLevelById(levelId)) || FG_LEVELS[0];
   }
   G.minigameRuntime = mg.init(level);
   G.minigameRuntime.id = id;
   G.state = STATE.MINIGAME;
   // Hide every overlay (and the touch UI). The canvas is the whole screen.
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels"]) {
     const el = document.getElementById(overlay);
     if (el) el.classList.add("hidden");
   }
@@ -2313,6 +2358,28 @@ function dispatchMinigamePointer(kind, e) {
         } else if (inBtn(rt._btnLevels)) {
           G.minigameRuntime = null;
           openCanBashLevels();
+        }
+        return;
+      }
+      if (rt.id === "field_goal") {
+        if (inBtn(rt._btnNextLevel)) {
+          const idx = FG_LEVELS.findIndex(l => l.id === rt.level.id);
+          const next = (idx >= 0 && idx + 1 < FG_LEVELS.length) ? FG_LEVELS[idx + 1] : null;
+          const progress = save.fieldGoalLevels || {};
+          if (next && isFgLevelUnlocked(progress, next.id)) {
+            G.minigameRuntime = null;
+            startMinigame("field_goal", next.id);
+          } else {
+            G.minigameRuntime = null;
+            openFieldGoalLevels();
+          }
+        } else if (inBtn(rt._btnRetry)) {
+          const lvlId = rt.level.id;
+          G.minigameRuntime = null;
+          startMinigame("field_goal", lvlId);
+        } else if (inBtn(rt._btnLevels)) {
+          G.minigameRuntime = null;
+          openFieldGoalLevels();
         }
         return;
       }
@@ -2444,33 +2511,36 @@ function fpDrawAimArc(state, originSX, originSY, color) {
 //----------------------------------------------------------
 const FieldGoal = {
   name: "Field Goal Kick",
-  desc: "Flick UP from the ball to kick. Curve with the angle. Mind the wind. 5 attempts.",
+  desc: "Flick UP from the ball to kick. Curve with the angle. Mind the wind.",
   icon: "🏈",
   color: "#4ddc8c",
-  init() {
+  init(level) {
+    const lvl = level || FG_LEVELS[0];
     return {
+      level: lvl,
       ball: null,
-      // Posts: gap, crossbar height, top of uprights. Distance (z) ramps up
-      // attempt-to-attempt; reset() picks the value.
-      posts: { z: 18, gap: 6, crossbar: 1.0, top: 9.5 },
-      attempts: 5, kicked: 0, made: 0, score: 0,
+      // Posts: distance, gap, crossbar height, top of uprights. Distance
+      // and gap come from the level; reset() picks the lateral offset
+      // and wind per attempt.
+      posts: { z: lvl.distance, gap: lvl.gap, x: 0, crossbar: 1.0, top: 9.5 },
+      attempts: lvl.attempts, kicked: 0, made: 0, score: 0,
       wind: 0, dragStart: null, dragNow: null,
       message: "", messageTimer: 0, finished: false,
+      stars: 0,
       cameraZ: 0,
       kickFx: 0,
     };
   },
   payout(g) { return Math.floor((g.score || 0) * 1.0); },
   reset(g) {
-    // Distance, wind, gap, and lateral offset all ramp with the kick number.
-    // Kick 1 is a centered chip; kick 5 is a long, narrow, off-center kick
-    // with real wind to fight.
-    const a = g.kicked || 0; // 0..4
-    g.posts.z   = 18 + a * 7;                                // 18 → 46 m
-    g.posts.gap = 6.0 - a * 0.4;                              // 6.0 → 4.4 m
-    g.posts.x   = (Math.random() * 2 - 1) * (1 + a * 1.6);    // ±1 → ±7 m off-center
-    const windRange = 2 + a * 1.8;                            // 2 → 9.2
-    g.wind = (Math.random() * 2 - 1) * windRange;
+    // Per-attempt randomness inside the level's configured ranges. Distance
+    // and gap stay constant for the level; wind and lateral offset roll
+    // fresh on every attempt so each kick is a new read.
+    const lvl = g.level || FG_LEVELS[0];
+    g.posts.z   = lvl.distance;
+    g.posts.gap = lvl.gap;
+    g.posts.x   = (Math.random() * 2 - 1) * lvl.offCenterRange;
+    g.wind      = (Math.random() * 2 - 1) * lvl.windRange;
     g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0,
                kicked: false, scored: false, gone: false, t: 0 };
     g.message = ""; g.messageTimer = 0;
@@ -2537,8 +2607,28 @@ const FieldGoal = {
       g.messageTimer -= dt;
       if (g.messageTimer <= 0) {
         g.kicked++;
-        if (g.kicked >= g.attempts) g.finished = true;
-        else FieldGoal.reset(g);
+        if (g.kicked >= g.attempts) {
+          g.finished = true;
+          g.stars = fgStarsFor(g.level, g.made);
+          // Persist best-record for this level. Stars never go down; ties
+          // keep the higher score and made count.
+          save.fieldGoalLevels = save.fieldGoalLevels || {};
+          const prev = save.fieldGoalLevels[g.level.id];
+          const rec = { stars: g.stars, made: g.made, attempts: g.attempts, score: g.score };
+          if (!prev || rec.stars > (prev.stars || 0) ||
+              (rec.stars === prev.stars && rec.score > (prev.score || 0))) {
+            save.fieldGoalLevels[g.level.id] = rec;
+          }
+          // Cash payout — credit on level finish so the level-based flow
+          // still rewards the wallet (Can Bash skips this; FG keeps it
+          // because it's how the original mode behaved).
+          const cash = FieldGoal.payout(g);
+          save.cash += cash;
+          g.cashEarned = cash;
+          persistSave();
+        } else {
+          FieldGoal.reset(g);
+        }
       }
     }
   },
@@ -2732,6 +2822,11 @@ const FieldGoal = {
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(`Made: ${g.made}/${g.kicked}    Score: ${g.score}`, 16, 74);
     ctx.fillText(`Kicks left: ${Math.max(0, g.attempts - g.kicked)}`, 16, 96);
+    if (g.level && g.level.name) {
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillText(g.level.name, 16, 116);
+    }
 
     // Aim preview — when the ball is at rest, originate from its fixed
     // bottom-of-screen sprite position. Once kicked, switch to perspective.
@@ -4580,6 +4675,91 @@ function drawMinigameFinishedOverlay(g) {
   ctx.textAlign = "start";
 }
 
+// Field Goal result overlay. Shows level title, animated star reveal,
+// makes/attempts/score line, cash earned, and Next/Retry/Levels buttons.
+// Layout mirrors the Can Bash overlay.
+function drawFieldGoalFinishedOverlay(g) {
+  ctx.fillStyle = "rgba(0,0,0,0.78)";
+  ctx.fillRect(0, 0, W, H);
+  const cleared = g.stars > 0;
+  ctx.textAlign = "center";
+  ctx.fillStyle = cleared ? "#ffd03a" : "#ff8a3a";
+  ctx.font = "bold 34px ui-monospace, monospace";
+  ctx.fillText(cleared ? "Round Done!" : "Out of Kicks", W / 2, H * 0.20);
+  ctx.fillStyle = "#cfd6e3";
+  ctx.font = "bold 18px ui-monospace, monospace";
+  ctx.fillText(`${g.level.name}`, W / 2, H * 0.25);
+  // Stars — three slots, gold or hollow, popped in left-to-right.
+  const heldFor = Math.max(0, performance.now() - (g.finishHoldUntil - 600));
+  const starSize = Math.min(56, W * 0.085);
+  const starGap = starSize * 1.7;
+  const starY = H * 0.38;
+  for (let i = 0; i < 3; i++) {
+    const cx = W / 2 + (i - 1) * starGap;
+    const earned = i < g.stars;
+    const revealAt = 250 + i * 220;
+    const reveal = Math.max(0, Math.min(1, (heldFor - revealAt) / 220));
+    const pop = earned ? (1 + Math.sin(reveal * Math.PI) * 0.25) : 1;
+    ctx.save();
+    ctx.translate(cx, starY);
+    ctx.scale(pop, pop);
+    ctx.fillStyle = earned ? "#ffd03a" : "rgba(255,255,255,0.18)";
+    ctx.strokeStyle = earned ? "#ffae20" : "rgba(255,255,255,0.25)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let s = 0; s < 10; s++) {
+      const a = (s / 10) * Math.PI * 2 - Math.PI / 2;
+      const r = (s % 2 === 0) ? starSize : starSize * 0.45;
+      const x = Math.cos(a) * r, y = Math.sin(a) * r;
+      if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  // Stats line + cash earned.
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 18px ui-monospace, monospace";
+  ctx.fillText(
+    `${g.made} / ${g.attempts} made  •  ${g.score} pts`,
+    W / 2, H * 0.53
+  );
+  if (g.cashEarned) {
+    ctx.fillStyle = "#4ddc8c";
+    ctx.font = "bold 22px ui-monospace, monospace";
+    ctx.fillText(`+$${g.cashEarned}`, W / 2, H * 0.59);
+  }
+  // Buttons. Layout drops Next when there's no next level.
+  const idx = FG_LEVELS.findIndex(l => l.id === g.level.id);
+  const hasNext = cleared && idx >= 0 && idx + 1 < FG_LEVELS.length;
+  const labels = hasNext
+    ? [["next", "Next Level ▶", "#4ddc8c"], ["retry", "Retry", "#ffb020"], ["levels", "Levels", "#2a3350"]]
+    : [["retry", "Retry", "#ffb020"], ["levels", "Levels", "#2a3350"]];
+  const bw = Math.min(220, W * 0.32);
+  const bh = 60;
+  const gap = 16;
+  const totalW = labels.length * bw + (labels.length - 1) * gap;
+  const startX = W / 2 - totalW / 2;
+  const cy = H * 0.70;
+  labels.forEach(([key, label, fill], i) => {
+    const x = startX + i * (bw + gap);
+    const rect = { x, y: cy, w: bw, h: bh };
+    if (key === "next")   g._btnNextLevel = rect;
+    if (key === "retry")  g._btnRetry     = rect;
+    if (key === "levels") g._btnLevels    = rect;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12);
+    else ctx.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.fill();
+    ctx.fillStyle = (fill === "#2a3350") ? "#fff" : "#1a1206";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6);
+  });
+  if (!hasNext) g._btnNextLevel = null;
+  ctx.textAlign = "start";
+}
+
 // Can Bash result overlay. Shows the level title, animated stars, the
 // score, and three buttons: Next Level (or Levels if locked / last),
 // Retry, Levels.
@@ -4676,14 +4856,15 @@ function loop(now) {
     if (G.state === STATE.PLAY) { G.state = STATE.PAUSE; showOnly("pause"); Sound.stopEngine(); }
     else if (G.state === STATE.PAUSE) { G.state = STATE.PLAY; showOnly("hud"); Sound.startEngine(); }
     else if (G.state === STATE.MINIGAME) {
-      // Forfeit current mini-game. Can Bash returns to its level select; the
-      // others return to the mini-game hub.
-      const wasCanBash = G.minigameRuntime && G.minigameRuntime.id === "can_bash";
+      // Forfeit current mini-game. Level-driven games return to their own
+      // level select; the others return to the mini-game hub.
+      const rtId = G.minigameRuntime && G.minigameRuntime.id;
       G.minigameRuntime = null;
-      if (wasCanBash) { G.state = STATE.CB_LEVELS; openCanBashLevels(); }
+      if (rtId === "can_bash") { G.state = STATE.CB_LEVELS; openCanBashLevels(); }
+      else if (rtId === "field_goal") { G.state = STATE.FG_LEVELS; openFieldGoalLevels(); }
       else { G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); }
     }
-    else if (G.state === STATE.CB_LEVELS) {
+    else if (G.state === STATE.CB_LEVELS || G.state === STATE.FG_LEVELS) {
       G.state = STATE.QUESTS; buildQuests(); showOnly("quests");
     }
     else if (G.state === STATE.LEVELS || G.state === STATE.GARAGE || G.state === STATE.QUESTS || G.state === STATE.HOW || G.state === STATE.RESULT) {
@@ -4712,6 +4893,8 @@ function loop(now) {
         }
         if (G.minigameRuntime.id === "can_bash") {
           drawCanBashFinishedOverlay(G.minigameRuntime);
+        } else if (G.minigameRuntime.id === "field_goal") {
+          drawFieldGoalFinishedOverlay(G.minigameRuntime);
         } else {
           drawMinigameFinishedOverlay(G.minigameRuntime);
         }
