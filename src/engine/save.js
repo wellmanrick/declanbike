@@ -27,6 +27,9 @@ export const DEFAULT_SAVE = {
   },
   minigameBest: {},
   canBashLevels: {},              // levelId -> { stars, ballsUsed, score, cleared }
+  canBashSeenTypes: {},           // canType -> true once the player has seen
+                                  // a level containing it (drives the first-
+                                  // encounter tutorial toast).
 };
 
 function _load() {
@@ -43,6 +46,7 @@ function _load() {
       unlockedLevels: Object.assign({}, DEFAULT_SAVE.unlockedLevels, parsed.unlockedLevels || {}),
       minigameBest: parsed.minigameBest || {},
       canBashLevels: parsed.canBashLevels || {},
+      canBashSeenTypes: parsed.canBashSeenTypes || {},
     });
   } catch (e) {
     console.warn("Save load failed", e);
