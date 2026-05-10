@@ -3761,7 +3761,7 @@ const CanBash = {
   init() {
     const cans = [];
     const tableZ = 10;
-    const tableTopY = 1.0;
+    const tableTopY = 0.6;
     const canHeight = 0.55;
     const canWidth  = 0.45;
     const rows = 5;
@@ -3896,7 +3896,9 @@ const CanBash = {
     // Map aim direction → release angles. The more vertical the aim, the
     // higher the loft. The more sideways, the bigger the yaw.
     const yaw  = nx * (Math.PI / 4);                          // ±45°
-    const loft = (8 + (-ny) * 22) * (Math.PI / 180);          // 8° → 30°
+    // Tighter loft band so a slight-upward release actually hits the
+    // bottom row instead of arcing above it.
+    const loft = (5 + (-ny) * 16) * (Math.PI / 180);          // 5° → 21°
     const speed = 11 + power * 23;                            // 11 → 34 m/s
     g.ball.vz = speed * Math.cos(loft) * Math.cos(yaw);
     g.ball.vy = speed * Math.sin(loft);
