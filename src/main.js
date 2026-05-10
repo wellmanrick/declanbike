@@ -3170,14 +3170,42 @@ const CanBash = {
 
     // Power from finger speed. ~600 px/s = soft, ~2400 px/s = full.
     const power = Math.max(0.18, Math.min(1, fingerSpeed / 2200));
-
-    // Map aim direction → release angles. The more vertical the aim, the
-    // higher the loft. The more sideways, the bigger the yaw.
-    const yaw  = nx * (Math.PI / 4);                          // ±45°
-    // Tighter loft band so a slight-upward release actually hits the
-    // bottom row instead of arcing above it.
-    const loft = (5 + (-ny) * 16) * (Math.PI / 180);          // 5° → 21°
     const speed = 11 + power * 23;                            // 11 → 34 m/s
+
+    // Aim mapping. nx (lateral) drives yaw; ny (vertical) picks a TARGET
+    // row on the table. Then we solve for the loft angle that lands the
+    // ball there at this speed and yaw.
+    //
+    // Why solve instead of mapping ny directly to loft: at low speeds a
+    // shallow loft drops below the table before reaching it, so the
+    // player can't hit the bottom row with a soft flick. Tying loft to
+    // an explicit target Y guarantees every flick lands on the row the
+    // player aimed at, regardless of power.
+    const yaw  = nx * (Math.PI / 4);                          // ±45°
+    // Vertical aim. ny ranges 0 (release at ball level — already filtered
+    // out by the dy > -40 check) to -1 (release straight up). Useful
+    // range is roughly [-1, -0.3]; map to a target row 0..top.
+    const aim_t = Math.max(0, Math.min(1, (-ny - 0.3) / 0.7));
+    const target_y = 0.875 + aim_t * 2.75;                    // bottom row → ~6th row
+    // Quadratic in u = tan(loft):  A·u² − B·u + (A + Δy) = 0
+    //   A = g·Δz² / (speed² · cos²(yaw))   (gravity drop term)
+    //   B = Δz / cos(yaw)                  (forward travel)
+    //   Δy = target_y − y0                 (height gain over the throw)
+    const dz = 7;                                             // z=3 → z=10
+    const dy0 = target_y - 0.4;                               // ball y0 = 0.4
+    const cosYaw = Math.max(0.6, Math.cos(yaw));
+    const A = (4.9 * dz * dz) / (speed * speed * cosYaw * cosYaw);
+    const B = dz / cosYaw;
+    const disc = B * B - 4 * A * (A + dy0);
+    let loft;
+    if (disc < 0) {
+      // Target unreachable at this speed — fall back to the apex of the
+      // achievable parabola (max range, slightly short).
+      loft = Math.atan(B / (2 * A));
+    } else {
+      const u = (B - Math.sqrt(disc)) / (2 * A);              // direct shot (smaller root)
+      loft = Math.atan(Math.max(0.07, u));                    // ~4° floor for visible arc
+    }
     g.ball.vz = speed * Math.cos(loft) * Math.cos(yaw);
     g.ball.vy = speed * Math.sin(loft);
     g.ball.vx = speed * Math.cos(loft) * Math.sin(yaw);
