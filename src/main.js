@@ -5782,6 +5782,9 @@ const QBChallenge = {
     return {
       ball: null, target: null,
       attempts: 8, taken: 0, hits: 0, score: 0,
+      // Combo multiplier — applied to each hit's points, then bumped by
+      // one (cap 5x). Resets to 1 on a miss/wide/short.
+      combo: 1, bestCombo: 1,
       message: "", messageTimer: 0, finished: false,
       dragStart: null, dragNow: null, cameraZ: 0,
     };
@@ -5799,6 +5802,9 @@ const QBChallenge = {
       moveSpeed: 0.6 + Math.random() * 1.4,
       movePhase: Math.random() * Math.PI * 2,
       moveAmp:  1.0 + Math.random() * 1.6,
+      // 30% of post-first-throw targets are "hot" — doubled points,
+      // signalled by a pulsing gold outer halo + "2X" tag.
+      hot:      a >= 1 && Math.random() < 0.30,
     };
     g.ball = { x: 0, y: 0.5, z: 2, vx: 0, vy: 0, vz: 0,
                thrown: false, scored: false, gone: false, t: 0 };
@@ -5837,23 +5843,38 @@ const QBChallenge = {
         const dist = Math.sqrt(dx*dx + dy*dy);
         if (dist < t.ringSize) {
           b.scored = true;
-          let points, label;
-          if (dist < 0.30)      { points = 50; label = "BULLSEYE!"; }
-          else if (dist < 0.65) { points = 25; label = "Hit!"; }
-          else                  { points = 10; label = "Edge!"; }
-          g.score += points; g.hits++;
-          g.message = `${label} +${points}`;
+          let base, label;
+          if (dist < 0.30)      { base = 50; label = "BULLSEYE!"; }
+          else if (dist < 0.65) { base = 25; label = "Hit!"; }
+          else                  { base = 10; label = "Edge!"; }
+          if (t.hot) base *= 2;
+          // Capture combo BEFORE bumping it — current throw uses the
+          // multiplier built up by prior hits, then we increment.
+          const mult = g.combo;
+          const points = base * mult;
+          g.score += points;
+          g.hits++;
+          g.combo = Math.min(g.combo + 1, 5);
+          if (g.combo > g.bestCombo) g.bestCombo = g.combo;
+          const hotTag = t.hot ? " HOT" : "";
+          const comboTag = mult > 1 ? `  x${mult}` : "";
+          g.message = `${label}${hotTag} +${points}${comboTag}`;
           g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
         } else {
           b.gone = true;
           g.message = "Wide!"; g.messageTimer = 1.0;
+          g.combo = 1;
           Sound.crash && Sound.crash();
         }
       }
       if (b.y < 0 || b.z > t.z + 4 || Math.abs(b.x) > 16) {
         b.gone = true;
-        if (!b.scored && !g.message) { g.message = "Short!"; g.messageTimer = 1.0; }
+        if (!b.scored && !g.message) {
+          g.message = "Short!";
+          g.messageTimer = 1.0;
+          g.combo = 1;
+        }
       }
     }
     if ((b.gone || b.scored) && !g.finished) {
@@ -5885,6 +5906,20 @@ const QBChallenge = {
     ctx.moveTo(pole.sx, pole.sy);
     ctx.lineTo(center.sx, center.sy + radius);
     ctx.stroke();
+    // Hot-target halo — pulsing gold ring drawn behind the bullseye so
+    // the rings still read clearly through the glow.
+    if (t.hot) {
+      const pulse = 0.85 + 0.15 * Math.sin(performance.now() / 200);
+      ctx.save();
+      ctx.shadowColor = "rgba(255, 215, 57, 0.95)";
+      ctx.shadowBlur = 24 * pulse;
+      ctx.strokeStyle = `rgba(255, 215, 57, ${0.9 * pulse})`;
+      ctx.lineWidth = Math.max(2, 4 * center.scale * 2);
+      ctx.beginPath();
+      ctx.arc(center.sx, center.sy, radius + Math.max(4, radius * 0.18), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
     // Rings outer → inner
     const colors = ["#1a3a82", "#fff", "#ff5a3a", "#ffd03a"];
     for (let i = 0; i < colors.length; i++) {
@@ -5901,6 +5936,14 @@ const QBChallenge = {
     // Center bullseye dot
     ctx.fillStyle = "#000";
     ctx.beginPath(); ctx.arc(center.sx, center.sy, Math.max(2, radius * 0.05), 0, Math.PI * 2); ctx.fill();
+    // Hot target "2X" tag floating beside the rings.
+    if (t.hot && !g.ball.thrown) {
+      ctx.fillStyle = "#ffd03a";
+      ctx.font = `bold ${Math.max(12, 14 * Math.min(2, center.scale * 4))}px ui-monospace, monospace`;
+      ctx.textAlign = "center";
+      ctx.fillText("2X", center.sx + radius + 18, center.sy + 4);
+      ctx.textAlign = "start";
+    }
 
     if (t.moving && !g.ball.thrown) {
       ctx.fillStyle = "rgba(255, 100, 60, 0.95)";
@@ -5914,10 +5957,36 @@ const QBChallenge = {
     ctx.fillStyle = "rgba(0,0,0,0.7)";
     ctx.font = "bold 16px ui-monospace, monospace";
     ctx.fillText(`Distance: ${Math.round(t.z * 1.094)} yd`, 16, 26);
-    ctx.fillText(t.moving ? "MOVING TARGET" : "STATIC TARGET", 16, 48);
+    let tagY = 48;
+    ctx.fillText(t.moving ? "MOVING TARGET" : "STATIC TARGET", 16, tagY);
+    if (t.hot) {
+      ctx.fillStyle = "#d49600";
+      ctx.fillText("HOT 2X", 16 + 160, tagY);
+      ctx.fillStyle = "rgba(0,0,0,0.7)";
+    }
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(`Hits: ${g.hits}/${g.taken}    Score: ${g.score}`, 16, 74);
     ctx.fillText(`Throws left: ${Math.max(0, g.attempts - g.taken)}`, 16, 96);
+    // Combo strip — five dots fill as the streak builds. The dot count
+    // is `combo - 1` because combo=1 means "no multiplier yet". Active
+    // multiplier label sits to the right of the dots when > 1x.
+    const dotCount = 5, dotR = 6, dotGap = 16, dotY = 120, dotX0 = 16;
+    const filled = Math.min(g.combo - 1, dotCount);
+    for (let i = 0; i < dotCount; i++) {
+      const dx = dotX0 + i * dotGap + dotR;
+      ctx.fillStyle = i < filled ? "#ffd03a" : "rgba(255,255,255,0.18)";
+      ctx.beginPath();
+      ctx.arc(dx, dotY, dotR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    if (g.combo > 1) {
+      ctx.fillStyle = "#ffd03a";
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.fillText(`x${g.combo}`, dotX0 + dotCount * dotGap + 14, dotY + 5);
+    }
 
     // Aim preview
     const restSX = W / 2, restSY = H * 0.84;
@@ -6009,7 +6078,8 @@ const QBChallenge = {
       ctx.textAlign = "center";
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.fillText(g.message, W/2 + 3, H/2 + 3);
-      ctx.fillStyle = g.message.includes("BULLSEYE") ? "#ffe680"
+      ctx.fillStyle = g.message.includes("HOT")      ? "#ffd03a"
+                    : g.message.includes("BULLSEYE") ? "#ffe680"
                     : g.message.includes("Hit")      ? "#4ddc8c"
                     : g.message.includes("Edge")     ? "#ffb020"
                     : "#ff5470";
