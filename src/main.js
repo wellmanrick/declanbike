@@ -3819,6 +3819,9 @@ const PartyPong = {
       vx: 0, vy: 0,
       thrown: false, gone: false, dead: false,
       bounced: false, bounceCount: 0,
+      // Once the ball dies, this flips so the score-the-throw block
+      // runs once instead of every frame for the message hold.
+      counted: false,
       angle: 0,
       t: 0,
       prevSy: H * PP_BALL_REST_Y_R,
@@ -3929,7 +3932,8 @@ const PartyPong = {
       if (b.sx < -80 || b.sx > W + 80) b.dead = true;
       if (b.bounceCount > 3) b.dead = true;
     }
-    if (b.dead && !g.finished) {
+    if (b.dead && !b.counted && !g.finished) {
+      b.counted = true;
       g.thrown++;
       if (!g.message) {
         g.message = "Miss";
