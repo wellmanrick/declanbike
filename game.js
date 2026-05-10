@@ -4313,7 +4313,9 @@ const Hoops = {
     g.shotType = shotType;
     g.hoop = { z: hoopZ, x: hoopX, y: 3.05 };
     g.ball = { x: 0, y: 0.4, z: 1.6, vx: 0, vy: 0, vz: 0,
-               released: false, scored: false, gone: false, t: 0 };
+               released: false, scored: false, gone: false, t: 0,
+               trail: [] };
+    g.netFlop = 0;
     g.message = ""; g.messageTimer = 0;
     g.cameraZ = 0;
   },
@@ -4359,8 +4361,10 @@ const Hoops = {
           Sound.perfect && Sound.perfect();
           // Damp the ball so it falls through the net visibly.
           b.vy = -2; b.vx *= 0.4; b.vz *= 0.2;
+          g.netFlop = 0.6; // animate the net flopping outward
         }
       }
+      if (g.netFlop > 0) g.netFlop = Math.max(0, g.netFlop - dt * 1.5);
       if (b.y < 0 || b.z > h.z + 6 || Math.abs(b.x) > 16) {
         b.gone = true;
         if (!b.scored) { g.message = "Miss"; g.messageTimer = 1.0; Sound.crash && Sound.crash(); }
@@ -4378,19 +4382,100 @@ const Hoops = {
   render(g) {
     if (!g.ball) Hoops.reset(g);
     fpSetCam(g.cameraZ || 0);
-    // Indoor gym: dim ceiling, dim midband, lacquered hardwood floor.
-    fpDrawSky("#2a2a36", "#3a3a48", "#7a4a1a");
-    fpDrawField("#a06030", "rgba(255, 220, 180, 0.32)");
+    // Indoor gym: warm overhead lights blending down to a hardwood floor.
+    fpDrawSky("#1a1226", "#2c2236", "#4a2a14");
 
+    // Court floor — perspective hardwood with a court-line key, free-throw
+    // line, and 3-point arc.
+    const horizon = fpHorizonY();
+    // Hardwood (skip fpDrawField — we draw our own court markings here).
+    {
+      const grad = ctx.createLinearGradient(0, horizon, 0, H);
+      grad.addColorStop(0, "#a06030"); grad.addColorStop(1, "#5a3220");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, horizon, W, H - horizon);
+    }
+    // Wood grain — long forward-going stripes at lane edges.
+    ctx.strokeStyle = "rgba(0,0,0,0.18)";
+    ctx.lineWidth = 1;
+    for (let lane = -6; lane <= 6; lane++) {
+      const near = fpProject(lane * 1.2, 0, 1);
+      const far  = fpProject(lane * 1.2, 0, 80);
+      ctx.beginPath(); ctx.moveTo(near.sx, near.sy); ctx.lineTo(far.sx, far.sy); ctx.stroke();
+    }
+    // Free throw key — a painted rectangle on the floor.
     const h = g.hoop;
-    // Backboard — white rectangle behind the rim.
+    {
+      const keyHalfW = 1.8;
+      const keyZ0 = h.z - 4.6;        // free-throw line
+      const keyZ1 = h.z + 0.2;        // base of backboard
+      const k1 = fpProject(h.x - keyHalfW, 0, keyZ0);
+      const k2 = fpProject(h.x + keyHalfW, 0, keyZ0);
+      const k3 = fpProject(h.x + keyHalfW, 0, keyZ1);
+      const k4 = fpProject(h.x - keyHalfW, 0, keyZ1);
+      ctx.fillStyle = "rgba(170, 60, 40, 0.55)";
+      ctx.beginPath();
+      ctx.moveTo(k1.sx, k1.sy); ctx.lineTo(k2.sx, k2.sy);
+      ctx.lineTo(k3.sx, k3.sy); ctx.lineTo(k4.sx, k4.sy);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = Math.max(1.2, 2 * k1.scale * 6);
+      ctx.stroke();
+    }
+    // Three-point arc on the floor.
+    {
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = Math.max(1, 1.5 * 6);
+      ctx.beginPath();
+      let started = false;
+      const arcR = 6.75;
+      for (let a = -Math.PI / 2 - 1.0; a <= -Math.PI / 2 + 1.0; a += 0.05) {
+        const px = h.x + Math.cos(a) * arcR;
+        const pz = h.z + Math.sin(a) * arcR;
+        if (pz < 0.5) continue;
+        const p = fpProject(px, 0, pz);
+        if (!started) { ctx.moveTo(p.sx, p.sy); started = true; }
+        else ctx.lineTo(p.sx, p.sy);
+      }
+      ctx.stroke();
+    }
+    // Free-throw line.
+    {
+      const ftZ = h.z - 4.6;
+      const ftL = fpProject(h.x - 1.8, 0, ftZ);
+      const ftR = fpProject(h.x + 1.8, 0, ftZ);
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = Math.max(1.5, 2.5 * ftL.scale * 6);
+      ctx.beginPath(); ctx.moveTo(ftL.sx, ftL.sy); ctx.lineTo(ftR.sx, ftR.sy); ctx.stroke();
+    }
+
+    // Backboard support — pole rising from BEHIND the backboard with a
+    // horizontal arm to the back of the board.
+    const armZ = h.z + 1.6;            // pole this far behind the rim
+    const armBase = fpProject(h.x, 0, armZ);
+    const armTop  = fpProject(h.x, h.y + 1.0, armZ);
+    ctx.strokeStyle = "#222";
+    ctx.lineWidth = Math.max(2, 5 * armBase.scale * 6);
+    ctx.beginPath();
+    ctx.moveTo(armBase.sx, armBase.sy);
+    ctx.lineTo(armTop.sx, armTop.sy);
+    ctx.stroke();
+    // Horizontal arm from pole to back of backboard.
+    const armToBoard = fpProject(h.x, h.y + 1.0, h.z + 0.15);
+    ctx.lineWidth = Math.max(2, 4 * armBase.scale * 6);
+    ctx.beginPath();
+    ctx.moveTo(armTop.sx, armTop.sy);
+    ctx.lineTo(armToBoard.sx, armToBoard.sy);
+    ctx.stroke();
+
+    // Backboard — white rectangle BEHIND the rim.
     const bbLeft = -0.9, bbRight = 0.9, bbBot = h.y + 0.1, bbTop = h.y + 1.5;
     const bbZ = h.z + 0.10;
     const bbBL = fpProject(h.x + bbLeft,  bbBot, bbZ);
     const bbBR = fpProject(h.x + bbRight, bbBot, bbZ);
     const bbTL = fpProject(h.x + bbLeft,  bbTop, bbZ);
     const bbTR = fpProject(h.x + bbRight, bbTop, bbZ);
-    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
     ctx.beginPath();
     ctx.moveTo(bbBL.sx, bbBL.sy); ctx.lineTo(bbBR.sx, bbBR.sy);
     ctx.lineTo(bbTR.sx, bbTR.sy); ctx.lineTo(bbTL.sx, bbTL.sy);
@@ -4398,8 +4483,8 @@ const Hoops = {
     ctx.strokeStyle = "#1a1a1a";
     ctx.lineWidth = Math.max(1, 2 * bbBL.scale * 6);
     ctx.stroke();
-    // Inner red square
-    const sqL = h.x - 0.25, sqR = h.x + 0.25, sqB = h.y + 0.45, sqT = h.y + 1.0;
+    // Inner red shooter's square just above the rim.
+    const sqL = h.x - 0.25, sqR = h.x + 0.25, sqB = h.y + 0.05, sqT = h.y + 0.55;
     const sBL = fpProject(sqL, sqB, bbZ - 0.01);
     const sBR = fpProject(sqR, sqB, bbZ - 0.01);
     const sTL = fpProject(sqL, sqT, bbZ - 0.01);
@@ -4410,36 +4495,58 @@ const Hoops = {
     ctx.moveTo(sBL.sx, sBL.sy); ctx.lineTo(sBR.sx, sBR.sy);
     ctx.lineTo(sTR.sx, sTR.sy); ctx.lineTo(sTL.sx, sTL.sy);
     ctx.closePath(); ctx.stroke();
-    // Pole (behind backboard)
-    const poleBase = fpProject(h.x, 0, h.z + 1.0);
-    const poleTop  = fpProject(h.x, h.y + 0.1, h.z + 1.0);
-    ctx.strokeStyle = "#444";
-    ctx.lineWidth = Math.max(2, 4 * poleBase.scale * 6);
-    ctx.beginPath();
-    ctx.moveTo(poleBase.sx, poleBase.sy);
-    ctx.lineTo(poleTop.sx, poleTop.sy);
-    ctx.stroke();
 
-    // Rim — orange ellipse at h.y, h.z.
+    // Rim — orange ring with a slight 3D shadow.
     const rimC = fpProject(h.x, h.y, h.z);
     const rimE = fpProject(h.x + 0.30, h.y, h.z);
     const rimRX = Math.abs(rimE.sx - rimC.sx);
     const rimRY = Math.max(2, rimRX * 0.35);
-    ctx.strokeStyle = "#ff5a3a";
-    ctx.lineWidth = Math.max(2, 4 * rimC.scale * 6);
+    // Underside (shadow)
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.beginPath();
+    ctx.ellipse(rimC.sx, rimC.sy + rimRY * 0.5, rimRX, rimRY, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Rim itself
+    ctx.strokeStyle = "#ff7a2c";
+    ctx.lineWidth = Math.max(2.5, 5 * rimC.scale * 6);
     ctx.beginPath();
     ctx.ellipse(rimC.sx, rimC.sy, rimRX, rimRY, 0, 0, Math.PI * 2);
     ctx.stroke();
-    // Net — vertical strands hanging from rim down to a point.
-    ctx.strokeStyle = "rgba(240, 240, 240, 0.75)";
-    ctx.lineWidth = 1;
-    const netBot = fpProject(h.x, h.y - 0.45, h.z);
-    for (let i = 0; i < 12; i++) {
-      const ang = (i / 12) * Math.PI * 2;
-      const start = fpProject(h.x + Math.cos(ang) * 0.30, h.y, h.z + Math.sin(ang) * 0.30 * 0.4);
+    // Highlight on the front edge of the rim.
+    ctx.strokeStyle = "#ffce6e";
+    ctx.lineWidth = Math.max(1, 2 * rimC.scale * 6);
+    ctx.beginPath();
+    ctx.ellipse(rimC.sx, rimC.sy, rimRX, rimRY, 0, Math.PI * 0.15, Math.PI * 0.85);
+    ctx.stroke();
+
+    // Net — strands hanging from rim. On a make, the net "flops" outward
+    // (g.netFlop is decaying from 0.6 → 0).
+    const flop = g.netFlop || 0;
+    const netBotY = h.y - 0.45 + flop * 0.15; // rises briefly on swish
+    ctx.strokeStyle = "rgba(245, 245, 245, 0.85)";
+    ctx.lineWidth = Math.max(1, 1.4 * rimC.scale * 6);
+    const strands = 14;
+    for (let i = 0; i < strands; i++) {
+      const ang = (i / strands) * Math.PI * 2;
+      const startX = h.x + Math.cos(ang) * 0.30;
+      const startZ = h.z + Math.sin(ang) * 0.30 * 0.4;
+      const start = fpProject(startX, h.y, startZ);
+      // Bottom of net flares slightly outward when flopping.
+      const flareX = h.x + Math.cos(ang) * (0.10 + flop * 0.15);
+      const flareZ = h.z + Math.sin(ang) * 0.10;
+      const end = fpProject(flareX, netBotY, flareZ);
       ctx.beginPath();
       ctx.moveTo(start.sx, start.sy);
-      ctx.lineTo(netBot.sx + (start.sx - rimC.sx) * 0.4, netBot.sy);
+      ctx.lineTo(end.sx, end.sy);
+      ctx.stroke();
+    }
+    // Horizontal net rings for cross-stitch detail.
+    ctx.lineWidth = Math.max(0.6, 0.8 * rimC.scale * 6);
+    for (const fy of [0.15, 0.30]) {
+      ctx.beginPath();
+      const rxFactor = 1 - fy / 0.45 * (0.6 - flop * 0.5);
+      ctx.ellipse(rimC.sx, rimC.sy + fy * (rimRY * 4),
+                  rimRX * rxFactor, rimRY * rxFactor, 0, 0, Math.PI * 2);
       ctx.stroke();
     }
 
@@ -4467,6 +4574,20 @@ const Hoops = {
     else {
       const proj = fpProject(b.x, b.y, b.z);
       bx = proj.sx; by = proj.sy; r = Math.max(5, 18 * proj.scale);
+    }
+    // Append to trail and draw it before the ball so the ball reads on top.
+    if (b.released) {
+      b.trail = b.trail || [];
+      b.trail.push({ x: bx, y: by, r });
+      if (b.trail.length > 14) b.trail.shift();
+      for (let i = 0; i < b.trail.length - 1; i++) {
+        const t = b.trail[i];
+        const a = (i + 1) / b.trail.length;
+        ctx.fillStyle = `rgba(255, 159, 85, ${a * 0.45})`;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, t.r * (0.5 + 0.5 * a), 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.save();
     ctx.translate(bx, by);
@@ -4660,7 +4781,9 @@ const QBChallenge = {
     const restR  = Math.min(70, Math.max(46, W * 0.095));
     if (!g.ball.thrown) fpDrawAimArc(g, restSX, restSY, "rgba(110, 231, 255, 0.85)");
 
-    // Football
+    // Football — spirals along the travel direction once thrown.
+    // Track previous screen position so we can orient the long axis along
+    // the apparent velocity. Render a fading motion streak behind the ball.
     const b = g.ball;
     let bx, by, r, vertical;
     if (!b.thrown) { bx = restSX; by = restSY; r = restR; vertical = true; }
@@ -4669,9 +4792,35 @@ const QBChallenge = {
       bx = proj.sx; by = proj.sy; r = Math.max(6, 22 * proj.scale);
       vertical = false;
     }
+    if (b.thrown) {
+      b.trail = b.trail || [];
+      b.trail.push({ x: bx, y: by, r });
+      if (b.trail.length > 12) b.trail.shift();
+      for (let i = 0; i < b.trail.length - 1; i++) {
+        const tp = b.trail[i];
+        const a = (i + 1) / b.trail.length;
+        ctx.fillStyle = `rgba(155, 90, 44, ${a * 0.40})`;
+        ctx.beginPath();
+        ctx.ellipse(tp.x, tp.y, tp.r * (0.5 + 0.5 * a), tp.r * 0.4 * (0.5 + 0.5 * a),
+                    0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // Compute travel angle in screen space (long axis aligned with motion).
+    let travelAngle = 0;
+    if (b.thrown && b.trail && b.trail.length >= 2) {
+      const last = b.trail[b.trail.length - 1];
+      const prev = b.trail[Math.max(0, b.trail.length - 4)];
+      travelAngle = Math.atan2(last.y - prev.y, last.x - prev.x);
+    }
     ctx.save();
     ctx.translate(bx, by);
-    ctx.rotate(b.thrown ? b.t * 7 : 0);
+    if (b.thrown) {
+      // Long axis points along the throw line. The "spiral" is faked by
+      // sweeping the lacing visibility sinusoidally — gives the illusion
+      // of the ball rotating about its long axis.
+      ctx.rotate(travelAngle);
+    }
     const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
     grad.addColorStop(0, "#9b5a2c"); grad.addColorStop(1, "#5a2a0e");
     ctx.fillStyle = grad;
@@ -4679,9 +4828,9 @@ const QBChallenge = {
     const ry = vertical ? r * 0.95 : r * 0.62;
     ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
     if (r > 6) {
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = Math.max(1.5, r * 0.06);
       if (vertical) {
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = Math.max(1.5, r * 0.06);
         ctx.beginPath(); ctx.moveTo(0, -ry * 0.6); ctx.lineTo(0, ry * 0.6); ctx.stroke();
         const lace = Math.max(2, r * 0.10);
         for (let i = -2; i <= 2; i++) {
@@ -4689,11 +4838,24 @@ const QBChallenge = {
           ctx.moveTo(-lace, i * ry * 0.18); ctx.lineTo(lace, i * ry * 0.18); ctx.stroke();
         }
       } else {
-        ctx.beginPath(); ctx.moveTo(-r * 0.4, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
-        const lace = Math.max(2, r * 0.10);
+        // Spiral lacing: a single chord rotating around the long axis. We
+        // render it as a slim ellipse offset by sin(spinPhase) so it
+        // appears to wrap around the ball.
+        const spinPhase = b.t * 22;       // fast spiral rate
+        const offset = Math.sin(spinPhase) * ry * 0.55;
+        const stripeAlpha = 0.85;
+        ctx.fillStyle = `rgba(255, 255, 255, ${stripeAlpha})`;
+        ctx.beginPath();
+        ctx.ellipse(0, offset, r * 0.35, r * 0.05, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Cross-stitches on the same chord
+        ctx.strokeStyle = `rgba(255, 255, 255, ${stripeAlpha})`;
+        ctx.lineWidth = Math.max(1, r * 0.06);
         for (let i = -2; i <= 2; i++) {
           ctx.beginPath();
-          ctx.moveTo(i * r * 0.16, -lace); ctx.lineTo(i * r * 0.16, lace); ctx.stroke();
+          ctx.moveTo(i * r * 0.12, offset - r * 0.10);
+          ctx.lineTo(i * r * 0.12, offset + r * 0.10);
+          ctx.stroke();
         }
       }
     }
