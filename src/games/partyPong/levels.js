@@ -31,7 +31,7 @@ export const PP_LEVELS = [
     name: "Warm Up",
     subtitle: "Close rack, big cups. Get the feel.",
     balls: 6,
-    rack: { type: "triangle", rows: 3, zBack: 2.6 },  // 6 cups
+    rack: { type: "triangle", rows: 3, zBack: 3.5 },  // 6 cups
     cupScale: 1.25,
     parStars: { 3: 4, 2: 5, 1: 6 },
   },
@@ -40,7 +40,7 @@ export const PP_LEVELS = [
     name: "Classic Rack",
     subtitle: "Ten cups, standard distance.",
     balls: 8,
-    rack: { type: "triangle", rows: 4, zBack: 3.0 },  // 10 cups
+    rack: { type: "triangle", rows: 4, zBack: 3.8 },  // 10 cups
     cupScale: 1.15,
     parStars: { 3: 6, 2: 8, 1: 10 },
   },
@@ -49,7 +49,7 @@ export const PP_LEVELS = [
     name: "Long Table",
     subtitle: "Same rack, farther away.",
     balls: 8,
-    rack: { type: "triangle", rows: 4, zBack: 3.6 },
+    rack: { type: "triangle", rows: 4, zBack: 4.4 },
     cupScale: 1.15,
     parStars: { 3: 6, 2: 8, 1: 10 },
   },
@@ -58,7 +58,7 @@ export const PP_LEVELS = [
     name: "Six Pack",
     subtitle: "Six cups in a line. Pick them off.",
     balls: 5,
-    rack: { type: "line", count: 6, zBack: 3.2 },
+    rack: { type: "line", count: 6, zBack: 4.0 },
     cupScale: 1.10,
     parStars: { 3: 4, 2: 5, 1: 6 },
   },
@@ -67,7 +67,7 @@ export const PP_LEVELS = [
     name: "Diamond",
     subtitle: "Nine in a diamond. Hit the gold center.",
     balls: 7,
-    rack: { type: "diamond", zBack: 3.2 },             // 9 cups
+    rack: { type: "diamond", zBack: 4.0 },             // 9 cups
     cupScale: 1.10,
     parStars: { 3: 5, 2: 7, 1: 9 },
   },
@@ -76,7 +76,7 @@ export const PP_LEVELS = [
     name: "Big Stack",
     subtitle: "Fifteen cups. Bring extra balls.",
     balls: 10,
-    rack: { type: "triangle", rows: 5, zBack: 3.2 },  // 15 cups
+    rack: { type: "triangle", rows: 5, zBack: 4.0 },  // 15 cups
     cupScale: 1.05,
     parStars: { 3: 8, 2: 10, 1: 13 },
   },
@@ -85,7 +85,7 @@ export const PP_LEVELS = [
     name: "Tight Throw",
     subtitle: "Ten cups, only five balls. Make them count.",
     balls: 5,
-    rack: { type: "triangle", rows: 4, zBack: 3.0 },
+    rack: { type: "triangle", rows: 4, zBack: 3.8 },
     cupScale: 1.10,
     parStars: { 3: 4, 2: 5, 1: 5 },
   },
@@ -94,7 +94,7 @@ export const PP_LEVELS = [
     name: "V Split",
     subtitle: "Two columns flank a middle gap. Aim around it.",
     balls: 8,
-    rack: { type: "v", rows: 4, zBack: 3.2 },         // 9 cups (8 + gold center)
+    rack: { type: "v", rows: 4, zBack: 4.0 },         // 9 cups (8 + gold center)
     cupScale: 1.10,
     parStars: { 3: 6, 2: 8, 1: 10 },
   },
@@ -103,7 +103,7 @@ export const PP_LEVELS = [
     name: "Far Diamond",
     subtitle: "Diamond at the back of the table.",
     balls: 7,
-    rack: { type: "diamond", zBack: 4.0 },
+    rack: { type: "diamond", zBack: 4.4 },
     cupScale: 1.00,
     parStars: { 3: 5, 2: 7, 1: 9 },
   },
@@ -112,7 +112,7 @@ export const PP_LEVELS = [
     name: "House Cup",
     subtitle: "Twenty-one cups. Run the table.",
     balls: 14,
-    rack: { type: "triangle", rows: 6, zBack: 3.5 },  // 21 cups
+    rack: { type: "triangle", rows: 6, zBack: 4.2 },  // 21 cups
     cupScale: 1.00,
     parStars: { 3: 12, 2: 15, 1: 18 },
   },
@@ -123,7 +123,10 @@ export const PP_LEVELS = [
 // bar-table value so the perspective compresses correctly: with the
 // camera at 1.6m, a 0.10m floor table would push the play surface
 // hundreds of pixels below the screen on phone viewports.
-export const CUP_BASE_R    = 0.10;   // outer rim radius at scale 1.0
+export const CUP_BASE_R    = 0.13;   // outer rim radius at scale 1.0 —
+                                     // bumped up so cups stay readable
+                                     // at far-end-of-table distances
+                                     // (zBack 3.5-4.4m)
 export const CUP_HEIGHT    = 0.28;
 export const CUP_LIP       = 0.012;  // rim thickness (rim hit zone)
 export const TABLE_Y       = 1.00;   // chest-high table (camera 0.6m above)
