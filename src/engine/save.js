@@ -44,6 +44,12 @@ export const DEFAULT_SAVE = {
     bestStreak: 0,                //   longest in-round consecutive-make streak
     totalMakes: 0,                //   lifetime makes across all rounds
   },
+  partyPongLevels: {},            // levelId -> { stars, ballsUsed, score, cleared }
+  partyPongBest: {                // Lifetime Party Pong records.
+    bestStreak: 0,                //   longest in-round consecutive-make streak
+    totalMakes: 0,                //   lifetime cups sunk across all rounds
+    rackClears: 0,                //   total racks cleared
+  },
 };
 
 function _load() {
@@ -66,6 +72,8 @@ function _load() {
       fieldGoalSeenConditions: parsed.fieldGoalSeenConditions || {},
       fieldGoalSeenPowers: parsed.fieldGoalSeenPowers || {},
       fieldGoalBest: Object.assign({}, DEFAULT_SAVE.fieldGoalBest, parsed.fieldGoalBest || {}),
+      partyPongLevels: parsed.partyPongLevels || {},
+      partyPongBest: Object.assign({}, DEFAULT_SAVE.partyPongBest, parsed.partyPongBest || {}),
     });
   } catch (e) {
     console.warn("Save load failed", e);
