@@ -3847,20 +3847,24 @@ const CanBash = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    // Map the flick to a real release vector (speed + loft + horizontal
-    // angle) so different flicks produce visibly different paths instead
-    // of a near-constant arc.
-    const speed = 8 + power * 22;                       // 8 → 30 m/s
-    const loft  = (0.18 + upward * 0.85) * (Math.PI / 2); // ~10° → 95°
-    const yaw   = lateral * (Math.PI / 4);              // ±45°
+    // Map the flick to a real release vector. Loft is capped at a sane
+    // throwing band (5°–25°) so the ball actually carries forward to the
+    // cans instead of going almost straight up the way the previous
+    // unbounded mapping did.
+    const speed = 10 + power * 24;                                 // 10 → 34 m/s
+    const loft  = (5 + upward * 20) * (Math.PI / 180);             // 5° → 25°
+    const yaw   = lateral * (Math.PI / 4);                          // ±45°
     g.ball.vz = speed * Math.cos(loft) * Math.cos(yaw);
     g.ball.vy = speed * Math.sin(loft);
     g.ball.vx = speed * Math.cos(loft) * Math.sin(yaw);
-    // Power tax on accuracy: hard flicks wobble. Soft flicks stay precise.
-    const wildness = power * power * 0.45;
-    g.ball.vx += (Math.random() - 0.5) * 4.5 * wildness;
-    g.ball.vy += (Math.random() - 0.5) * 3.0 * wildness;
-    g.ball.vz += (Math.random() - 0.5) * 2.0 * wildness;
+    // Make sure the ball always has real forward speed (defensive — keeps
+    // a wobbly mostly-sideways flick from stalling).
+    if (g.ball.vz < 6) g.ball.vz = 6;
+    // Power tax on accuracy: hard flicks wobble; soft flicks stay precise.
+    const wildness = power * power * 0.25;
+    g.ball.vx += (Math.random() - 0.5) * 3.0 * wildness;
+    g.ball.vy += (Math.random() - 0.5) * 1.6 * wildness;
+    g.ball.vz += (Math.random() - 0.5) * 1.2 * wildness;
     g.ball.spin = 0;
     g.ball.thrown = true;
     g.ball.trail = [];
