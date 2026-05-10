@@ -119,13 +119,16 @@ export const PP_LEVELS = [
 ];
 
 // Cup geometry constants — kept in one place so render and physics
-// stay in sync. Units are meters.
-export const CUP_BASE_R    = 0.12;   // outer rim radius at scale 1.0
+// stay in sync. Units are meters. Table height is set to a realistic
+// bar-table value so the perspective compresses correctly: with the
+// camera at 1.6m, a 0.10m floor table would push the play surface
+// hundreds of pixels below the screen on phone viewports.
+export const CUP_BASE_R    = 0.10;   // outer rim radius at scale 1.0
 export const CUP_HEIGHT    = 0.28;
 export const CUP_LIP       = 0.012;  // rim thickness (rim hit zone)
-export const TABLE_Y       = 0.10;
-export const TABLE_W       = 1.6;    // lateral table width (meters)
-export const TABLE_Z_NEAR  = 0.4;    // front edge of table (closest to thrower)
+export const TABLE_Y       = 0.70;   // bar-table top (camera 0.9m above)
+export const TABLE_W       = 1.4;    // lateral table width (meters)
+export const TABLE_Z_NEAR  = 0.6;    // front edge of table
 
 // Resolve a level's rack descriptor into a list of cup specs that
 // physics + render consume. Each cup is { x, z, r, gold? }, with
