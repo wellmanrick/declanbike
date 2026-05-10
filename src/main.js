@@ -30,7 +30,7 @@ import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE 
 import { STATE, G } from "./state.js";
 import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO, POWER_INFO } from "./games/canBash/levels.js";
 import { FG_LEVELS, FG_CONDITION_INFO, FG_POWERUP_INFO, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
-import { PP_LEVELS, buildCups as ppBuildCups, starsFor as ppStarsFor, levelById as ppLevelById, isLevelUnlocked as isPpLevelUnlocked, CUP_BASE_R, CUP_HEIGHT, TABLE_Y, TABLE_W, TABLE_Z_NEAR } from "./games/partyPong/levels.js";
+import { PP_LEVELS, buildCups as ppBuildCups, starsFor as ppStarsFor, levelById as ppLevelById, isLevelUnlocked as isPpLevelUnlocked } from "./games/partyPong/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -3728,34 +3728,64 @@ const FieldGoal = {
 // Flick releases it; physics integrate gravity + table bounce + cup
 // detection. Direct cups score 100, bounce shots 200, gold cups +250
 // bonus, streak chains add 50 each, rack clear bonus 500.
-const PP_BALL_R     = 0.045;
-const PP_TABLE_LEN  = 4.6;  // table extends from z=0.6 to z=5.2 to fit
-                            // the deepest racks (zBack up to 4.0 +
-                            // pyramid extending forward)
-const PP_GRAVITY    = 9.8;
-// Ball is held at chest height in front of the player at the table edge.
-// y > TABLE_Y so the ball spawns above the play surface; z just outside
-// the front edge so the trajectory starts visible in the FP frame.
-const PP_BALL_SPAWN = { x: 0, y: 1.5, z: 1.0 };  // pushed forward to
-                            // sit just inside the new front edge so the
-                            // first projected trajectory point lands at
-                            // a reasonable screen y, no big jump from
-                            // the rest sprite
 
 // Geometry constants — re-exported aliases of the levels.js exports
 // so the rest of this file can read them without the import names
 // proliferating through every helper.
-const PP_CUP_BASE_R = CUP_BASE_R;
-const PP_CUP_HEIGHT = CUP_HEIGHT;
-const PP_TABLE_Y    = TABLE_Y;
-const PP_TABLE_W    = TABLE_W;
-const PP_TABLE_Z_NEAR = TABLE_Z_NEAR;
+// Party Pong runs in screen-space top-down — the FP-pinhole projection
+// fights us at small z values, so cups, table, and physics all live
+// in pixels here. Rack sits in the upper portion of the screen, ball
+// rests near the bottom, throw arcs across the trapezoid table.
+const PP_RACK_TOP_Y_R   = 0.30;   // back of the rack
+const PP_RACK_BOT_Y_R   = 0.55;   // front of the rack (apex of triangle)
+const PP_TABLE_TOP_Y_R  = 0.30;   // top edge of the trapezoid table
+const PP_TABLE_BOT_Y_R  = 0.78;   // bottom edge (front rail by the player)
+const PP_TABLE_TOP_W_R  = 0.34;   // half-width at the top edge
+const PP_TABLE_BOT_W_R  = 0.96;   // half-width at the bottom edge
+const PP_BOUNCE_Y_R     = 0.66;   // mid-table — where bounce shots land
+const PP_BALL_REST_Y_R  = 0.86;
+// Pixel scale: 1 world meter = this many pixels at the FRONT of the
+// rack (0% depth). Back-of-rack gets compressed by PP_BACK_COMPRESS.
+const PP_PX_PER_M_R     = 0.50;   // proportional to W
+const PP_BACK_COMPRESS  = 0.55;   // back rack is 55% as wide as front
+const PP_BACK_SCALE_MIN = 0.55;   // back-row cups are 55% size of front
+const PP_GRAVITY_R      = 1.85;   // gravity = ratio * H (px/s²)
+const PP_KICK_VY_R      = 1.50;   // max upward vy = ratio * H (px/s)
+const PP_KICK_VX_R      = 0.95;   // max lateral vx = ratio * W (px/s)
+const PP_BOUNCE_DAMP    = 0.55;   // vy multiplier after table bounce
 
 function ppRebuildRack(g) {
   const cups = ppBuildCups(g.level);
-  // Each cup carries runtime state on top of its geometry: removed
-  // flag and a fall-out animation timer for the splash effect.
-  g.cups = cups.map(c => ({ ...c, removed: false, fallT: 0 }));
+  // Each cup carries its own world coords (used to compute screen
+  // position via ppCupScreenPos) plus runtime state.
+  g.cups = cups.map(c => ({ ...c, removed: false }));
+  // Rack z range — drives the screen-y mapping in ppCupScreenPos so
+  // every level fits the same on-screen rack window regardless of
+  // the absolute zBack value.
+  let zMin = Infinity, zMax = -Infinity;
+  for (const c of g.cups) {
+    if (c.z < zMin) zMin = c.z;
+    if (c.z > zMax) zMax = c.z;
+  }
+  g.rackZMin = zMin;
+  g.rackZMax = zMax;
+}
+
+// Map a cup's world (x, z) to screen pixels for the top-down view.
+// Returns sx, sy, depth (0 = front of rack, 1 = back), scale (cup
+// size multiplier — back-row cups are smaller).
+function ppCupScreenPos(g, c) {
+  const span = Math.max(0.01, g.rackZMax - g.rackZMin);
+  // Depth 0 at the FRONT of the rack (closest to the player), 1 at
+  // the BACK. Back of rack maps to the top of the screen window.
+  const depth = (c.z - g.rackZMin) / span;
+  const topY = H * PP_RACK_TOP_Y_R;
+  const botY = H * PP_RACK_BOT_Y_R;
+  const sy = botY - depth * (botY - topY);
+  const compress = 1 - depth * (1 - PP_BACK_COMPRESS);
+  const sx = W / 2 + c.x * (W * PP_PX_PER_M_R) * compress;
+  const scale = 1 - depth * (1 - PP_BACK_SCALE_MIN);
+  return { sx, sy, depth, scale };
 }
 
 const PartyPong = {
@@ -3773,36 +3803,30 @@ const PartyPong = {
       thrown: 0, made: 0, score: 0,
       cleared: false, finished: false,
       message: "", messageTimer: 0,
-      cameraZ: 0,
       stars: 0,
-      // Per-throw streak — incremented on consecutive makes within a
-      // single round. Resets on a missed throw. Drives crowd cheers
-      // and the streak bonus.
       streak: 0, bestStreak: 0,
-      // Game-feel state shared with cbJuice (screen shake / hit-pause
-      // / slow-mo). All three decay or count down inside update().
       shake: 0, pauseT: 0, slowT: 0,
-      // Splash particles spawned on each made cup. Stepped per frame.
       splashes: [],
+      trail: [],
       dragStart: null, dragNow: null,
     };
   },
   payout(g) { return Math.floor((g.score || 0) * 0.3); },
-  // Reset just the ball — called between throws inside the round.
   resetBall(g) {
     g.ball = {
-      x: PP_BALL_SPAWN.x, y: PP_BALL_SPAWN.y, z: PP_BALL_SPAWN.z,
-      vx: 0, vy: 0, vz: 0,
+      // Screen-space ball state. sx/sy in pixels, vx/vy in px/s.
+      sx: W / 2, sy: H * PP_BALL_REST_Y_R,
+      vx: 0, vy: 0,
       thrown: false, gone: false, dead: false,
       bounced: false, bounceCount: 0,
       angle: 0,
       t: 0,
-      // Shadow position on the table is recomputed each frame from x/z.
-      // Tracked here so cup-pass detection can interpolate cleanly.
-      prevY: PP_BALL_SPAWN.y,
+      prevSy: H * PP_BALL_REST_Y_R,
+      // Fire trail when player is on a 3+ make streak.
+      fire: g.streak >= 3,
     };
     g.message = ""; g.messageTimer = 0;
-    g.cameraZ = 0;
+    g.trail = [];
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
@@ -3811,20 +3835,13 @@ const PartyPong = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    // Calibrated for the deeper scene: ball spawn at z=1.0, cup tops
-    // at y=1.28, racks now at the far end of a 4.6m table (z=3.5-4.4).
-    // vy has a 1.5 baseline so even weak flicks have usable flight
-    // time (~0.59s at zero power), climbing to ~0.87s at max
-    // power+upward; vz scales linearly with throw distance and the
-    // 1.15 coefficient is tuned so a max-power full-upward flick
-    // lands the ball at zBack for any rack distance.
-    const zBack = g.level.rack.zBack || 3.8;
-    const reach = Math.max(1.5, zBack - PP_BALL_SPAWN.z);
-    g.ball.vy = 1.5 + power * 2.5 * upward;
-    g.ball.vz = power * reach * 1.15 * upward;
-    g.ball.vx = lateral * power * 1.6;
+    // Screen-space velocities. Max-power, max-upward flick peaks just
+    // above the back of the rack (y = H * PP_RACK_TOP_Y_R) so the ball
+    // is descending when it crosses the rack rows.
+    g.ball.vy = -power * upward * H * PP_KICK_VY_R;
+    g.ball.vx =  lateral * power * W * PP_KICK_VX_R;
     g.ball.thrown = true;
-    g.ball.prevY = g.ball.y;
+    g.ball.prevSy = g.ball.sy;
     Sound.boostHit && Sound.boostHit();
     cbJuice(g, { vibrate: 14 });
   },
@@ -3832,80 +3849,86 @@ const PartyPong = {
     if (!g.ball) PartyPong.resetBall(g);
     if (g.cups.length === 0) ppRebuildRack(g);
     const b = g.ball;
-    // Shake decay + hit-pause + slow-mo (same juice flow as Field Goal).
     if (g.shake > 0) g.shake = Math.max(0, g.shake - dt * 12);
     if (g.pauseT > 0) { g.pauseT -= dt; return; }
     if (g.slowT > 0) { g.slowT -= dt; dt *= CB_SLOW_FACTOR; }
-    // Step splash particles (always, so they continue to settle).
+    // Step splash particles always so they keep settling.
     if (g.splashes.length > 0) {
       for (const s of g.splashes) {
         s.x += s.vx * dt;
         s.y += s.vy * dt;
-        s.vy += 14 * dt;        // tiny gravity in screen space
+        s.vy += H * 0.6 * dt;
         s.life -= dt;
       }
       g.splashes = g.splashes.filter(s => s.life > 0);
     }
     if (b.thrown && !b.dead) {
       b.t += dt;
-      b.prevY = b.y;
-      b.vy -= PP_GRAVITY * dt;
-      b.x  += b.vx * dt;
-      b.y  += b.vy * dt;
-      b.z  += b.vz * dt;
+      b.prevSy = b.sy;
+      b.vy += H * PP_GRAVITY_R * dt;
+      b.sx += b.vx * dt;
+      b.sy += b.vy * dt;
       b.angle += 12 * dt;
-      // Camera trails the ball ~0.5m back so the rack grows on approach.
-      const targetCam = Math.max(0, b.z - 0.5);
-      g.cameraZ = g.cameraZ + (targetCam - g.cameraZ) * Math.min(1, dt * 4);
-      // Cup hit detection — check whether the ball just dropped past
-      // any live cup's rim plane.
-      const cupTopY = PP_TABLE_Y + PP_CUP_HEIGHT;
-      if (b.prevY >= cupTopY && b.y < cupTopY && b.vy < 0) {
+      // Ball trail — keep recent screen positions for the fade.
+      g.trail.push({ x: b.sx, y: b.sy });
+      if (g.trail.length > 18) g.trail.shift();
+      // Cup hit detection — ellipse mouth test in screen space. Ball
+      // must be descending fast enough to "drop in".
+      const dropping = b.vy > H * 0.25;
+      if (dropping) {
         for (const c of g.cups) {
           if (c.removed) continue;
-          const dx = b.x - c.x, dz = b.z - c.z;
-          const d2 = dx * dx + dz * dz;
-          const inner = c.r - PP_BALL_R;
-          if (d2 < inner * inner) {
-            PartyPong.makeCup(g, c);
+          const pos = ppCupScreenPos(g, c);
+          const cupRpx = c.r * (W * PP_PX_PER_M_R) * pos.scale;
+          const mouthRX = cupRpx;
+          const mouthRY = cupRpx * 0.30;
+          const dx = b.sx - pos.sx;
+          const dy = b.sy - pos.sy;
+          const inside = (dx * dx) / (mouthRX * mouthRX) +
+                         (dy * dy) / (mouthRY * mouthRY) <= 1;
+          if (inside) {
+            PartyPong.makeCup(g, c, pos);
             return;
           }
-          const outer = c.r + PP_BALL_R;
-          if (d2 < outer * outer) {
-            // Rim deflection — small bounce up + lateral nudge. Ball
-            // continues but is unlikely to score.
-            b.vy = Math.max(1.5, -b.vy * 0.4);
-            b.vx += (Math.random() - 0.5) * 1.6;
-            b.vz *= 0.55;
+          // Rim rattle — close to the mouth but not in. Small upward
+          // bounce + lateral nudge so the ball bounces away.
+          const rimX = mouthRX * 1.20;
+          const rimY = mouthRY * 1.50;
+          const onRim = (dx * dx) / (rimX * rimX) +
+                        (dy * dy) / (rimY * rimY) <= 1;
+          if (onRim) {
+            b.vy = -Math.abs(b.vy) * 0.45;
+            b.vx += (Math.random() - 0.5) * 80;
             cbJuice(g, { shake: 5, vibrate: 18 });
             Sound.click && Sound.click();
             break;
           }
         }
       }
-      // Table bounce — only valid while the ball is over the table.
-      if (b.prevY >= PP_TABLE_Y && b.y < PP_TABLE_Y && b.vy < 0) {
-        const overTable = b.z >= PP_TABLE_Z_NEAR
-                          && b.z <= PP_TABLE_Z_NEAR + PP_TABLE_LEN
-                          && Math.abs(b.x) <= PP_TABLE_W / 2;
+      // Table bounce — at the bounce-y line, only if the ball is
+      // within the trapezoid's lateral bounds at that y.
+      const bounceY = H * PP_BOUNCE_Y_R;
+      if (!b.bounced && b.prevSy < bounceY && b.sy >= bounceY && b.vy > 0) {
+        const t = (PP_BOUNCE_Y_R - PP_TABLE_TOP_Y_R) /
+                  (PP_TABLE_BOT_Y_R - PP_TABLE_TOP_Y_R);
+        const halfW = W * (PP_TABLE_TOP_W_R / 2 +
+                          (PP_TABLE_BOT_W_R - PP_TABLE_TOP_W_R) / 2 * t);
+        const overTable = Math.abs(b.sx - W / 2) <= halfW;
         if (overTable) {
-          b.y = PP_TABLE_Y;
-          b.vy = -b.vy * 0.55;
-          b.vx *= 0.85; b.vz *= 0.85;
+          b.sy = bounceY;
+          b.vy *= -PP_BOUNCE_DAMP;
+          b.vx *= 0.85;
           b.bounced = true;
           b.bounceCount++;
           Sound.land && Sound.land();
           cbJuice(g, { vibrate: 8 });
-          if (b.bounceCount > 3 || Math.abs(b.vy) < 0.6) b.dead = true;
-        } else {
-          b.dead = true;
         }
       }
-      // Out-of-play conditions.
-      if (b.y < -0.6) b.dead = true;
-      if (b.z > PP_TABLE_Z_NEAR + PP_TABLE_LEN + 0.4) b.dead = true;
+      // Out of play.
+      if (b.sy > H + 40) b.dead = true;
+      if (b.sx < -80 || b.sx > W + 80) b.dead = true;
+      if (b.bounceCount > 3) b.dead = true;
     }
-    // After the ball settles, advance the round.
     if (b.dead && !g.finished) {
       g.thrown++;
       if (!g.message) {
@@ -3915,8 +3938,6 @@ const PartyPong = {
         Sound.groan && Sound.groan();
       }
     }
-    // Tick the message timer; once it expires, prep the next ball or
-    // finalize the round.
     if (g.messageTimer > 0) g.messageTimer -= dt;
     if (b.dead && g.messageTimer <= 0 && !g.finished) {
       const cleared = g.cups.every(c => c.removed);
@@ -3925,8 +3946,6 @@ const PartyPong = {
         g.cleared = cleared;
         if (cleared) g.score += 500;
         g.stars = ppStarsFor(g.level, g.thrown, cleared);
-        // Persist best record for this level. Stars never go down;
-        // ties keep the better balls-used and score.
         save.partyPongLevels = save.partyPongLevels || {};
         const prev = save.partyPongLevels[g.level.id];
         const rec = { stars: g.stars, ballsUsed: g.thrown, score: g.score, cleared };
@@ -3934,7 +3953,6 @@ const PartyPong = {
             (rec.stars === prev.stars && rec.score > (prev.score || 0))) {
           save.partyPongLevels[g.level.id] = rec;
         }
-        // Lifetime records.
         save.partyPongBest = save.partyPongBest ||
           { bestStreak: 0, totalMakes: 0, rackClears: 0 };
         if (g.bestStreak > save.partyPongBest.bestStreak) {
@@ -3942,7 +3960,6 @@ const PartyPong = {
         }
         save.partyPongBest.totalMakes = (save.partyPongBest.totalMakes || 0) + g.made;
         if (cleared) save.partyPongBest.rackClears = (save.partyPongBest.rackClears || 0) + 1;
-        // Cash payout (matches Field Goal pattern).
         const cash = PartyPong.payout(g);
         save.cash += cash;
         g.cashEarned = cash;
@@ -3956,18 +3973,23 @@ const PartyPong = {
     }
   },
   // Mark a cup made + score it + spawn splash + prep the next ball.
-  makeCup(g, cup) {
+  // `pos` is the cup's screen-space mouth center (passed by the
+  // detection loop so we don't recompute it).
+  makeCup(g, cup, pos) {
     cup.removed = true;
-    cup.fallT = 0;
     g.made++;
     let pts = g.ball.bounced ? 200 : 100;
     let msg = g.ball.bounced ? "BOUNCE +200" : "CUP +100";
-    if (cup.gold) { pts += 250; msg = "GOLD CUP! +" + (250 + (g.ball.bounced ? 200 : 100)); }
+    if (cup.gold) {
+      const goldBonus = 250;
+      pts += goldBonus;
+      msg = "GOLD CUP! +" + pts;
+    }
     g.streak++;
     if (g.streak > 1) {
       const bonus = (g.streak - 1) * 50;
       pts += bonus;
-      msg += `  x${g.streak}`;
+      msg += ` x${g.streak}`;
     }
     if (g.streak > g.bestStreak) g.bestStreak = g.streak;
     g.score += pts;
@@ -3980,21 +4002,18 @@ const PartyPong = {
       slowT: cup.gold ? 0.45 : 0.20,
       vibrate: cup.gold ? [0, 30, 30, 30, 30, 80] : [0, 20, 30, 50],
     });
-    // Splash particles — radial burst above the cup top.
-    const top = fpProject(cup.x, PP_TABLE_Y + PP_CUP_HEIGHT, cup.z);
-    for (let i = 0; i < 16; i++) {
-      const a = (i / 16) * Math.PI * 2;
-      const sp = 60 + Math.random() * 60;
+    // Splash particles burst from the cup mouth.
+    for (let i = 0; i < 22; i++) {
+      const a = (i / 22) * Math.PI * 2 + Math.random() * 0.2;
+      const sp = 120 + Math.random() * 160;
       g.splashes.push({
-        x: top.sx, y: top.sy,
+        x: pos.sx, y: pos.sy,
         vx: Math.cos(a) * sp,
-        vy: Math.sin(a) * sp - 30,
-        life: 0.5 + Math.random() * 0.3,
+        vy: Math.sin(a) * sp - 40,
+        life: 0.5 + Math.random() * 0.4,
         hue: cup.gold ? 50 : (200 + Math.random() * 60),
       });
     }
-    // Mark ball gone immediately so the next ball preps after the
-    // brief message hold.
     g.ball.gone = true;
     g.ball.dead = true;
   },
@@ -4003,70 +4022,60 @@ const PartyPong = {
     if (g.cups.length === 0) ppRebuildRack(g);
     ctx.save();
     if (g.shake > 0.05) {
-      const sx = (Math.random() - 0.5) * g.shake;
-      const sy = (Math.random() - 0.5) * g.shake;
-      ctx.translate(sx, sy);
+      ctx.translate((Math.random() - 0.5) * g.shake,
+                    (Math.random() - 0.5) * g.shake);
     }
-    fpSetCam(g.cameraZ || 0);
-    // Party basement scene + table.
     ppDrawScene(g);
-    // Cups — sorted back-to-front so closer cups occlude farther ones.
+    // Cups — draw back rows first so closer cups occlude.
     const sorted = g.cups.slice().sort((a, b) => b.z - a.z);
     for (const c of sorted) ppDrawCup(g, c);
+    // Ball trail — fade in over the recent positions, glowing orange
+    // when in fire mode.
+    const b = g.ball;
+    if (g.trail && g.trail.length > 1) {
+      for (let i = 0; i < g.trail.length; i++) {
+        const t = g.trail[i];
+        const a = i / g.trail.length;
+        const r = (b.fire ? 12 : 7) * a;
+        ctx.fillStyle = b.fire
+          ? `rgba(255, 140, 60, ${a * 0.85})`
+          : `rgba(255, 255, 255, ${a * 0.55})`;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     // Splash particles — over cups, under ball.
     for (const s of g.splashes) {
       const a = Math.max(0, Math.min(1, s.life / 0.6));
       ctx.fillStyle = `hsla(${s.hue}, 95%, 70%, ${a})`;
       ctx.beginPath();
-      ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+      ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Ball — fixed bottom-center while at rest, projected once thrown.
-    const restSX = W / 2;
-    const restSY = H * 0.84;
-    const restR  = Math.min(40, Math.max(28, W * 0.06));
-    const b = g.ball;
-    let bx, by, r;
-    if (!b.thrown || b.gone) {
-      // Pre-throw: show ball at rest. Post-make: hide (ball is in the cup).
-      if (b.gone) { /* skip ball draw */ }
-      else { bx = restSX; by = restSY; r = restR; }
-    } else {
-      const proj = fpProject(b.x, b.y, b.z);
-      bx = proj.sx; by = proj.sy;
-      // Physical projection: 0.04m radius * scale * 60 → pixels. Floor
-      // of 3px so the ball stays legible far from the camera.
-      r = Math.max(3, PP_BALL_R * proj.scale * 60);
-    }
-    if (!b.gone && bx !== undefined) {
-      // Shadow on the table (project the ball's x,z onto the table plane).
-      if (b.thrown && b.y > PP_TABLE_Y) {
-        const shadow = fpProject(b.x, PP_TABLE_Y + 0.001, b.z);
-        ctx.fillStyle = "rgba(0,0,0,0.35)";
-        ctx.beginPath();
-        const sr = Math.max(2, r * 0.7);
-        ctx.ellipse(shadow.sx, shadow.sy, sr, sr * 0.4, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
+    // Ball — at rest pre-throw, in flight after.
+    if (!b.gone) {
+      const ballR = Math.min(20, Math.max(12, W * 0.04));
       ctx.save();
-      ctx.translate(bx, by);
+      ctx.translate(b.sx, b.sy);
       ctx.rotate(b.thrown ? b.angle : 0);
-      const grad = ctx.createRadialGradient(-r * 0.35, -r * 0.35, r * 0.1, 0, 0, r);
+      ctx.shadowColor = b.fire ? "#ff7722" : "#fff";
+      ctx.shadowBlur = b.fire ? 22 : 10;
+      const grad = ctx.createRadialGradient(-ballR * 0.35, -ballR * 0.35, ballR * 0.1, 0, 0, ballR);
       grad.addColorStop(0, "#fff");
       grad.addColorStop(0.7, "#f0e8d6");
       grad.addColorStop(1, "#a89870");
       ctx.fillStyle = grad;
-      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, ballR, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
       ctx.strokeStyle = "rgba(0,0,0,0.45)";
-      ctx.lineWidth = Math.max(0.5, r * 0.07);
-      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
-      // Subtle equator stripe (ping pong seam).
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(0, 0, ballR, 0, Math.PI * 2); ctx.stroke();
       ctx.strokeStyle = "rgba(0,0,0,0.18)";
-      ctx.lineWidth = Math.max(0.5, r * 0.05);
-      ctx.beginPath(); ctx.moveTo(-r * 0.85, 0); ctx.lineTo(r * 0.85, 0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-ballR * 0.85, 0); ctx.lineTo(ballR * 0.85, 0); ctx.stroke();
       ctx.restore();
     }
-    // Aim guide — predicted trajectory while dragging.
+    // Aim guide — dashed predicted trajectory while dragging.
     if (!b.thrown) {
       const preview = fgFlickPreview(g);
       if (preview) {
@@ -4077,22 +4086,19 @@ const PartyPong = {
           ctx.lineWidth = 3;
           ctx.setLineDash([7, 6]);
           ctx.beginPath();
-          ctx.moveTo(restSX, restSY);
+          ctx.moveTo(W / 2, H * PP_BALL_REST_Y_R);
           for (const pt of path) ctx.lineTo(pt.sx, pt.sy);
           ctx.stroke();
           ctx.setLineDash([]);
-          // Power bar.
           ctx.fillStyle = "rgba(0,0,0,0.4)";
           ctx.fillRect(W - 130, 20, 110, 10);
           ctx.fillStyle = "#7d5dff";
           ctx.fillRect(W - 130, 20, 110 * preview.power, 10);
-        } else {
-          fpDrawAimArc(g, restSX, restSY, "rgba(180, 230, 255, 0.85)");
         }
       }
     }
-    // HUD — score, balls, cups left, streak.
-    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    // HUD.
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.textAlign = "start";
     const cupsLeft = g.cups.filter(c => !c.removed).length;
@@ -4101,7 +4107,7 @@ const PartyPong = {
     ctx.fillText(`Cups: ${cupsLeft} / ${g.cups.length}`, 16, 74);
     if (g.level && g.level.name) {
       ctx.font = "bold 13px ui-monospace, monospace";
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.fillText(g.level.name, 16, 96);
     }
     if (g.streak >= 2) {
@@ -4109,7 +4115,7 @@ const PartyPong = {
       ctx.fillStyle = "#ffd03a";
       ctx.fillText(`🔥 Streak x${g.streak}`, 16, 118);
     }
-    // Result message.
+    // Result message — large center text.
     if (g.message && g.messageTimer > 0) {
       ctx.font = "bold 44px ui-monospace, monospace";
       ctx.textAlign = "center";
@@ -4123,7 +4129,7 @@ const PartyPong = {
       ctx.textAlign = "start";
     }
     if (!b.thrown && !g.dragStart) {
-      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
       ctx.fillText("Flick UP to throw — angle for power and arc", W/2, H * 0.95);
@@ -4133,237 +4139,187 @@ const PartyPong = {
   },
 };
 
-// Forward-simulate the throw matching PartyPong physics so the aim
-// guide reads honestly. Mirrors fgPredictTrajectory.
+// Forward-simulate the throw matching PartyPong's screen-space
+// physics so the aim guide reads honestly. Same gravity, same kick
+// formula as PartyPong.handlePointer.
 function ppPredictTrajectory(g, flick) {
-  const zBack = g.level.rack.zBack || 3.8;
-  const reach = Math.max(1.5, zBack - PP_BALL_SPAWN.z);
-  let bx = PP_BALL_SPAWN.x, by = PP_BALL_SPAWN.y, bz = PP_BALL_SPAWN.z;
-  let vx = flick.lateral * flick.power * 1.6;
-  let vy = 1.5 + flick.power * 2.5 * flick.upward;
-  let vz = flick.power * reach * 1.15 * flick.upward;
   const out = [];
+  let sx = W / 2, sy = H * PP_BALL_REST_Y_R;
+  let vx = flick.lateral * flick.power * W * PP_KICK_VX_R;
+  let vy = -flick.power * flick.upward * H * PP_KICK_VY_R;
   const dt = 0.04;
   for (let i = 0; i < 50; i++) {
-    vy -= PP_GRAVITY * dt;
-    bx += vx * dt; by += vy * dt; bz += vz * dt;
-    if (by < -0.4) break;
-    if (bz > PP_TABLE_Z_NEAR + PP_TABLE_LEN + 0.4) break;
-    // Skip points too close to the camera — they project off-screen
-    // and the line jumps. The rest sprite is the visual "release"
-    // anchor, so the path picks up once the ball's far enough.
-    if (bz < PP_BALL_SPAWN.z + 0.05) continue;
-    const proj = fpProject(bx, by, bz);
-    out.push({ sx: proj.sx, sy: proj.sy });
+    vy += H * PP_GRAVITY_R * dt;
+    sx += vx * dt;
+    sy += vy * dt;
+    if (sy > H + 20) break;
+    if (sy < -20) break;
+    if (sx < -80 || sx > W + 80) break;
+    out.push({ sx, sy });
   }
   return out;
 }
 
-// Party basement room: dark gradient sky with a few neon strips on
-// the back wall, then the pong table drawn as a perspective quad.
+// Party basement room — top-down screen-space scene. Trapezoidal pong
+// table with a neon marquee, sweeping beams, crowd dots, lane lines,
+// and a faint dashed line marking the ball-bounce y.
 function ppDrawScene(g) {
-  // Sky / wall gradient — deep purple to teal so the cups read.
+  // Sky / wall gradient — deep purple to dark.
   const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, "#150930");
-  sky.addColorStop(0.5, "#2a1a55");
-  sky.addColorStop(1, "#0d0820");
+  sky.addColorStop(0,    "#150930");
+  sky.addColorStop(0.5,  "#2a1a55");
+  sky.addColorStop(1,    "#0d0820");
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
-  // Back wall — solid plane behind the table.
-  const wallZ = PP_TABLE_Z_NEAR + PP_TABLE_LEN + 0.6;
-  const wallTop = fpProject(0, 2.4, wallZ);
-  const wallBot = fpProject(0, PP_TABLE_Y, wallZ);
-  ctx.fillStyle = "#1a1230";
-  ctx.fillRect(0, wallTop.sy, W, wallBot.sy - wallTop.sy);
-  // Crowd silhouettes — five overlapping head-and-shoulder shapes on
-  // each side of the wall, bobbing slightly to feel alive. Anchored
-  // in world coords at the wall plane so they scale with perspective.
+  // Sweeping spotlight beams behind the rack — animated by time so
+  // the upper half of the frame doesn't read as a dead slab.
   {
-    const headTopP = fpProject(0, 1.95, wallZ);
-    const headBotP = fpProject(0, 1.30, wallZ);
-    const headR    = Math.max(6, (headBotP.sy - headTopP.sy) * 0.42);
-    const baseY    = wallBot.sy - headR * 0.5;
-    const tNow     = performance.now() / 600;
-    ctx.fillStyle  = "rgba(0, 0, 0, 0.50)";
-    for (let side = -1; side <= 1; side += 2) {
-      // Anchor each cluster at the screen-projected wall edge.
-      const edge = fpProject(side * 3.4, PP_TABLE_Y, wallZ);
-      for (let i = 0; i < 5; i++) {
-        const sx = edge.sx + side * i * headR * 1.5;
-        const bob = Math.sin(tNow + i * 1.3 + side * 0.7) * 4;
-        const cy = baseY + bob;
-        ctx.beginPath();
-        ctx.arc(sx, cy, headR * (0.85 + (i % 3) * 0.05), 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillRect(sx - headR * 1.2, cy + headR * 0.4, headR * 2.4, headR * 1.6);
-      }
+    const tNow = performance.now() / 600;
+    for (let i = 0; i < 8; i++) {
+      ctx.save();
+      ctx.globalAlpha = 0.10;
+      ctx.translate(W * 0.5, H * 0.18);
+      ctx.rotate(Math.sin(tNow + i) * 0.5 + i * 0.45);
+      ctx.fillStyle = i % 2 ? "#ff2bd6" : "#3dfcff";
+      ctx.fillRect(-8, -H * 0.2, 16, H * 0.85);
+      ctx.restore();
     }
+    ctx.globalAlpha = 1;
   }
-  // Neon "PARTY PONG" marquee centered above the LED strip. Stylized
-  // as two stacked text lines with a soft outer glow + inner highlight
-  // so it reads as neon at any screen size.
-  {
-    const sign  = fpProject(0, 2.05, wallZ);
-    const fontPx = Math.max(18, Math.min(48, sign.scale * 60 * 0.55));
-    const tNow = performance.now() / 480;
-    const pulse = 0.85 + 0.15 * Math.sin(tNow);
-    ctx.textAlign = "center";
-    ctx.font = `900 ${fontPx}px ui-monospace, monospace`;
-    // Outer glow
-    ctx.shadowBlur = 18;
-    ctx.shadowColor = `rgba(255, 105, 180, ${0.85 * pulse})`;
-    ctx.fillStyle = `rgba(255, 105, 180, ${0.95 * pulse})`;
-    ctx.fillText("PARTY", sign.sx, sign.sy);
-    ctx.shadowColor = `rgba(125, 200, 255, ${0.85 * pulse})`;
-    ctx.fillStyle = `rgba(125, 200, 255, ${0.95 * pulse})`;
-    ctx.fillText("PONG", sign.sx, sign.sy + fontPx * 1.05);
-    ctx.shadowBlur = 0;
-    ctx.textAlign = "start";
-  }
-  // String lights — a chain of glowing dots arcing across the top of
-  // the wall. Each bulb cycles through party colors in sequence.
-  {
-    const arcCount = 11;
-    const arcL = fpProject(-3.0, 2.30, wallZ);
-    const arcR = fpProject( 3.0, 2.30, wallZ);
-    const arcMid = fpProject(0, 2.20, wallZ);
-    const colors = ["#ff5a7a", "#ffd03a", "#4ddc8c", "#6ee7ff", "#c79bff"];
-    const tNow = performance.now() / 320;
-    for (let i = 0; i < arcCount; i++) {
-      const t = i / (arcCount - 1);
-      // Linear interp endpoints, lift the middle for a sag-arc feel.
-      const sx = arcL.sx + (arcR.sx - arcL.sx) * t;
-      const arcLift = -Math.sin(t * Math.PI) * (arcL.sy - arcMid.sy);
-      const sy = arcL.sy + (arcR.sy - arcL.sy) * t + arcLift;
-      const colorIdx = (i + Math.floor(tNow)) % colors.length;
-      const color = colors[colorIdx];
-      const r = Math.max(2.5, sign_scale_safe(arcMid.scale) * 5);
-      ctx.fillStyle = color;
-      ctx.shadowBlur = 8;
-      ctx.shadowColor = color;
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.shadowBlur = 0;
-  }
-  // Neon LED strip along the wall — pulses subtly with the beat.
-  const stripL = fpProject(-3, 1.6, wallZ);
-  const stripR = fpProject( 3, 1.6, wallZ);
-  const ledPulse = 0.7 + 0.3 * Math.sin(performance.now() / 280);
-  ctx.strokeStyle = `rgba(125, 93, 255, ${0.85 * ledPulse})`;
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(stripL.sx, stripL.sy);
-  ctx.lineTo(stripR.sx, stripR.sy);
-  ctx.stroke();
-  ctx.strokeStyle = `rgba(255, 105, 180, ${0.55 * ledPulse})`;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(stripL.sx, stripL.sy + 14);
-  ctx.lineTo(stripR.sx, stripR.sy + 14);
-  ctx.stroke();
-  // Floor — visible under the table front edge.
-  ctx.fillStyle = "#0a0518";
-  ctx.fillRect(0, wallBot.sy, W, H - wallBot.sy);
-  // Pong table — perspective quad. Draw as a polygon then add an
-  // edge highlight along the front rail.
-  const tNL = fpProject(-PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR);
-  const tNR = fpProject( PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR);
-  const tFL = fpProject(-PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
-  const tFR = fpProject( PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
-  // Top surface
-  const tableGrad = ctx.createLinearGradient(0, tFL.sy, 0, tNL.sy);
-  tableGrad.addColorStop(0, "#1a3050");
-  tableGrad.addColorStop(1, "#284870");
-  ctx.fillStyle = tableGrad;
-  ctx.beginPath();
-  ctx.moveTo(tNL.sx, tNL.sy);
-  ctx.lineTo(tNR.sx, tNR.sy);
-  ctx.lineTo(tFR.sx, tFR.sy);
-  ctx.lineTo(tFL.sx, tFL.sy);
-  ctx.closePath();
-  ctx.fill();
-  // Front rail
-  const rNL = fpProject(-PP_TABLE_W / 2, PP_TABLE_Y - 0.06, PP_TABLE_Z_NEAR);
-  const rNR = fpProject( PP_TABLE_W / 2, PP_TABLE_Y - 0.06, PP_TABLE_Z_NEAR);
-  ctx.fillStyle = "#0c1830";
-  ctx.beginPath();
-  ctx.moveTo(tNL.sx, tNL.sy);
-  ctx.lineTo(tNR.sx, tNR.sy);
-  ctx.lineTo(rNR.sx, rNR.sy);
-  ctx.lineTo(rNL.sx, rNL.sy);
-  ctx.closePath(); ctx.fill();
-  // Center stripe — drawn as a thin perspective trapezoid (wider at
-  // the player end, narrowing toward the rack) so it reads as a lane
-  // marking on the table top instead of a vertical thread on screen.
-  {
-    const stripeR = 0.04;
-    const sNL = fpProject(-stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR);
-    const sNR = fpProject( stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR);
-    const sFL = fpProject(-stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
-    const sFR = fpProject( stripeR, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
-    ctx.fillStyle = "rgba(180, 220, 255, 0.10)";
+  // Marquee bar — black band with a pulsing pink "PARTY PONG FLICK".
+  ctx.fillStyle = "#0b0b14";
+  ctx.fillRect(0, H * 0.18, W, H * 0.07);
+  const pulse = 0.85 + 0.15 * Math.sin(performance.now() / 480);
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = `rgba(255, 43, 214, ${0.85 * pulse})`;
+  ctx.fillStyle   = `rgba(255, 105, 220, ${0.95 * pulse})`;
+  ctx.font  = `900 ${Math.max(16, Math.min(28, W * 0.06))}px ui-monospace, monospace`;
+  ctx.textAlign = "center";
+  ctx.fillText("PARTY PONG FLICK", W * 0.5, H * 0.225);
+  ctx.shadowBlur = 0;
+  ctx.textAlign = "start";
+  // Crowd dots clustered along the marquee — silhouette filler.
+  for (let i = 0; i < 70; i++) {
+    const x = (i * 41) % W;
+    const y = H * 0.20 + ((i * 13) % (H * 0.07));
+    ctx.fillStyle = i % 3 ? "rgba(255,255,255,0.20)"
+                          : "rgba(255,43,214,0.32)";
     ctx.beginPath();
-    ctx.moveTo(sNL.sx, sNL.sy);
-    ctx.lineTo(sNR.sx, sNR.sy);
-    ctx.lineTo(sFR.sx, sFR.sy);
-    ctx.lineTo(sFL.sx, sFL.sy);
-    ctx.closePath(); ctx.fill();
+    ctx.arc(x, y, Math.max(2, W * 0.005), 0, Math.PI * 2);
+    ctx.fill();
   }
+  // Trapezoidal pong table — wider at the player end (bottom),
+  // narrower at the rack end (top). Cyan gradient + glow outline.
+  const tableTop = H * PP_TABLE_TOP_Y_R;
+  const tableBot = H * PP_TABLE_BOT_Y_R;
+  const halfTop  = W * (PP_TABLE_TOP_W_R / 2);
+  const halfBot  = W * (PP_TABLE_BOT_W_R / 2);
+  ctx.save();
+  ctx.shadowColor = "#26fff8";
+  ctx.shadowBlur = 18;
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - halfBot, tableBot);
+  ctx.lineTo(W / 2 + halfBot, tableBot);
+  ctx.lineTo(W / 2 + halfTop, tableTop);
+  ctx.lineTo(W / 2 - halfTop, tableTop);
+  ctx.closePath();
+  const tableGrad = ctx.createLinearGradient(0, tableTop, 0, tableBot);
+  tableGrad.addColorStop(0, "#1ccfd0");
+  tableGrad.addColorStop(1, "#06445d");
+  ctx.fillStyle = tableGrad;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // Lane lines — faint perspective stripes converging from the
+  // player's end to the rack end.
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+  ctx.lineWidth = 1.5;
+  for (let i = 1; i <= 5; i++) {
+    const fr = i / 6;
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - halfBot + fr * (halfBot * 2), tableBot);
+    ctx.lineTo(W / 2 - halfTop + fr * (halfTop * 2), tableTop);
+    ctx.stroke();
+  }
+  // Bounce-line — dashed mid-table mark so the player can read where
+  // bounce shots land.
+  const bounceY = H * PP_BOUNCE_Y_R;
+  const bt = (PP_BOUNCE_Y_R - PP_TABLE_TOP_Y_R) /
+             (PP_TABLE_BOT_Y_R - PP_TABLE_TOP_Y_R);
+  const bounceHalf = halfTop + (halfBot - halfTop) * bt;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([6, 5]);
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - bounceHalf, bounceY);
+  ctx.lineTo(W / 2 + bounceHalf, bounceY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
 }
-// Defensive helper — fpProject's scale collapses past the camera; clamp
-// so glow / dot radii stay drawable when projected far away.
-function sign_scale_safe(s) { return Math.max(0.15, Math.min(s, 4)); }
 
-// Draw a single cup. Side as a trapezoid with a gradient; top opening
-// as a perspective ellipse. Removed cups skipped.
+// Draw a single cup in screen space. Body as a 2D trapezoid (red
+// gradient, narrower at the bottom), with an ellipse mouth, liquid
+// ring, and rim highlight. Gold variant adds an outer glow.
 function ppDrawCup(g, c) {
   if (c.removed) return;
-  const topY = PP_TABLE_Y + PP_CUP_HEIGHT;
-  const baseProj = fpProject(c.x, PP_TABLE_Y, c.z);
-  const topProj  = fpProject(c.x, topY, c.z);
-  // Width at top vs base in screen space. fpProject's `scale` is
-  // FP_FOCAL / z / 60, so multiplying world meters by scale*60 gives
-  // pixels at that depth.
-  const baseW = c.r * 2 * baseProj.scale * 60;
-  const topW  = c.r * 2 * topProj.scale * 60;
-  // Side walls.
-  const sideGrad = ctx.createLinearGradient(0, topProj.sy, 0, baseProj.sy);
-  if (c.gold) {
-    sideGrad.addColorStop(0, "#ffd03a");
-    sideGrad.addColorStop(1, "#a87a10");
-  } else {
-    sideGrad.addColorStop(0, "#ff5a3a");
-    sideGrad.addColorStop(0.7, "#cc3520");
-    sideGrad.addColorStop(1, "#7a1a10");
-  }
-  ctx.fillStyle = sideGrad;
+  const pos = ppCupScreenPos(g, c);
+  const cupRpx = c.r * (W * PP_PX_PER_M_R) * pos.scale;
+  ctx.save();
+  ctx.translate(pos.sx, pos.sy);
+  // Drop shadow on the table beneath the cup.
+  ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
   ctx.beginPath();
-  ctx.moveTo(topProj.sx - topW / 2,  topProj.sy);
-  ctx.lineTo(topProj.sx + topW / 2,  topProj.sy);
-  ctx.lineTo(baseProj.sx + baseW / 2, baseProj.sy);
-  ctx.lineTo(baseProj.sx - baseW / 2, baseProj.sy);
+  ctx.ellipse(0, cupRpx * 1.10, cupRpx * 1.0, cupRpx * 0.30, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Body trapezoid.
+  const bodyGrad = ctx.createLinearGradient(-cupRpx, -cupRpx, cupRpx, cupRpx);
+  if (c.gold) {
+    bodyGrad.addColorStop(0, "#ffe168");
+    bodyGrad.addColorStop(1, "#9c6a00");
+  } else {
+    bodyGrad.addColorStop(0, "#ff4a3a");
+    bodyGrad.addColorStop(1, "#900a00");
+  }
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.moveTo(-cupRpx,         -cupRpx * 0.05);
+  ctx.lineTo( cupRpx,         -cupRpx * 0.05);
+  ctx.lineTo( cupRpx * 0.78,   cupRpx * 1.10);
+  ctx.lineTo(-cupRpx * 0.78,   cupRpx * 1.10);
   ctx.closePath();
   ctx.fill();
-  // Rim ellipse (top opening). Vertical squash approximates the
-  // perspective viewing angle from the camera.
-  const rimSquash = 0.32;
-  ctx.fillStyle = c.gold ? "#7a5a00" : "#2a0a0a";
+  // Liquid ring under the rim — yellowish hint of beer.
+  ctx.fillStyle = c.gold ? "rgba(255, 240, 140, 0.45)"
+                          : "rgba(255, 226, 58, 0.32)";
   ctx.beginPath();
-  ctx.ellipse(topProj.sx, topProj.sy, topW / 2, topW / 2 * rimSquash, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, -cupRpx * 0.05, cupRpx * 0.85, cupRpx * 0.22, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Mouth interior — dark fill so the opening reads.
+  ctx.fillStyle = c.gold ? "rgba(60, 40, 0, 0.85)" : "rgba(40, 10, 8, 0.85)";
+  ctx.beginPath();
+  ctx.ellipse(0, -cupRpx * 0.05, cupRpx, cupRpx * 0.30, 0, 0, Math.PI * 2);
   ctx.fill();
   // Rim highlight.
-  ctx.strokeStyle = c.gold ? "#fff8a0" : "#ffb09a";
-  ctx.lineWidth = Math.max(1, 2 * topProj.scale * 1.5);
+  ctx.strokeStyle = c.gold ? "#fff8a0" : "#ffd6c8";
+  ctx.lineWidth = Math.max(1.5, cupRpx * 0.08);
   ctx.beginPath();
-  ctx.ellipse(topProj.sx, topProj.sy, topW / 2, topW / 2 * rimSquash, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, -cupRpx * 0.05, cupRpx, cupRpx * 0.30, 0, 0, Math.PI * 2);
   ctx.stroke();
-  // Subtle table shadow under the cup — improves grounding.
-  ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
-  ctx.beginPath();
-  ctx.ellipse(baseProj.sx, baseProj.sy + 1, baseW / 2 * 0.95, baseW / 2 * 0.30, 0, 0, Math.PI * 2);
-  ctx.fill();
+  // Gold cup outer glow.
+  if (c.gold) {
+    ctx.shadowColor = "#ffd03a";
+    ctx.shadowBlur = 16;
+    ctx.strokeStyle = "rgba(255, 220, 80, 0.75)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(0, -cupRpx * 0.05, cupRpx, cupRpx * 0.30, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  ctx.restore();
 }
 
 //----------------------------------------------------------
