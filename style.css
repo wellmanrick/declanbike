@@ -160,6 +160,13 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .level-card .lc-best { font-size: 12px; color: var(--ink); }
 .level-card.locked { opacity: 0.5; cursor: not-allowed; }
 .level-card.locked .lc-name { color: var(--ink-dim); }
+.level-card .lc-stars {
+  font-size: 18px;
+  letter-spacing: 2px;
+  color: #ffd03a;
+  text-shadow: 0 0 6px rgba(255, 200, 60, 0.35);
+}
+.level-card .lc-stars .empty { color: rgba(255, 255, 255, 0.18); text-shadow: none; }
 
 /* Garage */
 .garage-grid {

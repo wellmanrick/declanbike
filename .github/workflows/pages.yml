@@ -24,13 +24,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: JS syntax check
-        run: node --check game.js
+      - name: JS syntax check (all modules under src/)
+        run: |
+          test -d src
+          # Walk every .js file under src/ and parse-check it. Catches
+          # syntax regressions introduced by edits to any module.
+          find src -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: HTML/CSS sanity (presence + non-empty)
         run: |
           test -s index.html
           test -s style.css
-          test -s game.js
+          test -s src/main.js
           # crude check: every <link>/<script> referenced file exists.
           # Strip query strings (e.g. ?v=__BUILD__) before checking the path.
           grep -oE 'href="[^"]+"|src="[^"]+"' index.html \
@@ -47,6 +51,10 @@ jobs:
 
   deploy:
     needs: check
+    # Only the main branch is authorized to deploy to the Pages environment.
+    # Branch pushes still run the check job for fast feedback, but skip the
+    # deploy step (which would otherwise fail in 2s on environment auth).
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

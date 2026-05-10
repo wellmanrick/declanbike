@@ -28,6 +28,7 @@ import { keys, justPressed, input, setupTouchControls } from "./engine/input.js"
 import { mulberry32 } from "./engine/rng.js";
 import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE } from "./world/terrain.js";
 import { STATE, G } from "./state.js";
+import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked } from "./games/canBash/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -1906,7 +1907,7 @@ function updateHUD() {
 // MENU / UI WIRING
 //==========================================================
 function showOnly(id) {
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels"]) {
     const el = document.getElementById(overlay);
     if (!el) continue;
     if (overlay === id) el.classList.remove("hidden");
@@ -2066,20 +2067,66 @@ function buildQuests() {
   list.innerHTML = "";
   for (const id of Object.keys(MINIGAMES)) {
     const mg = MINIGAMES[id];
-    const best = (save.minigameBest && save.minigameBest[id]) || 0;
     const card = document.createElement("div");
     card.className = "quest-card minigame-card";
     card.style.borderLeft = `4px solid ${mg.color}`;
+    let summary;
+    if (id === "can_bash") {
+      const lvls = save.canBashLevels || {};
+      const totalStars = CAN_LEVELS.reduce((s, l) => s + ((lvls[l.id]?.stars) || 0), 0);
+      const maxStars = CAN_LEVELS.length * 3;
+      summary = `Stars: ${totalStars} / ${maxStars}`;
+    } else {
+      const best = (save.minigameBest && save.minigameBest[id]) || 0;
+      summary = `Best: ${best} pts`;
+    }
     card.innerHTML = `
       <div>
         <div class="qc-name">${mg.icon || "🎯"}  ${mg.name}</div>
         <div class="qc-desc">${mg.desc}</div>
-        <div class="qc-desc">Best: ${best} pts</div>
+        <div class="qc-desc">${summary}</div>
       </div>
-      <div class="qc-reward">Play ▶</div>
+      <div class="qc-reward">${id === "can_bash" ? "Levels ▶" : "Play ▶"}</div>
     `;
-    card.addEventListener("click", () => startMinigame(id));
+    card.addEventListener("click", () => {
+      if (id === "can_bash") openCanBashLevels();
+      else startMinigame(id);
+    });
     list.appendChild(card);
+  }
+}
+
+function openCanBashLevels() {
+  buildCanBashLevelGrid();
+  G.state = STATE.CB_LEVELS;
+  showOnly("cb-levels");
+}
+
+function buildCanBashLevelGrid() {
+  const grid = document.getElementById("cb-level-grid");
+  grid.innerHTML = "";
+  const progress = save.canBashLevels || {};
+  for (const lvl of CAN_LEVELS) {
+    const unlocked = isCanLevelUnlocked(progress, lvl.id);
+    const rec = progress[lvl.id];
+    const stars = (rec && rec.stars) || 0;
+    const card = document.createElement("div");
+    card.className = "level-card" + (unlocked ? "" : " locked");
+    const starsHtml =
+      `<span class="lc-stars">` +
+      `<span${stars >= 1 ? "" : ' class="empty"'}>★</span>` +
+      `<span${stars >= 2 ? "" : ' class="empty"'}>★</span>` +
+      `<span${stars >= 3 ? "" : ' class="empty"'}>★</span>` +
+      `</span>`;
+    card.innerHTML = `
+      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
+      <div class="lc-meta">${lvl.balls} ball${lvl.balls === 1 ? "" : "s"} • ${lvl.formation.type}</div>
+      <div class="lc-best">${lvl.subtitle}</div>
+      ${starsHtml}
+      ${rec && rec.cleared ? `<div class="lc-meta">Best: ${rec.ballsUsed} ball${rec.ballsUsed === 1 ? "" : "s"} • ${rec.score} pts</div>` : ""}
+    `;
+    if (unlocked) card.addEventListener("click", () => startMinigame("can_bash", lvl.id));
+    grid.appendChild(card);
   }
 }
 
@@ -2134,6 +2181,7 @@ function bindMenuActions() {
       case "quests": buildQuests(); G.state = STATE.QUESTS; showOnly("quests"); break;
       case "how": G.state = STATE.HOW; showOnly("how"); break;
       case "back-menu": G.runtime = null; G.state = STATE.MENU; showOnly("menu"); break;
+      case "cb-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
       case "resume": G.state = STATE.PLAY; showOnly("hud"); break;
       case "retry":
         if (G.runtime) startRun(G.runtime.level.id);
@@ -2182,16 +2230,21 @@ try {
 // renders to the main canvas. They share a flick-style input (drag + release
 // to launch) routed through canvas pointer events.
 
-function startMinigame(id) {
+function startMinigame(id, levelId) {
   const mg = MINIGAMES[id];
   if (!mg) return;
   Sound.ensure && Sound.ensure();
   Sound.startMusic && Sound.startMusic("game");
-  G.minigameRuntime = mg.init();
+  // Resolve the level for level-driven mini-games (currently only Can Bash).
+  let level = null;
+  if (id === "can_bash") {
+    level = (levelId && canLevelById(levelId)) || CAN_LEVELS[0];
+  }
+  G.minigameRuntime = mg.init(level);
   G.minigameRuntime.id = id;
   G.state = STATE.MINIGAME;
   // Hide every overlay (and the touch UI). The canvas is the whole screen.
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels"]) {
     const el = document.getElementById(overlay);
     if (el) el.classList.add("hidden");
   }
@@ -2238,12 +2291,37 @@ function dispatchMinigamePointer(kind, e) {
         performance.now() > G.minigameRuntime.finishHoldUntil)) {
       const inBtn = (b) => b && p.x >= b.x && p.x <= b.x + b.w
                               && p.y >= b.y && p.y <= b.y + b.h;
-      if (inBtn(G.minigameRuntime._btnPlayAgain)) {
-        const id = G.minigameRuntime.id;
+      const rt = G.minigameRuntime;
+      if (rt.id === "can_bash") {
+        if (inBtn(rt._btnNextLevel)) {
+          // Advance to the next unlocked level if it exists; otherwise
+          // fall back to retrying the current one.
+          const idx = CAN_LEVELS.findIndex(l => l.id === rt.level.id);
+          const next = (idx >= 0 && idx + 1 < CAN_LEVELS.length) ? CAN_LEVELS[idx + 1] : null;
+          const progress = save.canBashLevels || {};
+          if (next && isCanLevelUnlocked(progress, next.id)) {
+            G.minigameRuntime = null;
+            startMinigame("can_bash", next.id);
+          } else {
+            G.minigameRuntime = null;
+            openCanBashLevels();
+          }
+        } else if (inBtn(rt._btnRetry)) {
+          const lvlId = rt.level.id;
+          G.minigameRuntime = null;
+          startMinigame("can_bash", lvlId);
+        } else if (inBtn(rt._btnLevels)) {
+          G.minigameRuntime = null;
+          openCanBashLevels();
+        }
+        return;
+      }
+      if (inBtn(rt._btnPlayAgain)) {
+        const id = rt.id;
         settleMinigame();
         G.minigameRuntime = null;
         startMinigame(id);
-      } else if (inBtn(G.minigameRuntime._btnMenu)) {
+      } else if (inBtn(rt._btnMenu)) {
         endMinigame();
       }
     }
@@ -2755,34 +2833,32 @@ const CanBash = {
   desc: "Flick UP at the can stack. Knock 'em all down. 3 throws.",
   icon: "🥎",
   color: "#ff5a3a",
-  init() {
-    const cans = [];
+  init(level) {
+    // Default to the first level if launched without one (legacy direct-launch
+    // path). The level catalog drives the formation and ball budget.
+    const lvl = level || CAN_LEVELS[0];
+    const layout = buildCans(lvl);
     const tableZ = 10;
-    const tableTopY = 0.6;
     const canHeight = 0.55;
     const canWidth  = 0.45;
-    const rows = 5;
-    let total = 0;
-    for (let row = 0; row < rows; row++) {
-      const count = rows - row;
-      const yy = tableTopY + row * canHeight + canHeight / 2;
-      for (let i = 0; i < count; i++) {
-        const xx = (i - (count - 1) / 2) * canWidth * 1.1;
-        cans.push({
-          x: xx, y: yy, z: tableZ, w: canWidth, h: canHeight,
-          hit: false, fallVx: 0, fallVy: 0, angle: 0, angVel: 0, fallT: 0,
-          gold: false,
-        });
-        total++;
-      }
+    const cans = layout.cans.map(c => ({
+      x: c.x, y: c.y, z: tableZ, w: canWidth, h: canHeight,
+      hit: false, fallVx: 0, fallVy: 0, angle: 0, angVel: 0, fallT: 0,
+      gold: !!c.gold,
+    }));
+    // If the level didn't pin a gold can, fall back to one random pick so
+    // every match still has a bonus target.
+    if (!cans.some(c => c.gold) && cans.length > 0) {
+      cans[Math.floor(Math.random() * cans.length)].gold = true;
     }
-    // Pick one random can to be the gold can (worth +50 if knocked).
-    const goldIdx = Math.floor(Math.random() * total);
-    cans[goldIdx].gold = true;
     return {
-      cans, ball: null, throws: 3, thrown: 0, score: 0, knocked: 0,
-      tableZ, tableTopY,
+      level: lvl,
+      cans, ball: null,
+      throws: lvl.balls || 3,
+      thrown: 0, score: 0, knocked: 0,
+      tableZ, tableTopY: layout.tableTopY,
       message: "", messageTimer: 0, finished: false,
+      cleared: false, stars: 0,
       dragStart: null, dragNow: null,
       _knockedAtThrow: 0,
     };
@@ -2998,6 +3074,18 @@ const CanBash = {
       if (g.thrown >= g.throws || cleared) {
         if (cleared) g.score += 50;
         g.finished = true;
+        g.cleared = cleared;
+        g.stars = starsFor(g.level, g.thrown, cleared);
+        // Persist best result for this level. Stars never go down; ties keep
+        // the better ball-count and score.
+        save.canBashLevels = save.canBashLevels || {};
+        const prev = save.canBashLevels[g.level.id];
+        const rec = { stars: g.stars, ballsUsed: g.thrown, score: g.score, cleared };
+        if (!prev || rec.stars > prev.stars ||
+            (rec.stars === prev.stars && rec.score > (prev.score || 0))) {
+          save.canBashLevels[g.level.id] = rec;
+        }
+        persistSave();
       } else {
         CanBash.resetBall(g);
       }
@@ -3173,9 +3261,11 @@ const CanBash = {
 
     // HUD
     ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.font = "bold 16px ui-monospace, monospace";
+    if (g.level && g.level.name) ctx.fillText(`${g.level.name}`, 16, 24);
     ctx.font = "bold 18px ui-monospace, monospace";
-    ctx.fillText(`Knocked: ${g.knocked} / ${g.cans.length}    Score: ${g.score}`, 16, 28);
-    ctx.fillText(`Throws left: ${Math.max(0, g.throws - g.thrown)}`, 16, 52);
+    ctx.fillText(`Knocked: ${g.knocked} / ${g.cans.length}    Score: ${g.score}`, 16, 48);
+    ctx.fillText(`Balls left: ${Math.max(0, g.throws - g.thrown)} / ${g.throws}`, 16, 72);
     if (!b.thrown && !g.dragStart) {
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
@@ -4051,6 +4141,88 @@ function drawMinigameFinishedOverlay(g) {
   ctx.textAlign = "start";
 }
 
+// Can Bash result overlay. Shows the level title, animated stars, the
+// score, and three buttons: Next Level (or Levels if locked / last),
+// Retry, Levels.
+function drawCanBashFinishedOverlay(g) {
+  ctx.fillStyle = "rgba(0,0,0,0.78)";
+  ctx.fillRect(0, 0, W, H);
+  // Title — cleared vs. failed framing.
+  const cleared = !!g.cleared;
+  ctx.textAlign = "center";
+  ctx.fillStyle = cleared ? "#ffd03a" : "#ff8a3a";
+  ctx.font = "bold 34px ui-monospace, monospace";
+  ctx.fillText(cleared ? "Level Clear!" : "Out of Balls", W / 2, H * 0.22);
+  ctx.fillStyle = "#cfd6e3";
+  ctx.font = "bold 18px ui-monospace, monospace";
+  ctx.fillText(`${g.level.name}`, W / 2, H * 0.27);
+  // Stars — three slots, gold or hollow. Tiny pop animation as they reveal.
+  const heldFor = Math.max(0, performance.now() - (g.finishHoldUntil - 600));
+  const starSize = Math.min(56, W * 0.085);
+  const starGap = starSize * 1.7;
+  const starY = H * 0.40;
+  for (let i = 0; i < 3; i++) {
+    const cx = W / 2 + (i - 1) * starGap;
+    const earned = i < g.stars;
+    const revealAt = 250 + i * 220;
+    const reveal = Math.max(0, Math.min(1, (heldFor - revealAt) / 220));
+    const pop = earned ? (1 + Math.sin(reveal * Math.PI) * 0.25) : 1;
+    ctx.save();
+    ctx.translate(cx, starY);
+    ctx.scale(pop, pop);
+    ctx.fillStyle = earned ? "#ffd03a" : "rgba(255,255,255,0.18)";
+    ctx.strokeStyle = earned ? "#ffae20" : "rgba(255,255,255,0.25)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let s = 0; s < 10; s++) {
+      const a = (s / 10) * Math.PI * 2 - Math.PI / 2;
+      const r = (s % 2 === 0) ? starSize : starSize * 0.45;
+      const x = Math.cos(a) * r, y = Math.sin(a) * r;
+      if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  // Stats line
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 18px ui-monospace, monospace";
+  ctx.fillText(
+    `${g.knocked} / ${g.cans.length} cans  •  ${g.thrown} ball${g.thrown === 1 ? "" : "s"} used  •  ${g.score} pts`,
+    W / 2, H * 0.55
+  );
+  // Buttons. Layout adjusts when there's no next level.
+  const idx = CAN_LEVELS.findIndex(l => l.id === g.level.id);
+  const hasNext = cleared && idx >= 0 && idx + 1 < CAN_LEVELS.length;
+  const labels = hasNext
+    ? [["next", "Next Level ▶", "#4ddc8c"], ["retry", "Retry", "#ffb020"], ["levels", "Levels", "#2a3350"]]
+    : [["retry", "Retry", "#ffb020"], ["levels", "Levels", "#2a3350"]];
+  const bw = Math.min(220, W * 0.32);
+  const bh = 60;
+  const gap = 16;
+  const totalW = labels.length * bw + (labels.length - 1) * gap;
+  const startX = W / 2 - totalW / 2;
+  const cy = H * 0.70;
+  labels.forEach(([key, label, fill], i) => {
+    const x = startX + i * (bw + gap);
+    const rect = { x, y: cy, w: bw, h: bh };
+    if (key === "next")   g._btnNextLevel = rect;
+    if (key === "retry")  g._btnRetry     = rect;
+    if (key === "levels") g._btnLevels    = rect;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12);
+    else ctx.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.fill();
+    ctx.fillStyle = (fill === "#2a3350") ? "#fff" : "#1a1206";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6);
+  });
+  // Clear stale slots so click routing doesn't fire on a hidden button.
+  if (!hasNext) g._btnNextLevel = null;
+  ctx.textAlign = "start";
+}
+
 //==========================================================
 // LOOP
 //==========================================================
@@ -4065,8 +4237,14 @@ function loop(now) {
     if (G.state === STATE.PLAY) { G.state = STATE.PAUSE; showOnly("pause"); Sound.stopEngine(); }
     else if (G.state === STATE.PAUSE) { G.state = STATE.PLAY; showOnly("hud"); Sound.startEngine(); }
     else if (G.state === STATE.MINIGAME) {
-      // Forfeit current mini-game and return to the menu.
+      // Forfeit current mini-game. Can Bash returns to its level select; the
+      // others return to the mini-game hub.
+      const wasCanBash = G.minigameRuntime && G.minigameRuntime.id === "can_bash";
       G.minigameRuntime = null;
+      if (wasCanBash) { G.state = STATE.CB_LEVELS; openCanBashLevels(); }
+      else { G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); }
+    }
+    else if (G.state === STATE.CB_LEVELS) {
       G.state = STATE.QUESTS; buildQuests(); showOnly("quests");
     }
     else if (G.state === STATE.LEVELS || G.state === STATE.GARAGE || G.state === STATE.QUESTS || G.state === STATE.HOW || G.state === STATE.RESULT) {
@@ -4093,7 +4271,11 @@ function loop(now) {
         if (!G.minigameRuntime.finishHoldUntil) {
           G.minigameRuntime.finishHoldUntil = performance.now() + 600;
         }
-        drawMinigameFinishedOverlay(G.minigameRuntime);
+        if (G.minigameRuntime.id === "can_bash") {
+          drawCanBashFinishedOverlay(G.minigameRuntime);
+        } else {
+          drawMinigameFinishedOverlay(G.minigameRuntime);
+        }
       }
     }
     requestAnimationFrame(loop);
