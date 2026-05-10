@@ -3451,7 +3451,109 @@ const FieldGoal = {
     if (!g.ball) FieldGoal.reset(g);
     fpSetCam(g.cameraZ || 0);
     fpDrawSky("#7fbcff", "#cfeaff", "#4d8d2a");
+
+    // Stadium stands behind the field — three banked tiers with a crowd
+    // pattern, then a back-wall scoreboard. The whole structure projects
+    // back-of-end-zone via the perspective helper so it grows on approach.
+    {
+      const standZ = g.posts.z + 18;        // a few meters past end zone
+      const standW = 70;                     // wide enough to fill the frame
+      // Lower wall (concrete)
+      const wallNearL = fpProject(-standW/2, 0, standZ - 2);
+      const wallNearR = fpProject( standW/2, 0, standZ - 2);
+      const wallTopL  = fpProject(-standW/2, 4, standZ);
+      const wallTopR  = fpProject( standW/2, 4, standZ);
+      ctx.fillStyle = "#3a3036";
+      ctx.beginPath();
+      ctx.moveTo(wallNearL.sx, wallNearL.sy);
+      ctx.lineTo(wallNearR.sx, wallNearR.sy);
+      ctx.lineTo(wallTopR.sx, wallTopR.sy);
+      ctx.lineTo(wallTopL.sx, wallTopL.sy);
+      ctx.closePath(); ctx.fill();
+      // Tiered seating — three bands of color rising up.
+      const tiers = [
+        { y0: 4,  y1: 9,  color: "#1a3a6a" },
+        { y0: 9,  y1: 13, color: "#2c4a82" },
+        { y0: 13, y1: 16, color: "#1a3a6a" },
+      ];
+      for (const t of tiers) {
+        const tlA = fpProject(-standW/2, t.y0, standZ);
+        const trA = fpProject( standW/2, t.y0, standZ);
+        const tlB = fpProject(-standW/2, t.y1, standZ);
+        const trB = fpProject( standW/2, t.y1, standZ);
+        ctx.fillStyle = t.color;
+        ctx.beginPath();
+        ctx.moveTo(tlA.sx, tlA.sy);
+        ctx.lineTo(trA.sx, trA.sy);
+        ctx.lineTo(trB.sx, trB.sy);
+        ctx.lineTo(tlB.sx, tlB.sy);
+        ctx.closePath(); ctx.fill();
+        // Crowd dots — pseudo-random based on tier index + position.
+        const rowProj = fpProject(0, (t.y0 + t.y1) / 2, standZ);
+        const dotR = Math.max(1, 1.6 * rowProj.scale * 6);
+        const dotPalette = ["#ffd03a","#ff5a3a","#fff","#4ddc8c","#6ee7ff","#cccccc"];
+        const startSX = tlA.sx, endSX = trA.sx;
+        const span = endSX - startSX;
+        const count = Math.floor(span / Math.max(4, dotR * 2.2));
+        for (let i = 0; i < count; i++) {
+          const px = startSX + (i + 0.5) * (span / count);
+          const py = (tlA.sy + tlB.sy) / 2 +
+                     ((i * 53 + tiers.indexOf(t) * 17) % 7) - 4;
+          ctx.fillStyle = dotPalette[(i + tiers.indexOf(t)) % dotPalette.length];
+          ctx.fillRect(px - dotR, py - dotR, dotR * 2, dotR * 2);
+        }
+      }
+      // Top railing
+      const railL = fpProject(-standW/2, 16, standZ);
+      const railR = fpProject( standW/2, 16, standZ);
+      ctx.strokeStyle = "rgba(255,255,255,0.8)";
+      ctx.lineWidth = Math.max(1, 1.2 * railL.scale * 6);
+      ctx.beginPath();
+      ctx.moveTo(railL.sx, railL.sy);
+      ctx.lineTo(railR.sx, railR.sy);
+      ctx.stroke();
+
+      // Stadium lights — two tall poles flanking the stand.
+      for (const lx of [-standW/2 + 4, standW/2 - 4]) {
+        const poleBot = fpProject(lx, 0, standZ + 1);
+        const poleTop = fpProject(lx, 22, standZ + 1);
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = Math.max(1.5, 2 * poleBot.scale * 6);
+        ctx.beginPath(); ctx.moveTo(poleBot.sx, poleBot.sy); ctx.lineTo(poleTop.sx, poleTop.sy); ctx.stroke();
+        // Light fixture rectangle
+        ctx.fillStyle = "#fff8c0";
+        ctx.fillRect(poleTop.sx - 12 * poleTop.scale * 6,
+                     poleTop.sy - 6 * poleTop.scale * 6,
+                     24 * poleTop.scale * 6, 8 * poleTop.scale * 6);
+        // Glow
+        const gg = ctx.createRadialGradient(poleTop.sx, poleTop.sy, 0,
+                                             poleTop.sx, poleTop.sy, 80);
+        gg.addColorStop(0, "rgba(255,250,200,0.55)");
+        gg.addColorStop(1, "rgba(255,250,200,0)");
+        ctx.fillStyle = gg;
+        ctx.fillRect(poleTop.sx - 100, poleTop.sy - 100, 200, 200);
+      }
+    }
+
     fpDrawField("#3a7a1f", "rgba(255,255,255,0.45)");
+
+    // Yard-line numbers down the field — every 10 yards (≈9.14m). Drawn
+    // on both sides of the field with reverse on the far side.
+    {
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.textAlign = "center";
+      for (let z = 9; z < 50; z += 9) {
+        const labelLeft  = fpProject(-3.0, 0.05, z);
+        const labelRight = fpProject( 3.0, 0.05, z);
+        const yardsAway = Math.round(z * 1.094);
+        const num = String(50 - Math.min(50, yardsAway));
+        const fs = Math.max(8, 22 * labelLeft.scale);
+        ctx.font = `bold ${fs}px ui-monospace, monospace`;
+        ctx.fillText(num, labelLeft.sx, labelLeft.sy);
+        ctx.fillText(num, labelRight.sx, labelRight.sy);
+      }
+      ctx.textAlign = "start";
+    }
     // End-zone tint behind the posts.
     const ezNear = fpProject(-25, 0, g.posts.z - 2);
     const ezFar  = fpProject( 25, 0, g.posts.z + 8);
@@ -3642,7 +3744,7 @@ const CanBash = {
     const tableTopY = 1.0;
     const canHeight = 0.55;
     const canWidth  = 0.45;
-    const rows = 4;
+    const rows = 5;
     let total = 0;
     for (let row = 0; row < rows; row++) {
       const count = rows - row;
@@ -3722,22 +3824,27 @@ const CanBash = {
           if (Math.abs(dx) < c.w * 0.55 + 0.18 && Math.abs(dy) < c.h * 0.6 + 0.18) {
             CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
             directHits.push(c);
-            b.vx *= 0.5; b.vy *= 0.5; b.vz *= 0.4;
+            // Ball loses serious energy each hit so a single throw won't
+            // plow through the whole pyramid.
+            b.vx *= 0.35; b.vy *= 0.35; b.vz *= 0.25;
           }
         }
-        // Cascade: each direct hit propagates to its neighbors. Repeat
-        // a few rounds so the chain spreads through the stack.
-        for (let pass = 0; pass < 4; pass++) {
+        // Cascade — only the can directly above each direct hit topples
+        // (gravity-style). Two passes so a missing keystone can drop the
+        // can resting on it, but no row-wide sideways chain reactions.
+        for (let pass = 0; pass < 2; pass++) {
           const newly = [];
           for (const src of directHits) {
             for (const c of g.cans) {
               if (c.hit) continue;
               const dx = c.x - src.x;
-              const dy = c.y - src.y;
-              if (Math.abs(dx) < src.w * 1.6 && Math.abs(dy) < src.h * 1.4) {
+              const dy = c.y - src.y;       // positive dy = c is BELOW src
+              const above = dy < 0;          // negative = above
+              if (above && Math.abs(dx) < src.w * 0.8 &&
+                  Math.abs(dy) < src.h * 1.3) {
                 CanBash.knock(g, c,
-                  src.fallVx * 0.55 + dx * 2,
-                  -1.5 - Math.random() * 1.0);
+                  src.fallVx * 0.35 + dx * 1.5,
+                  -1.0 - Math.random() * 0.6);
                 newly.push(c);
               }
             }
@@ -3745,10 +3852,10 @@ const CanBash = {
           if (newly.length === 0) break;
           directHits = newly;
         }
-        // Per-throw bonus for multi-knocks.
+        // Per-throw bonus only kicks in for big takedowns now (5+).
         const knockedThisThrow = g.knocked - (g._knockedAtThrow || 0);
-        if (knockedThisThrow >= 3) {
-          const bonus = Math.min(50, knockedThisThrow * 8);
+        if (knockedThisThrow >= 5) {
+          const bonus = Math.min(80, knockedThisThrow * 10);
           g.score += bonus;
           g.message = `${knockedThisThrow}-can KO! +${bonus}`;
           g.messageTimer = 1.6;
