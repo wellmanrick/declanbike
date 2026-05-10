@@ -155,6 +155,10 @@
   </div>
 </div>
 
-<script src="game.js?v=__BUILD__"></script>
+<!-- ES module entry. Imports the engine / config / world / etc. modules
+     under src/. The cache-bust query string is rewritten by the GitHub
+     Pages workflow, but module sub-imports rely on the no-cache HTML
+     meta + browser revalidation. -->
+<script type="module" src="src/main.js?v=__BUILD__"></script>
 </body>
 </html>
