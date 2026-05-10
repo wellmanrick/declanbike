@@ -28,7 +28,7 @@ import { keys, justPressed, input, setupTouchControls } from "./engine/input.js"
 import { mulberry32 } from "./engine/rng.js";
 import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE } from "./world/terrain.js";
 import { STATE, G } from "./state.js";
-import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked } from "./games/canBash/levels.js";
+import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO } from "./games/canBash/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -2845,12 +2845,30 @@ const CanBash = {
       x: c.x, y: c.y, z: tableZ, w: canWidth, h: canHeight,
       hit: false, fallVx: 0, fallVy: 0, angle: 0, angVel: 0, fallT: 0,
       gold: !!c.gold,
+      type: c.type || "standard",
+      shatter: false, exploded: false,
     }));
     // If the level didn't pin a gold can, fall back to one random pick so
     // every match still has a bonus target.
     if (!cans.some(c => c.gold) && cans.length > 0) {
       cans[Math.floor(Math.random() * cans.length)].gold = true;
     }
+    // First-encounter tutorial: queue a one-time toast for any new type
+    // present in this level. The toasts surface during gameplay (see
+    // update() — they pop one at a time on a small delay).
+    save.canBashSeenTypes = save.canBashSeenTypes || {};
+    const tutorialQueue = [];
+    const seenInLevel = new Set();
+    for (const c of cans) {
+      if (c.type === "standard" || seenInLevel.has(c.type)) continue;
+      seenInLevel.add(c.type);
+      if (!save.canBashSeenTypes[c.type]) {
+        const info = CAN_TYPE_INFO[c.type];
+        if (info && info.label) tutorialQueue.push({ type: c.type, label: info.label });
+        save.canBashSeenTypes[c.type] = true;
+      }
+    }
+    if (tutorialQueue.length > 0) persistSave();
     return {
       level: lvl,
       cans, ball: null,
@@ -2861,6 +2879,7 @@ const CanBash = {
       cleared: false, stars: 0,
       dragStart: null, dragNow: null,
       _knockedAtThrow: 0,
+      tutorialQueue, _tutorialNextAt: 0.5,
     };
   },
   knock(g, c, vx, vy) {
@@ -2871,9 +2890,32 @@ const CanBash = {
     c.angle  = (Math.random() - 0.5) * 0.6;
     c.angVel = (Math.random() - 0.5) * 6;
     g.knocked++;
-    if (c.gold) { g.score += 60; }
-    else        { g.score += 10; }
-    Sound.pickup && Sound.pickup();
+    const info = CAN_TYPE_INFO[c.type] || CAN_TYPE_INFO.standard;
+    let pts = info.score;
+    if (c.gold) pts += 50;     // gold bonus stacks on top of any type
+    g.score += pts;
+    if (c.type === "glass") {
+      c.shatter = true;        // render branch swaps to shatter VFX
+      Sound.pickup && Sound.pickup();
+    } else if (c.type === "explosive") {
+      c.exploded = true;
+      // AoE: any unhit can within EXPLODE_RADIUS goes down regardless of
+      // support. Chain reactions allowed — another explosive caught in the
+      // blast detonates and recurses through this branch.
+      const EXPLODE_RADIUS = 1.0;
+      for (const o of g.cans) {
+        if (o === c || o.hit) continue;
+        const dxAoE = o.x - c.x, dyAoE = o.y - c.y;
+        if (Math.hypot(dxAoE, dyAoE) <= EXPLODE_RADIUS) {
+          CanBash.knock(g, o,
+            dxAoE * 4 + (Math.random() - 0.5) * 0.8,
+            -0.8 + dyAoE * 0.5);
+        }
+      }
+      Sound.crash && Sound.crash();
+    } else {
+      Sound.pickup && Sound.pickup();
+    }
   },
   // After any cascade, walk the stack and topple any can that has lost
   // its supporting can / table. Repeat until nothing falls.
@@ -2991,6 +3033,17 @@ const CanBash = {
   },
   update(g, dt) {
     if (!g.ball) CanBash.resetBall(g);
+    // Drive the first-encounter tutorial queue: one toast every ~2.5s,
+    // only while the player hasn't thrown the first ball yet so it
+    // doesn't compete with gameplay messages.
+    if (g.tutorialQueue && g.tutorialQueue.length > 0 && !g.ball.thrown) {
+      g._tutorialNextAt -= dt;
+      if (g._tutorialNextAt <= 0) {
+        const next = g.tutorialQueue.shift();
+        pushToast(next.label, "gold", 2400);
+        g._tutorialNextAt = 2.5;
+      }
+    }
     const b = g.ball;
     if (b.thrown && !b.gone) {
       b.t += dt;
@@ -3000,24 +3053,32 @@ const CanBash = {
       b.z += b.vz * dt;
       if (b.z >= g.tableZ - 0.5 && !b.didHit) {
         const impactSpeed = Math.hypot(b.vx, b.vy, b.vz);
-        const KNOCK_THRESHOLD = 9;   // m/s — soft tosses bounce off
         let directHits = [];
         for (const c of g.cans) {
           if (c.hit) continue;
           const dx = b.x - c.x;
           const dy = b.y - c.y;
           if (Math.abs(dx) < c.w * 0.55 + 0.18 && Math.abs(dy) < c.h * 0.6 + 0.18) {
-            if (impactSpeed >= KNOCK_THRESHOLD) {
+            // Each type has its own minimum impact speed. Glass = 0 (any
+            // contact knocks). Lead = 16 m/s (only hard flicks). Standard
+            // and explosive use the default 9 m/s.
+            const info = CAN_TYPE_INFO[c.type] || CAN_TYPE_INFO.standard;
+            if (impactSpeed >= info.knockSpeed) {
               CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
               directHits.push(c);
             } else {
-              // Bounce — show a glance message once.
+              // Bounce — show a glance message tailored to the type.
               if (!g.message) {
-                g.message = "Bounced off!"; g.messageTimer = 1.0;
+                g.message = c.type === "lead" ? "Lead — flick HARDER!" : "Bounced off!";
+                g.messageTimer = 1.0;
                 Sound.crash && Sound.crash();
               }
             }
-            b.vx *= 0.30; b.vy *= 0.30; b.vz *= 0.20;
+            // Lead drains a lot more momentum from the ball than other
+            // cans. Bounces off lead are dead (the ball doesn't carry on
+            // to clip a neighboring can on the same impact).
+            const damp = c.type === "lead" ? 0.10 : 0.30;
+            b.vx *= damp; b.vy *= damp; b.vz *= damp * 0.6;
           }
         }
         // Cascade — only the can directly above each direct hit topples
@@ -3174,27 +3235,100 @@ const CanBash = {
       const proj = fpProject(c.x, c.y, c.z);
       const w = Math.max(8, 32 * proj.scale);
       const h = Math.max(10, 40 * proj.scale);
+      // Glass shatter: skip the can body; it's gone. Particles handled
+      // after the loop.
+      if (c.hit && c.shatter && c.fallT > 0.4) continue;
       ctx.save();
       ctx.translate(proj.sx, proj.sy);
       if (c.hit) ctx.rotate(c.angle);
+      // Per-type body fill. Gold pulse overrides everything when the can
+      // is still standing.
       const can = ctx.createLinearGradient(-w/2, 0, w/2, 0);
       if (c.gold && !c.hit) {
-        // Pulsing golden can — bonus target.
         const pulse = 0.85 + 0.15 * Math.sin(performance.now() / 250);
         can.addColorStop(0, `rgba(180, 130, 30, ${pulse})`);
         can.addColorStop(0.5, `rgba(255, 220, 80, ${pulse})`);
         can.addColorStop(1, `rgba(180, 130, 30, ${pulse})`);
+      } else if (c.type === "glass") {
+        // Translucent cyan with a hint of bubble shimmer.
+        const tShim = performance.now() / 800;
+        const bright = 0.55 + 0.15 * Math.sin(tShim + c.x * 1.3);
+        can.addColorStop(0, `rgba(120, 200, 220, 0.55)`);
+        can.addColorStop(0.5, `rgba(200, 240, 255, ${bright})`);
+        can.addColorStop(1, `rgba(120, 200, 220, 0.55)`);
+      } else if (c.type === "lead") {
+        can.addColorStop(0, "#363a44"); can.addColorStop(0.5, "#5a6070"); can.addColorStop(1, "#262830");
+      } else if (c.type === "explosive") {
+        // Pulsing red with a hot core — read as "danger" at a glance.
+        const pulse = 0.7 + 0.3 * Math.sin(performance.now() / 180);
+        can.addColorStop(0, "#5a0a0a");
+        can.addColorStop(0.5, `rgba(${230 + 25 * pulse}, ${40 + 20 * pulse}, 30, 1)`);
+        can.addColorStop(1, "#5a0a0a");
+      } else if (c.type === "stacker") {
+        // Coin-stack — banded gold/copper.
+        can.addColorStop(0, "#8a5a10");
+        can.addColorStop(0.5, "#f0c050");
+        can.addColorStop(1, "#8a5a10");
       } else {
         can.addColorStop(0, "#888"); can.addColorStop(0.5, "#dadada"); can.addColorStop(1, "#666");
       }
       ctx.fillStyle = can;
       ctx.fillRect(-w/2, -h/2, w, h);
-      ctx.fillStyle = c.gold ? "#7a4f00" : "#e94c3a";
-      ctx.fillRect(-w/2, -h * 0.18, w, h * 0.4);
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(-w/2, -h * 0.22, w, 1.5);
-      ctx.fillRect(-w/2,  h * 0.22, w, 1.5);
-      // Gold star marking
+      // Label band + decoration per type.
+      if (c.type === "glass" && !c.hit) {
+        // Subtle highlight stripe instead of a label.
+        ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+        ctx.fillRect(-w/2 + w*0.1, -h*0.3, w*0.12, h*0.6);
+      } else if (c.type === "lead") {
+        // Crosshatch shading (just a couple of dark lines for texture).
+        ctx.strokeStyle = "rgba(0,0,0,0.45)";
+        ctx.lineWidth = Math.max(0.5, 1 * proj.scale);
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.moveTo(-w/2, -h*0.4 + i * h*0.18);
+          ctx.lineTo( w/2, -h*0.4 + i * h*0.18 + h*0.10);
+          ctx.stroke();
+        }
+        ctx.fillStyle = "#1a1c22";
+        ctx.fillRect(-w/2, -h * 0.18, w, h * 0.4);
+      } else if (c.type === "explosive") {
+        // Wrap label + fuse.
+        ctx.fillStyle = "#1a0000";
+        ctx.fillRect(-w/2, -h * 0.18, w, h * 0.4);
+        if (!c.hit) {
+          // Tiny fuse line on top
+          ctx.strokeStyle = "#3a2a10";
+          ctx.lineWidth = Math.max(0.6, 1.5 * proj.scale);
+          ctx.beginPath();
+          ctx.moveTo(0, -h/2);
+          ctx.lineTo(w*0.18, -h/2 - h*0.2);
+          ctx.stroke();
+          // Fuse spark
+          const sparkPhase = (performance.now() / 90) % 1;
+          ctx.fillStyle = sparkPhase < 0.5 ? "#ffd03a" : "#ff5a3a";
+          ctx.beginPath();
+          ctx.arc(w*0.18, -h/2 - h*0.2, Math.max(1.2, 1.6 * proj.scale), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (c.type === "stacker") {
+        // Banded coin lines.
+        ctx.strokeStyle = "rgba(120, 80, 0, 0.6)";
+        ctx.lineWidth = Math.max(0.4, 0.9 * proj.scale);
+        for (let i = -2; i <= 2; i++) {
+          const yy = i * h * 0.18;
+          ctx.beginPath();
+          ctx.moveTo(-w/2, yy); ctx.lineTo(w/2, yy);
+          ctx.stroke();
+        }
+      } else {
+        // Standard label band — red ribbon + white piping.
+        ctx.fillStyle = c.gold ? "#7a4f00" : "#e94c3a";
+        ctx.fillRect(-w/2, -h * 0.18, w, h * 0.4);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(-w/2, -h * 0.22, w, 1.5);
+        ctx.fillRect(-w/2,  h * 0.22, w, 1.5);
+      }
+      // Gold star marking (orthogonal to type)
       if (c.gold) {
         ctx.fillStyle = "#fff";
         ctx.font = `bold ${Math.max(8, 12 * proj.scale)}px ui-monospace`;
@@ -3206,6 +3340,49 @@ const CanBash = {
       ctx.lineWidth = Math.max(0.5, 1.2 * proj.scale);
       ctx.beginPath(); ctx.ellipse(0, -h/2, w/2, h * 0.07, 0, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
+    }
+
+    // Type-specific knock VFX. Drawn on top of cans so they read clearly.
+    for (const c of g.cans) {
+      if (!c.hit) continue;
+      const proj = fpProject(c.x, c.y, c.z);
+      // Glass shatter — burst of cyan shards expanding from the can's
+      // last position, fading over ~0.4s.
+      if (c.type === "glass" && c.shatter) {
+        const a = Math.max(0, 1 - c.fallT / 0.5);
+        if (a > 0) {
+          const r = 12 * proj.scale * (1 + c.fallT * 4);
+          ctx.save();
+          ctx.translate(proj.sx, proj.sy);
+          for (let i = 0; i < 8; i++) {
+            const ang = i / 8 * Math.PI * 2;
+            const ex = Math.cos(ang) * r;
+            const ey = Math.sin(ang) * r * 0.8;
+            ctx.fillStyle = `rgba(180, 230, 255, ${a * 0.85})`;
+            ctx.beginPath();
+            ctx.moveTo(ex, ey);
+            ctx.lineTo(ex + 4 * proj.scale, ey - 6 * proj.scale);
+            ctx.lineTo(ex - 3 * proj.scale, ey + 4 * proj.scale);
+            ctx.closePath(); ctx.fill();
+          }
+          ctx.restore();
+        }
+      }
+      // Explosive flash — radial gradient that punches at t=0 and fades.
+      if (c.type === "explosive" && c.exploded) {
+        const a = Math.max(0, 1 - c.fallT / 0.45);
+        if (a > 0) {
+          const r = 60 * proj.scale * (1 + c.fallT * 3);
+          const grad = ctx.createRadialGradient(proj.sx, proj.sy, 0, proj.sx, proj.sy, r);
+          grad.addColorStop(0, `rgba(255, 230, 120, ${a})`);
+          grad.addColorStop(0.4, `rgba(255, 120, 40, ${a * 0.7})`);
+          grad.addColorStop(1, `rgba(255, 60, 30, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(proj.sx, proj.sy, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
     }
 
     // Baseball — at-rest sprite at the bottom; perspective once thrown.
