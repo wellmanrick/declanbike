@@ -29,7 +29,7 @@ import { mulberry32 } from "./engine/rng.js";
 import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE } from "./world/terrain.js";
 import { STATE, G } from "./state.js";
 import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO, POWER_INFO } from "./games/canBash/levels.js";
-import { FG_LEVELS, FG_CONDITION_INFO, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
+import { FG_LEVELS, FG_CONDITION_INFO, FG_POWERUP_INFO, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -2516,9 +2516,10 @@ const FieldGoal = {
   color: "#4ddc8c",
   init(level) {
     const lvl = level || FG_LEVELS[0];
-    // Surface a one-time tutorial when the player first encounters this
-    // condition. Mirrors Can Bash's first-encounter type tutorials.
+    // Surface one-time tutorials for any new condition or power-up the
+    // player encounters here. Persisted under save.fieldGoalSeen*.
     const condition = lvl.condition || "standard";
+    const powerType = lvl.powerup || null;
     const tutorialQueue = [];
     if (condition !== "standard") {
       save.fieldGoalSeenConditions = save.fieldGoalSeenConditions || {};
@@ -2526,9 +2527,19 @@ const FieldGoal = {
         const info = FG_CONDITION_INFO[condition];
         if (info && info.label) tutorialQueue.push({ label: info.label });
         save.fieldGoalSeenConditions[condition] = true;
-        persistSave();
       }
     }
+    if (powerType) {
+      save.fieldGoalSeenPowers = save.fieldGoalSeenPowers || {};
+      if (!save.fieldGoalSeenPowers[powerType]) {
+        const info = FG_POWERUP_INFO[powerType];
+        if (info && info.label) {
+          tutorialQueue.push({ label: `Tap the ${info.icon} badge to arm. ${info.label}` });
+        }
+        save.fieldGoalSeenPowers[powerType] = true;
+      }
+    }
+    if (tutorialQueue.length > 0) persistSave();
     return {
       level: lvl,
       condition,
@@ -2549,6 +2560,15 @@ const FieldGoal = {
       shake: 0, pauseT: 0, slowT: 0,
       // Close-call slow-mo only fires once per kick.
       slowFired: false,
+      // Power-up — one charge per level, granted by lvl.powerup.
+      // .type is the power slug, .charges is remaining (1 or 0),
+      // .armed flips on tap-to-arm and applies to the next kick.
+      // .activeEffect captures the slug consumed for the in-flight
+      // kick so render/scoring can reference it after armed clears.
+      powerup: powerType
+        ? { type: powerType, charges: 1, armed: false, activeEffect: null,
+            badge: null, badgeUntil: 0 }
+        : null,
       // Snow particles persist across attempts so the storm feels continuous.
       snow: condition === "snowstorm" ? FieldGoal.makeSnow() : null,
       // Crosswind gust schedule — set per-attempt in reset().
@@ -2588,6 +2608,10 @@ const FieldGoal = {
     g.posts.gap = lvl.gap;
     g.posts.x   = (Math.random() * 2 - 1) * lvl.offCenterRange;
     g.wind      = (Math.random() * 2 - 1) * lvl.windRange;
+    // Reset only clears the previous kick's activeEffect. The new kick's
+    // armed power is applied later, at flick release in handlePointer
+    // (the player may not have armed anything yet at this point).
+    if (g.powerup) g.powerup.activeEffect = null;
     g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0,
                kicked: false, scored: false, gone: false, t: 0 };
     g.message = ""; g.messageTimer = 0;
@@ -2608,6 +2632,20 @@ const FieldGoal = {
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
     if (!g.ball) FieldGoal.reset(g);
+    // Power-up badge — tap to arm/disarm the held charge. Hit-test the
+    // badge rect cached by render() (top-right of the screen). The
+    // badge always swallows taps that start inside it so depleted
+    // badges don't accidentally initiate a flick from the corner.
+    if (kind === "down" && g.powerup && !g.ball.kicked && g.powerup.badge) {
+      const r = g.powerup.badge;
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+        if (g.powerup.charges > 0) {
+          g.powerup.armed = !g.powerup.armed;
+          cbJuice(g, { vibrate: 12 });
+        }
+        return;
+      }
+    }
     if (g.ball.kicked) return;
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
@@ -2624,6 +2662,19 @@ const FieldGoal = {
     g.ball.kicked = true;
     g.kickFx = 0.25;
     Sound.boostHit && Sound.boostHit();
+    // Consume an armed power-up at the moment of release. activeEffect
+    // persists through this kick's flight (read by update + render).
+    // Wind/gap effects must apply BEFORE update's first physics tick;
+    // doing it here guarantees that.
+    if (g.powerup && g.powerup.armed && g.powerup.charges > 0) {
+      const eff = g.powerup.type;
+      g.powerup.activeEffect = eff;
+      g.powerup.charges = 0;
+      g.powerup.armed = false;
+      if (eff === "calm") g.wind = 0;
+      else if (eff === "wide") g.posts.gap = (g.level.gap || g.posts.gap) * 1.5;
+      cbJuice(g, { vibrate: [0, 30, 30, 30] });
+    }
     // Kick haptic — a short single tick. The shake-on-impact comes
     // later in update() when the ball reaches the posts.
     cbJuice(g, { vibrate: 18 });
@@ -2755,6 +2806,11 @@ const FieldGoal = {
           let msg = "GOOD!";
           let big = false;
           if (ringHit) { pts += 5; msg = "BULLSEYE!"; big = true; }
+          if (g.powerup && g.powerup.activeEffect === "double") {
+            pts *= 2;
+            msg = msg === "BULLSEYE!" ? "BULLSEYE x2!" : "GOOD x2!";
+            big = true;
+          }
           g.score += pts;
           g.message = msg; g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
@@ -2770,8 +2826,14 @@ const FieldGoal = {
                    && Math.abs(offset) < p.gap / 2 + 0.4
                    && b.y > p.crossbar && b.y < p.top + 0.5) {
           // Doink condition turns the post hit into a +3 partial reward.
-          g.score += 3;
-          g.message = "Doink! +3"; g.messageTimer = 1.4;
+          let doinkPts = 3;
+          let doinkMsg = "Doink! +3";
+          if (g.powerup && g.powerup.activeEffect === "double") {
+            doinkPts = 6;
+            doinkMsg = "Doink! +6";
+          }
+          g.score += doinkPts;
+          g.message = doinkMsg; g.messageTimer = 1.4;
           Sound.boostHit && Sound.boostHit();
           // Brief hit-pause + clang-shake — sells the upright contact.
           cbJuice(g, { shake: 10, pauseT: 0.06, vibrate: [0, 35] });
@@ -3076,6 +3138,90 @@ const FieldGoal = {
         ctx.fillText(info.label, 16, 134);
       }
     }
+    // Power-up badge — top-right corner. Tap-target rect is cached on
+    // g.powerup.badge so handlePointer can hit-test the same area.
+    // States:
+    //   charges>0, !armed → solid card with icon, "Tap to arm" label
+    //   charges>0,  armed → glowing gold border, "ARMED" label
+    //   charges=0, activeEffect → muted card showing the effect is in flight
+    //   charges=0, !activeEffect → spent placeholder
+    if (g.powerup) {
+      const info = FG_POWERUP_INFO[g.powerup.type];
+      if (info) {
+        const bw = Math.min(150, Math.max(110, W * 0.28));
+        const bh = 58;
+        const bx = W - bw - 12, by = 12;
+        const armed = g.powerup.armed;
+        const live = g.powerup.charges > 0;
+        const inFlight = g.powerup.activeEffect && g.ball && g.ball.kicked && !g.ball.gone;
+        // Background card.
+        ctx.fillStyle = live
+          ? (armed ? "rgba(255, 200, 60, 0.92)" : "rgba(20, 30, 50, 0.85)")
+          : (inFlight ? "rgba(80, 200, 140, 0.85)" : "rgba(40, 40, 50, 0.55)");
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, 10);
+        else ctx.rect(bx, by, bw, bh);
+        ctx.fill();
+        // Animated armed border — pulsing gold ring.
+        if (armed) {
+          const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120);
+          ctx.strokeStyle = `rgba(255, 240, 130, ${0.6 + 0.4 * pulse})`;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(bx - 1, by - 1, bw + 2, bh + 2, 11);
+          else ctx.rect(bx - 1, by - 1, bw + 2, bh + 2);
+          ctx.stroke();
+        }
+        // Icon (left) + label (right).
+        ctx.font = "bold 24px ui-monospace, monospace";
+        ctx.textAlign = "center";
+        ctx.fillStyle = armed ? "#1a1206" : "#fff";
+        ctx.fillText(info.icon, bx + 22, by + bh / 2 + 9);
+        ctx.font = "bold 12px ui-monospace, monospace";
+        ctx.textAlign = "start";
+        ctx.fillStyle = armed ? "#1a1206" : (live ? "#cfd6e3" : "rgba(255,255,255,0.7)");
+        const stateLabel = armed
+          ? "ARMED"
+          : (live ? "Tap to arm" : (inFlight ? "Active!" : "Spent"));
+        ctx.fillText(g.powerup.type.toUpperCase(), bx + 44, by + 24);
+        ctx.font = "bold 11px ui-monospace, monospace";
+        ctx.fillText(stateLabel, bx + 44, by + 42);
+        // Cache the rect for hit-testing.
+        g.powerup.badge = { x: bx, y: by, w: bw, h: bh };
+      }
+    }
+    // Scope sight line — drawn while the scope power-up is armed AND
+    // the ball is still at rest, so the player can aim along it. Once
+    // the kick fires (ball.kicked = true), the line clears so it
+    // doesn't compete with the trajectory.
+    const scopeArmed = g.powerup && g.powerup.armed
+                       && g.powerup.type === "scope"
+                       && g.powerup.charges > 0
+                       && !g.ball.kicked;
+    if (scopeArmed) {
+      const tripleOffsets = [-5, 0, 5];
+      const liveCenter = (p.x || 0)
+        + (g.condition === "triple" ? tripleOffsets[g.liveSlot] : 0);
+      const tgt = fpProject(liveCenter, p.crossbar + 0.3, p.z);
+      const restSX = W / 2;
+      const restSY = H * 0.84;
+      ctx.strokeStyle = "rgba(255, 220, 80, 0.75)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(restSX, restSY);
+      ctx.lineTo(tgt.sx, tgt.sy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Reticle at the goal target.
+      ctx.strokeStyle = "rgba(255, 220, 80, 0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(tgt.sx, tgt.sy, 8, 0, Math.PI * 2);
+      ctx.moveTo(tgt.sx - 12, tgt.sy); ctx.lineTo(tgt.sx + 12, tgt.sy);
+      ctx.moveTo(tgt.sx, tgt.sy - 12); ctx.lineTo(tgt.sx, tgt.sy + 12);
+      ctx.stroke();
+    }
 
     // Aim preview — when the ball is at rest, originate from its fixed
     // bottom-of-screen sprite position. Once kicked, switch to perspective.
@@ -3195,7 +3341,8 @@ const FieldGoal = {
       ctx.textAlign = "center";
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.fillText(g.message, W/2 + 3, H/2 + 3);
-      const positive = g.message === "GOOD!" || g.message === "BULLSEYE!" ||
+      const positive = g.message.startsWith("GOOD") ||
+                       g.message.startsWith("BULLSEYE") ||
                        g.message.startsWith("Doink! ");
       ctx.fillStyle = positive ? "#4ddc8c" : "#ff5470";
       ctx.fillText(g.message, W/2, H/2);

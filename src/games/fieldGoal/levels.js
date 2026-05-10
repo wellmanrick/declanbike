@@ -80,12 +80,13 @@ export const FG_LEVELS = [
   {
     id: "fg_06_mid_range",
     name: "Mid-Range",
-    subtitle: "38-yard. Wind and angle both.",
+    subtitle: "38-yard. Wind and angle both. Calm in your pocket.",
     attempts: 5,
     distance: 35,
     gap: 5.0,
     windRange: 3,
     offCenterRange: 2,
+    powerup: "calm",
     parStars: { 3: 4, 2: 3, 1: 1 },
   },
   {
@@ -102,12 +103,13 @@ export const FG_LEVELS = [
   {
     id: "fg_08_long_bomb",
     name: "Long Bomb",
-    subtitle: "46-yard. Gas and trust the line.",
+    subtitle: "46-yard. Trust the line — Scope locks the goal.",
     attempts: 4,
     distance: 42,
     gap: 5.0,
     windRange: 3,
     offCenterRange: 3,
+    powerup: "scope",
     parStars: { 3: 4, 2: 3, 1: 1 },
   },
   {
@@ -136,13 +138,14 @@ export const FG_LEVELS = [
   {
     id: "fg_11_doink_city",
     name: "Doink City",
-    subtitle: "Hit the upright = +3. Get aggressive.",
+    subtitle: "Hit the upright = +3. Double down — literally.",
     attempts: 5,
     distance: 30,
     gap: 5.0,
     windRange: 3,
     offCenterRange: 3,
     condition: "doink",
+    powerup: "double",
     parStars: { 3: 5, 2: 4, 1: 2 },
   },
   {
@@ -160,13 +163,14 @@ export const FG_LEVELS = [
   {
     id: "fg_13_three_doors",
     name: "Three Doors",
-    subtitle: "Three goals, one is live. Pick the gold posts.",
+    subtitle: "One live goal. Wide opens it up.",
     attempts: 5,
     distance: 32,
     gap: 4.8,
     windRange: 2,
     offCenterRange: 0,
     condition: "triple",
+    powerup: "wide",
     parStars: { 3: 4, 2: 3, 1: 1 },
   },
   {
@@ -200,6 +204,20 @@ export const FG_CONDITION_INFO = {
   bullseye:  { label: "Gold Ring — clear the bar through the ring for +5" },
   triple:    { label: "Three Doors — only the gold uprights score" },
   two_point: { label: "Razor Wire — clear the bar by 1m or less" },
+};
+
+// Power-up catalog. Each level may carry a `powerup` slug; if set, the
+// player starts the level with one charge of that power. Tap the badge
+// to arm; the next kick consumes it. Effects:
+//   calm   — wind = 0 for the armed kick
+//   wide   — uprights gap +50% for the armed kick
+//   double — armed kick scores 2x (incl. doink/bullseye bonuses)
+//   scope  — draws a sight line from the kicker to the goal center
+export const FG_POWERUP_INFO = {
+  calm:   { icon: "🍃", label: "Calm — no wind on the next kick" },
+  wide:   { icon: "📏", label: "Wide — uprights +50% on the next kick" },
+  double: { icon: "✕2", label: "Double — next kick scores 2x" },
+  scope:  { icon: "🎯", label: "Scope — sight line locks on the goal" },
 };
 
 // Stars earned for a finished level given the makes count.
