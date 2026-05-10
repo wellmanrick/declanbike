@@ -3240,9 +3240,11 @@ canvas.addEventListener("pointercancel",(e) => dispatchMinigamePointer("up",  e)
 // bug at small z.
 const FP_FOCAL    = 600;       // pixels of focal length
 const FP_CAMERA_H = 1.6;       // ~5'3" eye line, behind the holder
+let   _fpCamZ     = 0;         // virtual camera offset along z (set per-game)
+function fpSetCam(z) { _fpCamZ = z || 0; }
 function fpHorizonY() { return H * 0.55; }
 function fpProject(x, y, z) {
-  const zz = Math.max(0.5, z);
+  const zz = Math.max(0.5, z - _fpCamZ);
   return {
     sx: W / 2 + x * FP_FOCAL / zz,
     sy: fpHorizonY() + (FP_CAMERA_H - y) * FP_FOCAL / zz,
@@ -3338,21 +3340,29 @@ const FieldGoal = {
   init() {
     return {
       ball: null,
-      // Posts at z=25m. Crossbar 1m above the ground (we use 1m here for
-      // visibility on screen — real NCAA is 10ft / 3m); uprights extend up
-      // to ~10m. Gap between uprights is ~6m wide on screen.
-      posts: { z: 25, gap: 6, crossbar: 1.0, top: 9.5, padHeight: 0.6 },
+      // Posts: gap, crossbar height, top of uprights. Distance (z) ramps up
+      // attempt-to-attempt; reset() picks the value.
+      posts: { z: 18, gap: 6, crossbar: 1.0, top: 9.5 },
       attempts: 5, kicked: 0, made: 0, score: 0,
       wind: 0, dragStart: null, dragNow: null,
       message: "", messageTimer: 0, finished: false,
+      cameraZ: 0,
+      kickFx: 0,
     };
   },
   payout(g) { return Math.floor((g.score || 0) * 1.0); },
   reset(g) {
-    // Ball sits a couple meters in front of camera, on the ground tee.
-    g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0, kicked: false, scored: false, gone: false, t: 0 };
-    g.wind = (Math.random() - 0.5) * 4;
+    // Distance and wind both ramp with the kick number. Kick 1 is a chip,
+    // kick 5 is a 50-yarder with serious wind.
+    const a = g.kicked || 0; // 0..4
+    g.posts.z = 18 + a * 7;                       // 18, 25, 32, 39, 46 m
+    const windRange = 2 + a * 1.6;                // 2, 3.6, 5.2, 6.8, 8.4
+    g.wind = (Math.random() * 2 - 1) * windRange;
+    g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0,
+               kicked: false, scored: false, gone: false, t: 0 };
     g.message = ""; g.messageTimer = 0;
+    g.cameraZ = 0;
+    g.kickFx = 0;
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
@@ -3361,16 +3371,20 @@ const FieldGoal = {
     const flick = fpProcessFlick(g, kind, x, y);
     if (!flick) return;
     const { power, lateral, upward } = flick;
-    g.ball.vz = 14 + power * 12;
+    // Power scales with target distance so a long kick needs more flick.
+    const distScale = Math.max(0.7, g.posts.z / 25);
+    g.ball.vz = (14 + power * 12) * distScale;
     g.ball.vy = 5 + power * 7 * upward;
     g.ball.vx = lateral * 4 * power;
     g.ball.spin = lateral * 1.4;
     g.ball.kicked = true;
+    g.kickFx = 0.25;
     Sound.boostHit && Sound.boostHit();
   },
   update(g, dt) {
     if (!g.ball) FieldGoal.reset(g);
     const b = g.ball, p = g.posts;
+    if (g.kickFx > 0) g.kickFx = Math.max(0, g.kickFx - dt);
     if (b.kicked && !b.gone) {
       b.t += dt;
       b.vy -= 9.8 * dt;
@@ -3378,6 +3392,10 @@ const FieldGoal = {
       b.x  += b.vx * dt;
       b.y  += b.vy * dt;
       b.z  += b.vz * dt;
+      // Camera trails the ball ~6m back so the goalposts grow as the kick
+      // approaches them.
+      const targetCam = Math.max(0, b.z - 6);
+      g.cameraZ = g.cameraZ + (targetCam - g.cameraZ) * Math.min(1, dt * 4);
       if (b.z >= p.z && !b.scored) {
         b.scored = true;
         const through = Math.abs(b.x) < p.gap / 2
@@ -3408,17 +3426,18 @@ const FieldGoal = {
   },
   render(g) {
     if (!g.ball) FieldGoal.reset(g);
+    fpSetCam(g.cameraZ || 0);
     fpDrawSky("#7fbcff", "#cfeaff", "#4d8d2a");
     fpDrawField("#3a7a1f", "rgba(255,255,255,0.45)");
     // End-zone tint behind the posts.
-    const ezNear = fpProject(-25, 0, 22);
-    const ezFar  = fpProject( 25, 0, 32);
-    ctx.fillStyle = "rgba(255, 100, 60, 0.20)";
-    ctx.fillRect(0, ezFar.sy, W, ezNear.sy - ezFar.sy);
+    const ezNear = fpProject(-25, 0, g.posts.z - 2);
+    const ezFar  = fpProject( 25, 0, g.posts.z + 8);
+    if (ezFar.sy < ezNear.sy) {
+      ctx.fillStyle = "rgba(255, 100, 60, 0.20)";
+      ctx.fillRect(0, ezFar.sy, W, ezNear.sy - ezFar.sy);
+    }
 
     const p = g.posts;
-    // Yellow goalposts: stem from ground up to crossbar, crossbar across,
-    // two uprights extending up.
     const stemBase = fpProject(0, 0, p.z);
     const stemTop  = fpProject(0, p.crossbar, p.z);
     const crossL   = fpProject(-p.gap / 2, p.crossbar, p.z);
@@ -3435,20 +3454,21 @@ const FieldGoal = {
     ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(upL.sx, upL.sy); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(crossR.sx, crossR.sy); ctx.lineTo(upR.sx, upR.sy); ctx.stroke();
     ctx.lineCap = "butt";
-    // White pad at the base
     const padNear = fpProject(-0.4, 0, p.z + 0.4);
     const padFar  = fpProject( 0.4, 0, p.z - 0.4);
     ctx.fillStyle = "#fff";
     ctx.fillRect(padFar.sx, padFar.sy - 8, Math.max(4, padNear.sx - padFar.sx), 10);
 
-    // HUD
+    // HUD — wind, distance, score, attempts left.
     ctx.fillStyle = "rgba(0,0,0,0.7)";
     ctx.font = "bold 16px ui-monospace, monospace";
     const dir = g.wind > 0.5 ? "→" : g.wind < -0.5 ? "←" : "·";
     ctx.fillText(`Wind: ${dir} ${Math.abs(Math.round(g.wind * 4))}`, 16, 26);
+    const yards = Math.round(p.z * 1.094);
+    ctx.fillText(`Distance: ${yards} yd`, 16, 48);
     ctx.font = "bold 18px ui-monospace, monospace";
-    ctx.fillText(`Made: ${g.made}/${g.kicked}    Score: ${g.score}`, 16, 50);
-    ctx.fillText(`Kicks left: ${Math.max(0, g.attempts - g.kicked)}`, 16, 72);
+    ctx.fillText(`Made: ${g.made}/${g.kicked}    Score: ${g.score}`, 16, 74);
+    ctx.fillText(`Kicks left: ${Math.max(0, g.attempts - g.kicked)}`, 16, 96);
 
     // Aim preview — when the ball is at rest, originate from its fixed
     // bottom-of-screen sprite position. Once kicked, switch to perspective.
@@ -3457,14 +3477,22 @@ const FieldGoal = {
     const restR  = Math.min(72, Math.max(48, W * 0.10));
     if (!g.ball.kicked) fpDrawAimArc(g, restSX, restSY);
 
-    // Football — drawn last so it sits over the field.
+    // Football
     const b = g.ball;
-    let bx, by, r;
+    let bx, by, r, vertical;
     if (!b.kicked) {
-      bx = restSX; by = restSY; r = restR;
+      bx = restSX; by = restSY; r = restR; vertical = true;
     } else {
       const proj = fpProject(b.x, b.y, b.z);
       bx = proj.sx; by = proj.sy; r = Math.max(6, 22 * proj.scale);
+      vertical = false;
+    }
+    // Tee shadow under the ball at rest.
+    if (vertical) {
+      ctx.fillStyle = "rgba(0,0,0,0.30)";
+      ctx.beginPath();
+      ctx.ellipse(restSX, restSY + r * 0.95, r * 0.55, r * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.save();
     ctx.translate(bx, by);
@@ -3472,23 +3500,48 @@ const FieldGoal = {
     const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
     grad.addColorStop(0, "#9b5a2c"); grad.addColorStop(1, "#5a2a0e");
     ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.62, 0, 0, Math.PI * 2); ctx.fill();
+    const rx = vertical ? r * 0.6  : r;
+    const ry = vertical ? r * 0.95 : r * 0.62;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "rgba(0,0,0,0.5)";
-    ctx.lineWidth = Math.max(0.5, b.kicked ? 1 * (r / 22) : 2);
-    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.62, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = Math.max(0.5, r * 0.05);
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
     if (r > 6) {
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = Math.max(1.5, r * 0.06);
-      ctx.beginPath(); ctx.moveTo(-r * 0.4, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
-      const lace = Math.max(2, r * 0.10);
-      for (let i = -2; i <= 2; i++) {
-        ctx.beginPath();
-        ctx.moveTo(i * r * 0.16, -lace);
-        ctx.lineTo(i * r * 0.16,  lace);
-        ctx.stroke();
+      if (vertical) {
+        // Vertical lacing facing the kicker.
+        ctx.beginPath(); ctx.moveTo(0, -ry * 0.6); ctx.lineTo(0, ry * 0.6); ctx.stroke();
+        const lace = Math.max(2, r * 0.10);
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.moveTo(-lace, i * ry * 0.18);
+          ctx.lineTo( lace, i * ry * 0.18);
+          ctx.stroke();
+        }
+      } else {
+        // Horizontal lacing while tumbling end-over-end.
+        ctx.beginPath(); ctx.moveTo(-r * 0.4, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
+        const lace = Math.max(2, r * 0.10);
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * r * 0.16, -lace);
+          ctx.lineTo(i * r * 0.16,  lace);
+          ctx.stroke();
+        }
       }
     }
     ctx.restore();
+
+    // Quick "kick" puff at the moment of impact.
+    if (g.kickFx > 0) {
+      const a = g.kickFx / 0.25;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      const puffR = (1 - a) * 80 + 30;
+      ctx.beginPath(); ctx.arc(restSX, restSY + 10, puffR, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
 
     if (g.message && g.messageTimer > 0) {
       ctx.font = "bold 56px ui-monospace, monospace";
@@ -3615,6 +3668,7 @@ const CanBash = {
   },
   render(g) {
     if (!g.ball) CanBash.resetBall(g);
+    fpSetCam(0);
     fpDrawSky("#3a3050", "#5a3340", "#3a2516");
     fpDrawField("#5a3818", "rgba(255, 200, 100, 0.18)");
 
