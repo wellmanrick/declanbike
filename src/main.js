@@ -2617,6 +2617,14 @@ const FieldGoal = {
         ? { type: powerType, charges: 1, armed: false, activeEffect: null,
             badge: null, badgeUntil: 0 }
         : null,
+      // Make streak — consecutive successful makes within this round.
+      // Drives crowd reactions and the firework celebration when it
+      // hits 5. The session-best streak is folded into the global
+      // save record on level finish.
+      streak: 0, bestStreak: 0,
+      // Firework particles — purely visual, spawned by the streak
+      // milestone and stepped each frame in update().
+      fireworks: [],
       // Snow particles persist across attempts so the storm feels continuous.
       snow: condition === "snowstorm" ? FieldGoal.makeSnow() : null,
       // Crosswind gust schedule — set per-attempt in reset().
@@ -2628,6 +2636,30 @@ const FieldGoal = {
       tutorialQueue,
       _tutorialNextAt: 0.5,
     };
+  },
+  // Spawn a 3-burst firework display centered above the goal posts.
+  // Each burst is 30 radial particles with a randomized hue. Bursts
+  // are staggered with a delay field so they pop in sequence.
+  spawnFireworks(g) {
+    const top = fpProject(g.posts.x || 0, g.posts.top + 4, g.posts.z);
+    for (let burst = 0; burst < 3; burst++) {
+      const cx = top.sx + (Math.random() - 0.5) * W * 0.4;
+      const cy = top.sy + (Math.random() - 0.5) * 60 - 60;
+      const hue = Math.random() * 360;
+      const t0 = burst * 0.25;
+      for (let i = 0; i < 28; i++) {
+        const angle = (i / 28) * Math.PI * 2 + Math.random() * 0.1;
+        const speed = 90 + Math.random() * 110;
+        g.fireworks.push({
+          x: cx, y: cy,
+          vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+          life: 1.4 + Math.random() * 0.4,
+          hue,
+          delay: t0,
+          played: false,
+        });
+      }
+    }
   },
   // Build a fresh snow field — small particles falling at a steady rate
   // across the screen volume, used for the snowstorm condition's render
@@ -2770,6 +2802,21 @@ const FieldGoal = {
         g._tutorialNextAt = 2.5;
       }
     }
+    // Step firework particles. They live in screen space (sx, sy)
+    // because they anchor to the burst point captured at spawn time;
+    // gravity drags them down. Played-once sound flag triggers the
+    // crackle when each burst's delay expires.
+    if (g.fireworks && g.fireworks.length > 0) {
+      for (const fw of g.fireworks) {
+        if (fw.delay > 0) { fw.delay -= dt; continue; }
+        if (!fw.played) { fw.played = true; if (Math.random() < 0.18) Sound.firework && Sound.firework(); }
+        fw.x += fw.vx * dt;
+        fw.y += fw.vy * dt;
+        fw.vy += 220 * dt;
+        fw.life -= dt;
+      }
+      g.fireworks = g.fireworks.filter(f => f.life > 0);
+    }
     // Snowstorm: the snow keeps falling whether or not the ball is in flight.
     if (g.snow) {
       for (const f of g.snow) {
@@ -2895,10 +2942,15 @@ const FieldGoal = {
           ringHit = b.y > ringYLow && b.y < ringYHigh
                     && Math.abs(offset) < ringXHalf;
         }
+        // Track make / miss for crowd reactions, streak, and firework
+        // celebration. Set inside the branches so doinks (partial) and
+        // misses both tally correctly.
+        let madeIt = false;
         if (g.condition === "two_point" && through && !tightWindow) {
           g.message = "Sailed!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 6, vibrate: 35 });
         } else if (through && liveOK) {
+          madeIt = true;
           g.made++;
           let pts = 7;
           let msg = "GOOD!";
@@ -2946,6 +2998,27 @@ const FieldGoal = {
         } else {
           g.message = "Wide!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 5, vibrate: 30 });
+        }
+        // Streak + crowd reaction. Doinks (partial credit) don't count
+        // toward the streak — only clean makes do — but they also
+        // don't reset it. Anything else that isn't a make resets to 0.
+        if (madeIt) {
+          g.streak++;
+          if (g.streak > g.bestStreak) g.bestStreak = g.streak;
+          const big = g.message.startsWith("BULLSEYE") ||
+                      g.message.indexOf("x2") >= 0;
+          Sound.cheer && Sound.cheer(big);
+          // Streak milestone: every 5 in a row triggers the firework
+          // celebration over the goal posts and a louder roar.
+          if (g.streak % 5 === 0) {
+            FieldGoal.spawnFireworks(g);
+            Sound.cheer && Sound.cheer(true);
+            cbJuice(g, { shake: 12, vibrate: [0, 30, 30, 30, 30, 30, 30, 80] });
+            pushToast(`STREAK x${g.streak}!`, "gold", 1600);
+          }
+        } else if (g.message !== "Doink! +3" && g.message !== "Doink! +6") {
+          g.streak = 0;
+          Sound.groan && Sound.groan();
         }
       }
       if (b.y < 0 || b.z > p.z + 12) b.gone = true;
@@ -3236,6 +3309,16 @@ const FieldGoal = {
         ctx.fillText(info.label, 16, 134);
       }
     }
+    // Streak indicator — only visible once the player has 2+ in a row.
+    // Pulses to draw the eye when the streak reaches a multiple of 5
+    // (which also fires fireworks).
+    if (g.streak >= 2) {
+      const milestone = g.streak % 5 === 0;
+      const pulse = milestone ? (1 + Math.sin(performance.now() / 110) * 0.12) : 1;
+      ctx.font = `bold ${Math.round(15 * pulse)}px ui-monospace, monospace`;
+      ctx.fillStyle = milestone ? "#ffd03a" : "rgba(255, 220, 80, 0.95)";
+      ctx.fillText(`🔥 Streak x${g.streak}`, 16, 156);
+    }
     // Power-up badge — top-right corner. Tap-target rect is cached on
     // g.powerup.badge so handlePointer can hit-test the same area.
     // States:
@@ -3471,6 +3554,23 @@ const FieldGoal = {
       fog.addColorStop(1, "rgba(245, 248, 255, 0.45)");
       ctx.fillStyle = fog;
       ctx.fillRect(0, 0, W, H);
+    }
+    // Firework particles — drawn over the field but below the message
+    // banner. Alpha fades with remaining life; a small bright core
+    // makes them legible at distance.
+    if (g.fireworks && g.fireworks.length > 0) {
+      for (const fw of g.fireworks) {
+        if (fw.delay > 0) continue;
+        const a = Math.max(0, Math.min(1, fw.life / 1.4));
+        ctx.fillStyle = `hsla(${fw.hue}, 90%, 65%, ${a})`;
+        ctx.beginPath();
+        ctx.arc(fw.x, fw.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `hsla(${fw.hue}, 100%, 90%, ${a * 0.7})`;
+        ctx.beginPath();
+        ctx.arc(fw.x, fw.y, 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     if (g.message && g.messageTimer > 0) {
       ctx.font = "bold 56px ui-monospace, monospace";
