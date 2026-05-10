@@ -4264,10 +4264,449 @@ const DuckHunt = {
   },
 };
 
+//----------------------------------------------------------
+// HOOPS (first-person flick — basketball)
+//----------------------------------------------------------
+const Hoops = {
+  name: "Hoops",
+  desc: "Flick the basketball at the rim. Free throws, threes, and deep bombs from random spots.",
+  icon: "🏀",
+  color: "#ff7a2c",
+  init() {
+    return {
+      ball: null, hoop: null, shotType: "free",
+      attempts: 8, taken: 0, made: 0, swishes: 0, score: 0,
+      message: "", messageTimer: 0, finished: false,
+      dragStart: null, dragNow: null, cameraZ: 0,
+    };
+  },
+  payout(g) { return Math.floor((g.score || 0) * 1.0); },
+  reset(g) {
+    const a = g.taken || 0;
+    // Mix: first attempt is a free throw, then random across types.
+    let shotType, hoopZ, hoopX;
+    const r = Math.random();
+    if (a === 0)        { shotType = "FREE";  hoopZ = 5.5; hoopX = (Math.random()-0.5) * 0.4; }
+    else if (r < 0.4)   { shotType = "FREE";  hoopZ = 5  + Math.random() * 1.5; hoopX = (Math.random()-0.5) * 0.6; }
+    else if (r < 0.8)   { shotType = "THREE"; hoopZ = 7  + Math.random() * 1.5; hoopX = (Math.random()-0.5) * 4.0; }
+    else                { shotType = "DEEP";  hoopZ = 9  + Math.random() * 2.0; hoopX = (Math.random()-0.5) * 5.0; }
+    g.shotType = shotType;
+    g.hoop = { z: hoopZ, x: hoopX, y: 3.05 };
+    g.ball = { x: 0, y: 0.4, z: 1.6, vx: 0, vy: 0, vz: 0,
+               released: false, scored: false, gone: false, t: 0 };
+    g.message = ""; g.messageTimer = 0;
+    g.cameraZ = 0;
+  },
+  handlePointer(g, kind, x, y) {
+    if (g.finished) return;
+    if (!g.ball) Hoops.reset(g);
+    if (g.ball.released) return;
+    const flick = fpProcessFlick(g, kind, x, y);
+    if (!flick) return;
+    const { power, lateral, upward } = flick;
+    const distScale = Math.max(0.7, g.hoop.z / 7);
+    g.ball.vz = (8 + power * 9) * distScale * (0.6 + 0.4 * upward);
+    g.ball.vy = 5 + power * 9 * upward;
+    g.ball.vx = lateral * 5 * power;
+    g.ball.released = true;
+    Sound.boostHit && Sound.boostHit();
+  },
+  update(g, dt) {
+    if (!g.ball) Hoops.reset(g);
+    const b = g.ball, h = g.hoop;
+    if (b.released && !b.gone) {
+      b.t += dt;
+      b.vy -= 9.8 * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.z += b.vz * dt;
+      g.cameraZ = g.cameraZ + (Math.max(0, b.z - 3) - g.cameraZ) * Math.min(1, dt * 4);
+      // Score: ball passes through rim plane (y = h.y) descending, within ~0.30m radius.
+      if (!b.scored && b.y < h.y && b.vy < 0) {
+        const dx = b.x - h.x;
+        const dz = b.z - h.z;
+        const radial = Math.sqrt(dx*dx + dz*dz);
+        if (radial < 0.30) {
+          b.scored = true;
+          const points = g.shotType === "FREE" ? 2 : (g.shotType === "THREE" ? 3 : 4);
+          const swish = radial < 0.14 && Math.abs(dz) < 0.08;
+          g.made++;
+          if (swish) g.swishes++;
+          const earn = points + (swish ? 1 : 0);
+          g.score += earn;
+          g.message = swish ? `SWISH! +${earn}` : `MAKE! +${earn}`;
+          g.messageTimer = 1.4;
+          Sound.perfect && Sound.perfect();
+          // Damp the ball so it falls through the net visibly.
+          b.vy = -2; b.vx *= 0.4; b.vz *= 0.2;
+        }
+      }
+      if (b.y < 0 || b.z > h.z + 6 || Math.abs(b.x) > 16) {
+        b.gone = true;
+        if (!b.scored) { g.message = "Miss"; g.messageTimer = 1.0; Sound.crash && Sound.crash(); }
+      }
+    }
+    if ((b.gone || b.scored) && !g.finished) {
+      g.messageTimer -= dt;
+      if (g.messageTimer <= 0) {
+        g.taken++;
+        if (g.taken >= g.attempts) g.finished = true;
+        else Hoops.reset(g);
+      }
+    }
+  },
+  render(g) {
+    if (!g.ball) Hoops.reset(g);
+    fpSetCam(g.cameraZ || 0);
+    // Indoor gym: dim ceiling, dim midband, lacquered hardwood floor.
+    fpDrawSky("#2a2a36", "#3a3a48", "#7a4a1a");
+    fpDrawField("#a06030", "rgba(255, 220, 180, 0.32)");
+
+    const h = g.hoop;
+    // Backboard — white rectangle behind the rim.
+    const bbLeft = -0.9, bbRight = 0.9, bbBot = h.y + 0.1, bbTop = h.y + 1.5;
+    const bbZ = h.z + 0.10;
+    const bbBL = fpProject(h.x + bbLeft,  bbBot, bbZ);
+    const bbBR = fpProject(h.x + bbRight, bbBot, bbZ);
+    const bbTL = fpProject(h.x + bbLeft,  bbTop, bbZ);
+    const bbTR = fpProject(h.x + bbRight, bbTop, bbZ);
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.beginPath();
+    ctx.moveTo(bbBL.sx, bbBL.sy); ctx.lineTo(bbBR.sx, bbBR.sy);
+    ctx.lineTo(bbTR.sx, bbTR.sy); ctx.lineTo(bbTL.sx, bbTL.sy);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.lineWidth = Math.max(1, 2 * bbBL.scale * 6);
+    ctx.stroke();
+    // Inner red square
+    const sqL = h.x - 0.25, sqR = h.x + 0.25, sqB = h.y + 0.45, sqT = h.y + 1.0;
+    const sBL = fpProject(sqL, sqB, bbZ - 0.01);
+    const sBR = fpProject(sqR, sqB, bbZ - 0.01);
+    const sTL = fpProject(sqL, sqT, bbZ - 0.01);
+    const sTR = fpProject(sqR, sqT, bbZ - 0.01);
+    ctx.strokeStyle = "#ff5a3a";
+    ctx.lineWidth = Math.max(1, 3 * bbBL.scale * 6);
+    ctx.beginPath();
+    ctx.moveTo(sBL.sx, sBL.sy); ctx.lineTo(sBR.sx, sBR.sy);
+    ctx.lineTo(sTR.sx, sTR.sy); ctx.lineTo(sTL.sx, sTL.sy);
+    ctx.closePath(); ctx.stroke();
+    // Pole (behind backboard)
+    const poleBase = fpProject(h.x, 0, h.z + 1.0);
+    const poleTop  = fpProject(h.x, h.y + 0.1, h.z + 1.0);
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = Math.max(2, 4 * poleBase.scale * 6);
+    ctx.beginPath();
+    ctx.moveTo(poleBase.sx, poleBase.sy);
+    ctx.lineTo(poleTop.sx, poleTop.sy);
+    ctx.stroke();
+
+    // Rim — orange ellipse at h.y, h.z.
+    const rimC = fpProject(h.x, h.y, h.z);
+    const rimE = fpProject(h.x + 0.30, h.y, h.z);
+    const rimRX = Math.abs(rimE.sx - rimC.sx);
+    const rimRY = Math.max(2, rimRX * 0.35);
+    ctx.strokeStyle = "#ff5a3a";
+    ctx.lineWidth = Math.max(2, 4 * rimC.scale * 6);
+    ctx.beginPath();
+    ctx.ellipse(rimC.sx, rimC.sy, rimRX, rimRY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // Net — vertical strands hanging from rim down to a point.
+    ctx.strokeStyle = "rgba(240, 240, 240, 0.75)";
+    ctx.lineWidth = 1;
+    const netBot = fpProject(h.x, h.y - 0.45, h.z);
+    for (let i = 0; i < 12; i++) {
+      const ang = (i / 12) * Math.PI * 2;
+      const start = fpProject(h.x + Math.cos(ang) * 0.30, h.y, h.z + Math.sin(ang) * 0.30 * 0.4);
+      ctx.beginPath();
+      ctx.moveTo(start.sx, start.sy);
+      ctx.lineTo(netBot.sx + (start.sx - rimC.sx) * 0.4, netBot.sy);
+      ctx.stroke();
+    }
+
+    // HUD
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.font = "bold 16px ui-monospace, monospace";
+    ctx.fillText(`${g.shotType}  •  ${Math.round(h.z * 1.094)} yd`, 16, 26);
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(`Made: ${g.made}/${g.taken}    Score: ${g.score}`, 16, 50);
+    ctx.fillText(`Shots left: ${Math.max(0, g.attempts - g.taken)}`, 16, 72);
+    if (g.swishes > 0) {
+      ctx.fillStyle = "#ffe680";
+      ctx.fillText(`Swishes: ${g.swishes}`, 16, 94);
+    }
+
+    // Aim preview
+    const restSX = W / 2, restSY = H * 0.84;
+    const restR = Math.min(56, Math.max(38, W * 0.075));
+    if (!g.ball.released) fpDrawAimArc(g, restSX, restSY, "rgba(255, 122, 44, 0.85)");
+
+    // Basketball
+    const b = g.ball;
+    let bx, by, r;
+    if (!b.released) { bx = restSX; by = restSY; r = restR; }
+    else {
+      const proj = fpProject(b.x, b.y, b.z);
+      bx = proj.sx; by = proj.sy; r = Math.max(5, 18 * proj.scale);
+    }
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(b.released ? b.t * 8 : 0);
+    const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+    grad.addColorStop(0, "#ff9f55"); grad.addColorStop(1, "#a3501c");
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+    if (r > 8) {
+      ctx.strokeStyle = "#1a0a00";
+      ctx.lineWidth = Math.max(1, r * 0.06);
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(0, r); ctx.stroke();
+      ctx.beginPath(); ctx.arc(-r * 0.65, 0, r * 0.95, -1.0, 1.0); ctx.stroke();
+      ctx.beginPath(); ctx.arc( r * 0.65, 0, r * 0.95, Math.PI - 1.0, Math.PI + 1.0); ctx.stroke();
+    }
+    ctx.restore();
+
+    if (g.message && g.messageTimer > 0) {
+      ctx.font = "bold 48px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillText(g.message, W/2 + 3, H/2 + 3);
+      ctx.fillStyle = g.message.includes("SWISH") ? "#ffe680"
+                    : g.message.includes("MAKE")  ? "#4ddc8c"
+                    : "#ff5470";
+      ctx.fillText(g.message, W/2, H/2);
+      ctx.textAlign = "start";
+    }
+    if (!b.released && !g.dragStart) {
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Flick UP at the rim — arc it in", W/2, H * 0.95);
+      ctx.textAlign = "start";
+    }
+  },
+};
+
+//----------------------------------------------------------
+// QB CHALLENGE (first-person flick — football at bullseyes)
+//----------------------------------------------------------
+const QBChallenge = {
+  name: "QB Challenge",
+  desc: "Flick footballs at bullseye targets at random spots. Some move. Hit the gold for max points.",
+  icon: "🎯",
+  color: "#6ee7ff",
+  init() {
+    return {
+      ball: null, target: null,
+      attempts: 8, taken: 0, hits: 0, score: 0,
+      message: "", messageTimer: 0, finished: false,
+      dragStart: null, dragNow: null, cameraZ: 0,
+    };
+  },
+  payout(g) { return Math.floor((g.score || 0) * 1.0); },
+  reset(g) {
+    const a = g.taken || 0;
+    // Distance, lateral spread, height — and chance of moving — all ramp.
+    g.target = {
+      z:        12 + Math.random() * (8 + a * 1.5),    // 12 → 20+
+      x:        (Math.random() - 0.5) * (4 + a * 0.6),  // ±2 → ±5
+      y:        1.6 + Math.random() * 1.8,
+      ringSize: 1.2,
+      moving:   a >= 2 && Math.random() < (0.25 + a * 0.10),
+      moveSpeed: 0.6 + Math.random() * 1.4,
+      movePhase: Math.random() * Math.PI * 2,
+      moveAmp:  1.0 + Math.random() * 1.6,
+    };
+    g.ball = { x: 0, y: 0.5, z: 2, vx: 0, vy: 0, vz: 0,
+               thrown: false, scored: false, gone: false, t: 0 };
+    g.message = ""; g.messageTimer = 0;
+    g.cameraZ = 0;
+  },
+  handlePointer(g, kind, x, y) {
+    if (g.finished) return;
+    if (!g.ball) QBChallenge.reset(g);
+    if (g.ball.thrown) return;
+    const flick = fpProcessFlick(g, kind, x, y);
+    if (!flick) return;
+    const { power, lateral, upward } = flick;
+    const distScale = Math.max(0.8, g.target.z / 16);
+    g.ball.vz = (12 + power * 14) * distScale * (0.65 + 0.35 * upward);
+    g.ball.vy = 4 + power * 8 * upward;
+    g.ball.vx = lateral * 8 * power;
+    g.ball.thrown = true;
+    Sound.boostHit && Sound.boostHit();
+  },
+  update(g, dt) {
+    if (!g.ball) QBChallenge.reset(g);
+    const b = g.ball, t = g.target;
+    if (t.moving) t.movePhase += t.moveSpeed * dt;
+    if (b.thrown && !b.gone) {
+      b.t += dt;
+      b.vy -= 9.8 * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.z += b.vz * dt;
+      g.cameraZ = g.cameraZ + (Math.max(0, b.z - 4) - g.cameraZ) * Math.min(1, dt * 4);
+      if (b.z >= t.z && !b.scored) {
+        const tx = t.x + (t.moving ? Math.sin(t.movePhase) * t.moveAmp : 0);
+        const dx = b.x - tx;
+        const dy = b.y - t.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < t.ringSize) {
+          b.scored = true;
+          let points, label;
+          if (dist < 0.30)      { points = 50; label = "BULLSEYE!"; }
+          else if (dist < 0.65) { points = 25; label = "Hit!"; }
+          else                  { points = 10; label = "Edge!"; }
+          g.score += points; g.hits++;
+          g.message = `${label} +${points}`;
+          g.messageTimer = 1.4;
+          Sound.perfect && Sound.perfect();
+        } else {
+          b.gone = true;
+          g.message = "Wide!"; g.messageTimer = 1.0;
+          Sound.crash && Sound.crash();
+        }
+      }
+      if (b.y < 0 || b.z > t.z + 4 || Math.abs(b.x) > 16) {
+        b.gone = true;
+        if (!b.scored && !g.message) { g.message = "Short!"; g.messageTimer = 1.0; }
+      }
+    }
+    if ((b.gone || b.scored) && !g.finished) {
+      g.messageTimer -= dt;
+      if (g.messageTimer <= 0) {
+        g.taken++;
+        if (g.taken >= g.attempts) g.finished = true;
+        else QBChallenge.reset(g);
+      }
+    }
+  },
+  render(g) {
+    if (!g.ball) QBChallenge.reset(g);
+    fpSetCam(g.cameraZ || 0);
+    fpDrawSky("#7fbcff", "#cfeaff", "#4d8d2a");
+    fpDrawField("#3a7a1f", "rgba(255,255,255,0.30)");
+
+    // Target — concentric rings on a stand.
+    const t = g.target;
+    const tx = t.x + (t.moving ? Math.sin(t.movePhase) * t.moveAmp : 0);
+    const center = fpProject(tx, t.y, t.z);
+    const edge   = fpProject(tx + t.ringSize, t.y, t.z);
+    const radius = Math.max(8, Math.abs(edge.sx - center.sx));
+    // Pole from ground to bottom of target
+    const pole = fpProject(tx, 0, t.z + 0.05);
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = Math.max(2, 3 * center.scale * 6);
+    ctx.beginPath();
+    ctx.moveTo(pole.sx, pole.sy);
+    ctx.lineTo(center.sx, center.sy + radius);
+    ctx.stroke();
+    // Rings outer → inner
+    const colors = ["#1a3a82", "#fff", "#ff5a3a", "#ffd03a"];
+    for (let i = 0; i < colors.length; i++) {
+      const r = radius * (1 - i * 0.25);
+      ctx.fillStyle = colors[i];
+      ctx.beginPath(); ctx.arc(center.sx, center.sy, r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+      const r = radius * (1 - i * 0.25);
+      ctx.beginPath(); ctx.arc(center.sx, center.sy, r, 0, Math.PI * 2); ctx.stroke();
+    }
+    // Center bullseye dot
+    ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.arc(center.sx, center.sy, Math.max(2, radius * 0.05), 0, Math.PI * 2); ctx.fill();
+
+    if (t.moving && !g.ball.thrown) {
+      ctx.fillStyle = "rgba(255, 100, 60, 0.95)";
+      ctx.font = "bold 13px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("◀ MOVING ▶", center.sx, center.sy - radius - 10);
+      ctx.textAlign = "start";
+    }
+
+    // HUD
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.font = "bold 16px ui-monospace, monospace";
+    ctx.fillText(`Distance: ${Math.round(t.z * 1.094)} yd`, 16, 26);
+    ctx.fillText(t.moving ? "MOVING TARGET" : "STATIC TARGET", 16, 48);
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(`Hits: ${g.hits}/${g.taken}    Score: ${g.score}`, 16, 74);
+    ctx.fillText(`Throws left: ${Math.max(0, g.attempts - g.taken)}`, 16, 96);
+
+    // Aim preview
+    const restSX = W / 2, restSY = H * 0.84;
+    const restR  = Math.min(70, Math.max(46, W * 0.095));
+    if (!g.ball.thrown) fpDrawAimArc(g, restSX, restSY, "rgba(110, 231, 255, 0.85)");
+
+    // Football
+    const b = g.ball;
+    let bx, by, r, vertical;
+    if (!b.thrown) { bx = restSX; by = restSY; r = restR; vertical = true; }
+    else {
+      const proj = fpProject(b.x, b.y, b.z);
+      bx = proj.sx; by = proj.sy; r = Math.max(6, 22 * proj.scale);
+      vertical = false;
+    }
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(b.thrown ? b.t * 7 : 0);
+    const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+    grad.addColorStop(0, "#9b5a2c"); grad.addColorStop(1, "#5a2a0e");
+    ctx.fillStyle = grad;
+    const rx = vertical ? r * 0.6  : r;
+    const ry = vertical ? r * 0.95 : r * 0.62;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+    if (r > 6) {
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = Math.max(1.5, r * 0.06);
+      if (vertical) {
+        ctx.beginPath(); ctx.moveTo(0, -ry * 0.6); ctx.lineTo(0, ry * 0.6); ctx.stroke();
+        const lace = Math.max(2, r * 0.10);
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.moveTo(-lace, i * ry * 0.18); ctx.lineTo(lace, i * ry * 0.18); ctx.stroke();
+        }
+      } else {
+        ctx.beginPath(); ctx.moveTo(-r * 0.4, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
+        const lace = Math.max(2, r * 0.10);
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * r * 0.16, -lace); ctx.lineTo(i * r * 0.16, lace); ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+
+    if (g.message && g.messageTimer > 0) {
+      ctx.font = "bold 48px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillText(g.message, W/2 + 3, H/2 + 3);
+      ctx.fillStyle = g.message.includes("BULLSEYE") ? "#ffe680"
+                    : g.message.includes("Hit")      ? "#4ddc8c"
+                    : g.message.includes("Edge")     ? "#ffb020"
+                    : "#ff5470";
+      ctx.fillText(g.message, W/2, H/2);
+      ctx.textAlign = "start";
+    }
+    if (!b.thrown && !g.dragStart) {
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Flick UP at the target — gold center for max points", W/2, H * 0.95);
+      ctx.textAlign = "start";
+    }
+  },
+};
+
 const MINIGAMES = {
   field_goal: FieldGoal,
   can_bash: CanBash,
   duck_hunt: DuckHunt,
+  hoops: Hoops,
+  qb_challenge: QBChallenge,
 };
 
 function drawMinigameFinishedOverlay(g) {
