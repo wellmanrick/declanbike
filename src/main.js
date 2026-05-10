@@ -2676,6 +2676,13 @@ const FieldGoal = {
       g.gustAt = 0.4 + Math.random() * 0.5;
       g.gusted = false;
     }
+    // Subtle random gusts — reroll the wind value mid-flight at random
+    // intervals so each kick feels less static. Skipped for crosswind
+    // (which has its own scripted reversal) and for zero-wind levels.
+    g.nextGustAt = 0.4 + Math.random() * 0.4;
+    g.windBaseline = g.wind;
+    // Apex flag for cinematic slow-mo on long kicks. Reset per attempt.
+    g.apexFired = false;
     // Triple: pick the live (gold) post set, 0=left, 1=center, 2=right.
     if (g.condition === "triple") {
       g.liveSlot = Math.floor(Math.random() * 3);
@@ -2798,6 +2805,24 @@ const FieldGoal = {
         pushToast("GUST!", "red", 700);
         cbJuice(g, { shake: 4, vibrate: [0, 15, 25, 15] });
       }
+      // Subtle wind gusts — every 0.3-0.7s of flight (other than crosswind),
+      // jitter the wind around its baseline. Magnitude scales with the
+      // level's windRange so calm levels stay calm.
+      const lvlWind = (g.level && g.level.windRange) || 0;
+      if (g.condition !== "crosswind" && lvlWind > 0 && b.t >= g.nextGustAt) {
+        const jitter = (Math.random() * 2 - 1) * lvlWind * 0.4;
+        g.wind = Math.max(-lvlWind * 1.6,
+                  Math.min(lvlWind * 1.6, g.windBaseline + jitter));
+        g.nextGustAt = b.t + 0.3 + Math.random() * 0.4;
+      }
+      // Apex slow-mo on long kicks — when the ball crosses the apex
+      // (vy goes from positive to negative) on a >38m kick, drop into
+      // a brief cinematic slow-mo so the player can savor the hang
+      // time. Once-per-kick.
+      if (!g.apexFired && b.kicked && p.z > 38 && b.vy < 0 && b.t > 0.25) {
+        cbJuice(g, { slowT: 0.40 });
+        g.apexFired = true;
+      }
       // Snowstorm: extra air drag in all axes simulates pushing through snow.
       // Tuned light so the level is challenging-but-fair: ~20% energy loss
       // per second on the horizontal axes, lighter on the vertical.
@@ -2810,23 +2835,31 @@ const FieldGoal = {
       b.y  += b.vy * dt;
       b.z  += b.vz * dt;
       // Close-call slow-mo: when the ball is in the last few meters
-      // before the posts AND its trajectory looks borderline (offset
-      // close to an upright OR ball just below the bar), trip slow-mo
-      // once to let the player savor the moment. Triggered via the
-      // shared juice helper so it stacks with shake/haptics later.
+      // before the posts AND its trajectory looks notable (close to an
+      // upright, just below the bar, or threading dead center), trip
+      // slow-mo once so the player can savor the moment. Dead-center
+      // gets a slightly longer window — it's a rewarding outcome.
       if (!g.slowFired && b.kicked && !b.scored && b.z > p.z - 5) {
         const offset = b.x - ((p.x || 0) +
           (g.condition === "triple" ? [-5, 0, 5][g.liveSlot] : 0));
         const nearPost = Math.abs(Math.abs(offset) - p.gap / 2) < 0.6;
         const nearBar = Math.abs(b.y - p.crossbar) < 0.6;
-        if (nearPost || nearBar) {
+        const deadCenter = Math.abs(offset) < 0.5
+                           && b.y > p.crossbar + 0.4
+                           && b.y < p.crossbar + 1.4;
+        if (deadCenter) {
+          cbJuice(g, { slowT: 0.60 });
+          g.slowFired = true;
+        } else if (nearPost || nearBar) {
           cbJuice(g, { slowT: 0.45 });
           g.slowFired = true;
         }
       }
-      // Camera trails the ball ~6m back so the goalposts grow as the kick
-      // approaches them.
-      const targetCam = Math.max(0, b.z - 6);
+      // Camera trails the ball — deeper trail on long kicks so the goal
+      // grows more dramatically and the player gets a cinematic read of
+      // the flight. 6m baseline; 10m on >38m kicks.
+      const cinTrail = p.z > 38 ? 10 : 6;
+      const targetCam = Math.max(0, b.z - cinTrail);
       g.cameraZ = g.cameraZ + (targetCam - g.cameraZ) * Math.min(1, dt * 4);
       if (b.z >= p.z && !b.scored) {
         b.scored = true;
