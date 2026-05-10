@@ -33,6 +33,12 @@ export const DEFAULT_SAVE = {
   canBashSeenPowers: {},          // power-up type -> true once the player
                                   // has collected one (drives the use-it
                                   // tutorial toast).
+  fieldGoalLevels: {},            // levelId -> { stars, made, attempts, score }
+  fieldGoalSeenConditions: {},    // condition slug -> true once the player has
+                                  // played a level featuring that condition
+                                  // (drives the first-encounter tutorial).
+  fieldGoalSeenPowers: {},        // power-up slug -> true once the player has
+                                  // collected one (drives the use-it tutorial).
 };
 
 function _load() {
@@ -51,6 +57,9 @@ function _load() {
       canBashLevels: parsed.canBashLevels || {},
       canBashSeenTypes: parsed.canBashSeenTypes || {},
       canBashSeenPowers: parsed.canBashSeenPowers || {},
+      fieldGoalLevels: parsed.fieldGoalLevels || {},
+      fieldGoalSeenConditions: parsed.fieldGoalSeenConditions || {},
+      fieldGoalSeenPowers: parsed.fieldGoalSeenPowers || {},
     });
   } catch (e) {
     console.warn("Save load failed", e);
