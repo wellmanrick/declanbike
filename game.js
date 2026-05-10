@@ -3352,11 +3352,14 @@ const FieldGoal = {
   },
   payout(g) { return Math.floor((g.score || 0) * 1.0); },
   reset(g) {
-    // Distance and wind both ramp with the kick number. Kick 1 is a chip,
-    // kick 5 is a 50-yarder with serious wind.
+    // Distance, wind, gap, and lateral offset all ramp with the kick number.
+    // Kick 1 is a centered chip; kick 5 is a long, narrow, off-center kick
+    // with real wind to fight.
     const a = g.kicked || 0; // 0..4
-    g.posts.z = 18 + a * 7;                       // 18, 25, 32, 39, 46 m
-    const windRange = 2 + a * 1.6;                // 2, 3.6, 5.2, 6.8, 8.4
+    g.posts.z   = 18 + a * 7;                                // 18 → 46 m
+    g.posts.gap = 6.0 - a * 0.4;                              // 6.0 → 4.4 m
+    g.posts.x   = (Math.random() * 2 - 1) * (1 + a * 1.6);    // ±1 → ±7 m off-center
+    const windRange = 2 + a * 1.8;                            // 2 → 9.2
     g.wind = (Math.random() * 2 - 1) * windRange;
     g.ball = { x: 0, y: 0, z: 4, vx: 0, vy: 0, vz: 0, spin: 0,
                kicked: false, scored: false, gone: false, t: 0 };
@@ -3402,16 +3405,17 @@ const FieldGoal = {
       g.cameraZ = g.cameraZ + (targetCam - g.cameraZ) * Math.min(1, dt * 4);
       if (b.z >= p.z && !b.scored) {
         b.scored = true;
-        const through = Math.abs(b.x) < p.gap / 2
+        const offset = b.x - (p.x || 0);
+        const through = Math.abs(offset) < p.gap / 2
                        && b.y > p.crossbar
                        && b.y < p.top + 1;
         if (through) {
           g.made++; g.score += 7;
           g.message = "GOOD!"; g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
-        } else if (Math.abs(b.x) < p.gap / 2 && b.y <= p.crossbar) {
+        } else if (Math.abs(offset) < p.gap / 2 && b.y <= p.crossbar) {
           g.message = "Short!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
-        } else if (Math.abs(b.x) < p.gap) {
+        } else if (Math.abs(offset) < p.gap) {
           g.message = "Doinked!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
         } else {
           g.message = "Wide!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
@@ -3442,12 +3446,13 @@ const FieldGoal = {
     }
 
     const p = g.posts;
-    const stemBase = fpProject(0, 0, p.z);
-    const stemTop  = fpProject(0, p.crossbar, p.z);
-    const crossL   = fpProject(-p.gap / 2, p.crossbar, p.z);
-    const crossR   = fpProject( p.gap / 2, p.crossbar, p.z);
-    const upL      = fpProject(-p.gap / 2, p.top, p.z);
-    const upR      = fpProject( p.gap / 2, p.top, p.z);
+    const px = p.x || 0;
+    const stemBase = fpProject(px, 0, p.z);
+    const stemTop  = fpProject(px, p.crossbar, p.z);
+    const crossL   = fpProject(px - p.gap / 2, p.crossbar, p.z);
+    const crossR   = fpProject(px + p.gap / 2, p.crossbar, p.z);
+    const upL      = fpProject(px - p.gap / 2, p.top, p.z);
+    const upR      = fpProject(px + p.gap / 2, p.top, p.z);
     const postYellow = "#ffd03a";
     ctx.lineCap = "round";
     ctx.strokeStyle = postYellow;
@@ -3458,8 +3463,8 @@ const FieldGoal = {
     ctx.beginPath(); ctx.moveTo(crossL.sx, crossL.sy); ctx.lineTo(upL.sx, upL.sy); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(crossR.sx, crossR.sy); ctx.lineTo(upR.sx, upR.sy); ctx.stroke();
     ctx.lineCap = "butt";
-    const padNear = fpProject(-0.4, 0, p.z + 0.4);
-    const padFar  = fpProject( 0.4, 0, p.z - 0.4);
+    const padNear = fpProject(px - 0.4, 0, p.z + 0.4);
+    const padFar  = fpProject(px + 0.4, 0, p.z - 0.4);
     ctx.fillStyle = "#fff";
     ctx.fillRect(padFar.sx, padFar.sy - 8, Math.max(4, padNear.sx - padFar.sx), 10);
 
