@@ -889,6 +889,26 @@ function buildTerrain(level) {
     }
   }
 
+  // Slope limit — overlapping ramps + gaps occasionally stack into nearly
+  // vertical walls. Run two smoothing passes (forward then reverse) that
+  // cap how much the height can change between adjacent samples. This keeps
+  // big rolls dramatic but never lets the terrain become a cliff.
+  const maxStep = TERRAIN_DX * 1.4; // ~tan(54°): challenging but rideable
+  for (let i = 1; i < heights.length; i++) {
+    const dh = heights[i] - heights[i - 1];
+    if (dh >  maxStep) heights[i] = heights[i - 1] + maxStep;
+    if (dh < -maxStep) heights[i] = heights[i - 1] - maxStep;
+  }
+  for (let i = heights.length - 2; i >= 0; i--) {
+    const dh = heights[i] - heights[i + 1];
+    if (dh >  maxStep) heights[i] = heights[i + 1] + maxStep;
+    if (dh < -maxStep) heights[i] = heights[i + 1] - maxStep;
+  }
+  // Quick triangle smooth so the slope-limited corners feel less mechanical.
+  for (let i = 1; i < heights.length - 1; i++) {
+    heights[i] = (heights[i - 1] + heights[i] * 2 + heights[i + 1]) * 0.25;
+  }
+
   // Springs only — no more fire / oil / mud (they kept ending runs unfairly).
   const hazards = [];
   const springCount = Math.floor(level.length / 480) + 3;
