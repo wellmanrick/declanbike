@@ -1,6 +1,7 @@
 // Procedural terrain generator. Each level seeds a deterministic
 // heightmap of dirt, ramps, gaps, decorative props, collectibles,
-// hazards (just springs now), and checkpoints.
+// obstacles (rocks/logs/tires), hazards (oil/mud/fire/springs),
+// and checkpoints.
 //
 // The map is sampled every TERRAIN_DX pixels; consumers interpolate via
 // terrainHeightAt(). After generating the raw shape we slope-limit and
@@ -164,12 +165,46 @@ export function buildTerrain(level) {
     heights[i] = (heights[i - 1] + heights[i] * 2 + heights[i + 1]) * 0.25;
   }
 
-  // Springs — only positive hazard.
+  // Solid obstacles — rocks/logs crash you unless you're fast and level
+  // (smash bonus); tires are soft, slowing you with sparks. Placed after
+  // slope smoothing so they sit on top of the final ground line.
+  const obstacleCount = Math.floor(level.length / 380);
+  for (let n = 0; n < obstacleCount; n++) {
+    const x = 600 + rand() * (level.length - 1100);
+    const i = Math.floor(x / TERRAIN_DX);
+    const y = heights[i];
+    const r0 = rand();
+    let type, r;
+    if (r0 < 0.40)      { type = "rock"; r = 10 + rand() * 8; }
+    else if (r0 < 0.75) { type = "tire"; r = 12 + rand() * 4; }
+    else                { type = "log";  r = 11 + rand() * 6; }
+    obstacles.push({ x, y, type, r, hit: false });
+  }
+
+  // Hazard strips — oil slides, mud bogs, fire pits, plus springs.
+  // Widths tuned so the player has to either thread or jump.
   const hazards = [];
   const springCount = Math.floor(level.length / 480) + 3;
   for (let n = 0; n < springCount; n++) {
     const cx = 500 + rand() * (level.length - 800);
     hazards.push({ x: cx, w: 32, type: "spring", fired: false });
+  }
+  const oilCount = Math.floor(level.length / 700);
+  for (let n = 0; n < oilCount; n++) {
+    const cx = 600 + rand() * (level.length - 1000);
+    hazards.push({ x: cx, w: 55 + rand() * 30, type: "oil" });
+  }
+  const mudCount = Math.floor(level.length / 850);
+  for (let n = 0; n < mudCount; n++) {
+    const cx = 600 + rand() * (level.length - 1000);
+    hazards.push({ x: cx, w: 70 + rand() * 30, type: "mud" });
+  }
+  // Fire pits scale with the level's gap difficulty so easy worlds
+  // stay friendly. A single pit per 1500 px even on the gentlest level.
+  const fireCount = Math.max(1, Math.floor(level.length / 1500 * level.gaps));
+  for (let n = 0; n < fireCount; n++) {
+    const cx = 900 + rand() * (level.length - 1500);
+    hazards.push({ x: cx, w: 45 + rand() * 30, type: "fire" });
   }
 
   return { heights, obstacles, collectibles, ramps, checkpoints, props, hazards };
