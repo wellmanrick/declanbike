@@ -30,6 +30,9 @@ export const DEFAULT_SAVE = {
   canBashSeenTypes: {},           // canType -> true once the player has seen
                                   // a level containing it (drives the first-
                                   // encounter tutorial toast).
+  canBashSeenPowers: {},          // power-up type -> true once the player
+                                  // has collected one (drives the use-it
+                                  // tutorial toast).
 };
 
 function _load() {
@@ -47,6 +50,7 @@ function _load() {
       minigameBest: parsed.minigameBest || {},
       canBashLevels: parsed.canBashLevels || {},
       canBashSeenTypes: parsed.canBashSeenTypes || {},
+      canBashSeenPowers: parsed.canBashSeenPowers || {},
     });
   } catch (e) {
     console.warn("Save load failed", e);

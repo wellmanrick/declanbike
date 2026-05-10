@@ -28,7 +28,7 @@ import { keys, justPressed, input, setupTouchControls } from "./engine/input.js"
 import { mulberry32 } from "./engine/rng.js";
 import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE } from "./world/terrain.js";
 import { STATE, G } from "./state.js";
-import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO } from "./games/canBash/levels.js";
+import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO, POWER_INFO } from "./games/canBash/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -2897,7 +2897,7 @@ const CanBash = {
     if (tutorialQueue.length > 0) persistSave();
     return {
       level: lvl,
-      cans, ball: null,
+      cans, ball: null, extraBalls: [],
       throws: lvl.balls || 3,
       thrown: 0, score: 0, knocked: 0,
       tableZ, tableTopY: layout.tableTopY,
@@ -2914,10 +2914,130 @@ const CanBash = {
       //   slowT     — when > 0, dt is multiplied by SLOW_FACTOR for this
       //               many seconds (slow-motion).
       shake: 0, pauseT: 0, slowT: 0,
+      // Power-up state.
+      //   pickups     — floating tokens bound to cans; collected on knock.
+      //   activePower — single-slot inventory; arms the next throw and is
+      //                 consumed when fired. Collecting overwrites.
+      pickups: layout.pickups || [],
+      activePower: null,
     };
+  },
+  // Step a single ball one physics frame. Handles travel, collision,
+  // type-aware knock thresholds, cascade, support resolution, big-play
+  // bonus, and bomb-ball AoE. Shared between the primary ball and any
+  // multi-ball extras.
+  _stepBall(g, b, dt) {
+    if (!b || !b.thrown || b.gone) return;
+    b.t += dt;
+    b.vy -= 9.8 * dt;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.z += b.vz * dt;
+    if (b.z >= g.tableZ - 0.5 && !b.didHit) {
+      const impactSpeed = Math.hypot(b.vx, b.vy, b.vz);
+      let directHits = [];
+      // Bomb-ball: detonate AoE at impact point regardless of which
+      // can (if any) was struck. Knock everything within blast radius.
+      if (b.bomb) {
+        const BOMB_R = 1.0;
+        for (const c of g.cans) {
+          if (c.hit) continue;
+          const dxA = c.x - b.x, dyA = c.y - b.y;
+          if (Math.hypot(dxA, dyA) <= BOMB_R) {
+            CanBash.knock(g, c, dxA * 4 + (Math.random() - 0.5) * 0.8,
+                                -0.8 + dyA * 0.5);
+            directHits.push(c);
+          }
+        }
+        cbJuice(g, { shake: 22, pauseT: 0.12, slowT: 0.45, vibrate: [0, 40, 30, 40] });
+      } else {
+        for (const c of g.cans) {
+          if (c.hit) continue;
+          const dx = b.x - c.x;
+          const dy = b.y - c.y;
+          if (Math.abs(dx) < c.w * 0.55 + 0.18 && Math.abs(dy) < c.h * 0.6 + 0.18) {
+            const info = CAN_TYPE_INFO[c.type] || CAN_TYPE_INFO.standard;
+            if (impactSpeed >= info.knockSpeed) {
+              CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
+              directHits.push(c);
+              cbJuice(g, { shake: 4, pauseT: 0.03, vibrate: 15 });
+            } else {
+              if (!g.message) {
+                g.message = c.type === "lead" ? "Lead — flick HARDER!" : "Bounced off!";
+                g.messageTimer = 1.0;
+                Sound.crash && Sound.crash();
+              }
+              if (c.type === "lead") cbJuice(g, { shake: 6, vibrate: [0, 25, 15, 25] });
+              else cbJuice(g, { shake: 2, vibrate: 8 });
+            }
+            const damp = c.type === "lead" ? 0.10 : 0.30;
+            b.vx *= damp; b.vy *= damp; b.vz *= damp * 0.6;
+          }
+        }
+      }
+      // Cascade — only the can directly above each direct hit topples
+      // (gravity-style). Two passes so a missing keystone can drop the
+      // can resting on it, but no row-wide sideways chain reactions.
+      for (let pass = 0; pass < 2; pass++) {
+        const newly = [];
+        for (const src of directHits) {
+          for (const c of g.cans) {
+            if (c.hit) continue;
+            const dx = c.x - src.x;
+            const dy = c.y - src.y;
+            const above = dy < 0;
+            if (above && Math.abs(dx) < src.w * 0.8 &&
+                Math.abs(dy) < src.h * 1.3) {
+              CanBash.knock(g, c,
+                src.fallVx * 0.35 + dx * 1.5,
+                -1.0 - Math.random() * 0.6);
+              newly.push(c);
+            }
+          }
+        }
+        if (newly.length === 0) break;
+        directHits = newly;
+      }
+      CanBash.resolveSupport(g);
+      // Per-throw bonus tracks against g._knockedAtThrow (set in the
+      // throw-release path). With multi-ball, all three balls share the
+      // same _knockedAtThrow snapshot so the bonus can accumulate.
+      const knockedThisThrow = g.knocked - (g._knockedAtThrow || 0);
+      if (knockedThisThrow >= 5 && !g._bigPlayFiredThisThrow) {
+        const bonus = Math.min(80, knockedThisThrow * 10);
+        g.score += bonus;
+        g.message = `${knockedThisThrow}-can KO! +${bonus}`;
+        g.messageTimer = 1.6;
+        cbJuice(g, {
+          shake: 14, pauseT: 0.10, slowT: 0.50,
+          vibrate: [0, 30, 20, 30, 20, 30],
+        });
+        g._bigPlayFiredThisThrow = true;
+      }
+      b.didHit = true;
+    }
+    if (b.z > g.tableZ + 4 || b.y < -1) b.gone = true;
   },
   knock(g, c, vx, vy) {
     if (c.hit) return;
+    // If a pickup was bound to this can, hand it to the player. Single-
+    // slot inventory: collecting a new one overwrites whatever was armed.
+    const pickup = (g.pickups || []).find(p => g.cans[p.canIdx] === c && !p.taken);
+    if (pickup) {
+      pickup.taken = true;
+      g.activePower = pickup.type;
+      const info = POWER_INFO[pickup.type];
+      if (info) {
+        pushToast(info.label, "gold", 2200);
+        // First-encounter persistence flag (separate from per-throw label).
+        save.canBashSeenPowers = save.canBashSeenPowers || {};
+        if (!save.canBashSeenPowers[pickup.type]) {
+          save.canBashSeenPowers[pickup.type] = true;
+          persistSave();
+        }
+      }
+      cbVibrate(20);
+    }
     c.hit = true;
     c.fallVx = vx + (Math.random() - 0.5) * 0.6;
     c.fallVy = vy;
@@ -2996,6 +3116,7 @@ const CanBash = {
   },
   resetBall(g) {
     g.ball = { x: 0, y: 0.4, z: 3, vx: 0, vy: 0, vz: 0, spin: 0, thrown: false, gone: false, didHit: false, t: 0 };
+    g.extraBalls = [];
   },
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
@@ -3069,8 +3190,34 @@ const CanBash = {
     g.ball.spin = 0;
     g.ball.thrown = true;
     g.ball.trail = [];
+    // Apply armed power-up. Single-slot inventory: consume on throw.
+    if (g.activePower === "bomb") {
+      g.ball.bomb = true;
+    } else if (g.activePower === "multi") {
+      // Spawn two extra balls flanking the primary with a small yaw spread
+      // so the trio fans out toward the table. Each is independent.
+      const make = (yawOffset) => {
+        const yaw2 = yaw + yawOffset;
+        const ex = {
+          x: 0, y: 0.4, z: 3,
+          vx: speed * Math.cos(loft) * Math.sin(yaw2),
+          vy: speed * Math.sin(loft),
+          vz: speed * Math.cos(loft) * Math.cos(yaw2),
+          spin: 0, thrown: true, gone: false, didHit: false, t: 0, trail: [],
+        };
+        if (ex.vz < 6) ex.vz = 6;
+        return ex;
+      };
+      g.extraBalls = [make(0.20), make(-0.20)];
+    } else if (g.activePower === "slow") {
+      // Whole-throw slow-mo: hold for ~3.5s of physics time, plenty for a
+      // ball to fly out and land.
+      g.slowT = Math.max(g.slowT, 3.5);
+    }
+    g.activePower = null; // consumed
     g.thrown++;
     g._knockedAtThrow = g.knocked;
+    g._bigPlayFiredThisThrow = false;
     Sound.boostHit && Sound.boostHit();
   },
   update(g, dt) {
@@ -3102,95 +3249,12 @@ const CanBash = {
         g._tutorialNextAt = 2.5;
       }
     }
-    const b = g.ball;
-    if (b.thrown && !b.gone) {
-      b.t += dt;
-      b.vy -= 9.8 * dt;
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-      b.z += b.vz * dt;
-      if (b.z >= g.tableZ - 0.5 && !b.didHit) {
-        const impactSpeed = Math.hypot(b.vx, b.vy, b.vz);
-        let directHits = [];
-        for (const c of g.cans) {
-          if (c.hit) continue;
-          const dx = b.x - c.x;
-          const dy = b.y - c.y;
-          if (Math.abs(dx) < c.w * 0.55 + 0.18 && Math.abs(dy) < c.h * 0.6 + 0.18) {
-            // Each type has its own minimum impact speed. Glass = 0 (any
-            // contact knocks). Lead = 16 m/s (only hard flicks). Standard
-            // and explosive use the default 9 m/s.
-            const info = CAN_TYPE_INFO[c.type] || CAN_TYPE_INFO.standard;
-            if (impactSpeed >= info.knockSpeed) {
-              CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
-              directHits.push(c);
-              // Every direct hit gets a small kick. knock() already adds
-              // bigger juice for special types on top of this.
-              cbJuice(g, { shake: 4, pauseT: 0.03, vibrate: 15 });
-            } else {
-              // Bounce — show a glance message tailored to the type.
-              if (!g.message) {
-                g.message = c.type === "lead" ? "Lead — flick HARDER!" : "Bounced off!";
-                g.messageTimer = 1.0;
-                Sound.crash && Sound.crash();
-              }
-              // Lead bounces feel chunky on purpose — the player should
-              // physically feel the rejection.
-              if (c.type === "lead") cbJuice(g, { shake: 6, vibrate: [0, 25, 15, 25] });
-              else cbJuice(g, { shake: 2, vibrate: 8 });
-            }
-            // Lead drains a lot more momentum from the ball than other
-            // cans. Bounces off lead are dead (the ball doesn't carry on
-            // to clip a neighboring can on the same impact).
-            const damp = c.type === "lead" ? 0.10 : 0.30;
-            b.vx *= damp; b.vy *= damp; b.vz *= damp * 0.6;
-          }
-        }
-        // Cascade — only the can directly above each direct hit topples
-        // (gravity-style). Two passes so a missing keystone can drop the
-        // can resting on it, but no row-wide sideways chain reactions.
-        for (let pass = 0; pass < 2; pass++) {
-          const newly = [];
-          for (const src of directHits) {
-            for (const c of g.cans) {
-              if (c.hit) continue;
-              const dx = c.x - src.x;
-              const dy = c.y - src.y;       // positive dy = c is BELOW src
-              const above = dy < 0;
-              if (above && Math.abs(dx) < src.w * 0.8 &&
-                  Math.abs(dy) < src.h * 1.3) {
-                CanBash.knock(g, c,
-                  src.fallVx * 0.35 + dx * 1.5,
-                  -1.0 - Math.random() * 0.6);
-                newly.push(c);
-              }
-            }
-          }
-          if (newly.length === 0) break;
-          directHits = newly;
-        }
-        // After a hit, run gravity-support resolution: any can that has
-        // nothing under it (no other unhit can within reach AND not on
-        // the table) topples. Loop until stable.
-        CanBash.resolveSupport(g);
-        // Per-throw bonus for big takedowns.
-        const knockedThisThrow = g.knocked - (g._knockedAtThrow || 0);
-        if (knockedThisThrow >= 5) {
-          const bonus = Math.min(80, knockedThisThrow * 10);
-          g.score += bonus;
-          g.message = `${knockedThisThrow}-can KO! +${bonus}`;
-          g.messageTimer = 1.6;
-          // Big play: ramp shake, hold a beat, drop into slow-mo so the
-          // cascade reads. Triple-pulse haptic.
-          cbJuice(g, {
-            shake: 14, pauseT: 0.10, slowT: 0.50,
-            vibrate: [0, 30, 20, 30, 20, 30],
-          });
-        }
-        g._knockedAtThrow = g.knocked;
-        b.didHit = true;
-      }
-      if (b.z > g.tableZ + 4 || b.y < -1) b.gone = true;
+    // Process the primary ball plus any multi-ball extras. Each is
+    // independent for physics + collision, but knockdowns + bonuses pool
+    // into the shared g.knocked / g.score counters.
+    const allBalls = [g.ball, ...(g.extraBalls || [])];
+    for (const b of allBalls) {
+      CanBash._stepBall(g, b, dt);
     }
     for (const c of g.cans) {
       if (!c.hit) continue;
@@ -3201,7 +3265,10 @@ const CanBash = {
       c.angle += (c.angVel || 0) * dt;
       if (c.y < 0) c.y = 0;
     }
-    if ((b.gone || (b.thrown && b.didHit && b.t > 0.6)) && !g.finished) {
+    // Throw is settled when EVERY ball (primary + multi-ball extras) has
+    // either left the play volume or sat post-impact for at least 0.6s.
+    const ballsSettled = allBalls.every(b => b.gone || (b.thrown && b.didHit && b.t > 0.6));
+    if (ballsSettled && !g.finished) {
       const cleared = g.cans.every(c => c.hit);
       if (g.thrown >= g.throws || cleared) {
         if (cleared) g.score += 50;
@@ -3467,6 +3534,39 @@ const CanBash = {
       }
     }
 
+    // Power-up pickups — float a small icon above each uncollected
+    // pickup's host can. Bobs gently for "grabbable" feel.
+    if (g.pickups && g.pickups.length > 0) {
+      const t = performance.now() / 400;
+      for (const p of g.pickups) {
+        if (p.taken) continue;
+        const c = g.cans[p.canIdx];
+        if (!c || c.hit) { p.taken = true; continue; }
+        const proj = fpProject(c.x, c.y + 0.85 + Math.sin(t + p.canIdx) * 0.08, c.z);
+        const sz = Math.max(14, 26 * proj.scale);
+        // Glow
+        const glow = ctx.createRadialGradient(proj.sx, proj.sy, 0, proj.sx, proj.sy, sz * 1.5);
+        const tint = p.type === "bomb" ? "180, 60, 60"
+                   : p.type === "multi" ? "80, 200, 240"
+                   : "180, 130, 240";
+        glow.addColorStop(0, `rgba(${tint}, 0.6)`);
+        glow.addColorStop(1, `rgba(${tint}, 0)`);
+        ctx.fillStyle = glow;
+        ctx.fillRect(proj.sx - sz * 1.5, proj.sy - sz * 1.5, sz * 3, sz * 3);
+        // Icon
+        ctx.fillStyle = "#fff";
+        ctx.font = `bold ${Math.round(sz)}px ui-monospace, monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const icon = p.type === "bomb" ? "💣"
+                   : p.type === "multi" ? "✕3"
+                   : "⏱";
+        ctx.fillText(icon, proj.sx, proj.sy);
+        ctx.textBaseline = "alphabetic";
+        ctx.textAlign = "start";
+      }
+    }
+
     // Baseball — at-rest sprite at the bottom; perspective once thrown.
     const restSX = W / 2;
     const restSY = H * 0.84;
@@ -3494,29 +3594,73 @@ const CanBash = {
         ctx.fill();
       }
     }
-    ctx.save();
-    ctx.translate(bx, by);
-    ctx.rotate(b.t * 8);
-    const bgrad = ctx.createRadialGradient(-br * 0.3, -br * 0.3, br * 0.1, 0, 0, br);
-    bgrad.addColorStop(0, "#fff"); bgrad.addColorStop(1, "#cfd6e3");
-    ctx.fillStyle = bgrad;
-    ctx.beginPath(); ctx.arc(0, 0, br, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "#aa0000";
-    ctx.lineWidth = Math.max(1, br * 0.10);
-    if (br > 5) {
-      ctx.beginPath(); ctx.arc(0, 0, br * 0.78, -0.6, 0.6); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, br * 0.78, Math.PI - 0.6, Math.PI + 0.6); ctx.stroke();
-      // Stitch dashes
-      const dash = Math.max(2, br * 0.10);
-      for (let i = -2; i <= 2; i++) {
-        const a = i * 0.18;
-        const x1 = Math.cos(a) * br * 0.78, y1 = Math.sin(a) * br * 0.78;
-        const x2 = Math.cos(a) * br * 0.62, y2 = Math.sin(a) * br * 0.62;
-        ctx.beginPath(); ctx.moveTo(x1 + dash, y1); ctx.lineTo(x2 + dash, y2); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(-x1 - dash, y1); ctx.lineTo(-x2 - dash, y2); ctx.stroke();
+    // Helper for drawing a baseball — used for both the primary ball and
+    // any multi-ball extras. Power-up tint is only applied to the primary
+    // (at-rest) ball as a hint for what's armed.
+    function drawBaseball(cx, cy, cr, rot, tintColor) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(rot);
+      const bgrad2 = ctx.createRadialGradient(-cr * 0.3, -cr * 0.3, cr * 0.1, 0, 0, cr);
+      bgrad2.addColorStop(0, "#fff"); bgrad2.addColorStop(1, "#cfd6e3");
+      ctx.fillStyle = bgrad2;
+      ctx.beginPath(); ctx.arc(0, 0, cr, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#aa0000";
+      ctx.lineWidth = Math.max(1, cr * 0.10);
+      if (cr > 5) {
+        ctx.beginPath(); ctx.arc(0, 0, cr * 0.78, -0.6, 0.6); ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, cr * 0.78, Math.PI - 0.6, Math.PI + 0.6); ctx.stroke();
+        const dash = Math.max(2, cr * 0.10);
+        for (let i = -2; i <= 2; i++) {
+          const a = i * 0.18;
+          const x1 = Math.cos(a) * cr * 0.78, y1 = Math.sin(a) * cr * 0.78;
+          const x2 = Math.cos(a) * cr * 0.62, y2 = Math.sin(a) * cr * 0.62;
+          ctx.beginPath(); ctx.moveTo(x1 + dash, y1); ctx.lineTo(x2 + dash, y2); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(-x1 - dash, y1); ctx.lineTo(-x2 - dash, y2); ctx.stroke();
+        }
       }
+      // Power-up tint overlay (only on the resting primary ball).
+      if (tintColor) {
+        ctx.fillStyle = tintColor;
+        ctx.beginPath(); ctx.arc(0, 0, cr, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
     }
-    ctx.restore();
+    let armedTint = null;
+    if (!b.thrown && g.activePower) {
+      armedTint = g.activePower === "bomb"  ? "rgba(220, 60, 40, 0.30)"
+                : g.activePower === "multi" ? "rgba(80, 200, 240, 0.30)"
+                : "rgba(180, 130, 240, 0.30)";
+    }
+    drawBaseball(bx, by, br, b.t * 8, armedTint);
+    // Bomb-ball glow overlay while flying.
+    if (b.thrown && b.bomb) {
+      ctx.save();
+      const glow = ctx.createRadialGradient(bx, by, 0, bx, by, br * 2.2);
+      glow.addColorStop(0, "rgba(255, 120, 60, 0.55)");
+      glow.addColorStop(1, "rgba(255, 60, 30, 0)");
+      ctx.fillStyle = glow;
+      ctx.fillRect(bx - br * 2.5, by - br * 2.5, br * 5, br * 5);
+      ctx.restore();
+    }
+    // Multi-ball extras — same projection pipeline, no rest position.
+    for (const eb of (g.extraBalls || [])) {
+      if (eb.gone) continue;
+      const ep = fpProject(eb.x, eb.y, eb.z);
+      const er = Math.max(5, 18 * ep.scale);
+      eb.trail = eb.trail || [];
+      eb.trail.push({ x: ep.sx, y: ep.sy, r: er });
+      if (eb.trail.length > 10) eb.trail.shift();
+      for (let i = 0; i < eb.trail.length - 1; i++) {
+        const tp = eb.trail[i];
+        const a = (i + 1) / eb.trail.length;
+        ctx.fillStyle = `rgba(160, 230, 255, ${a * 0.45})`;
+        ctx.beginPath();
+        ctx.arc(tp.x, tp.y, tp.r * (0.45 + 0.55 * a), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      drawBaseball(ep.sx, ep.sy, er, eb.t * 8, null);
+    }
 
     // HUD
     ctx.fillStyle = "rgba(0,0,0,0.7)";
@@ -3525,6 +3669,14 @@ const CanBash = {
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(`Knocked: ${g.knocked} / ${g.cans.length}    Score: ${g.score}`, 16, 48);
     ctx.fillText(`Balls left: ${Math.max(0, g.throws - g.thrown)} / ${g.throws}`, 16, 72);
+    if (g.activePower) {
+      const icon = g.activePower === "bomb" ? "💣 Bomb-ball"
+                 : g.activePower === "multi" ? "✕3 Multi-ball"
+                 : "⏱ Slow-time";
+      ctx.fillStyle = "#ffd03a";
+      ctx.font = "bold 16px ui-monospace, monospace";
+      ctx.fillText(`Armed: ${icon}`, 16, 96);
+    }
     if (!b.thrown && !g.dragStart) {
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
