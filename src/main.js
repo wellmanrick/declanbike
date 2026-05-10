@@ -2826,6 +2826,32 @@ const FieldGoal = {
 };
 
 //----------------------------------------------------------
+// CAN BASH — game-feel helpers
+//----------------------------------------------------------
+// Slow-motion factor used during big plays (explosion, big knockdown).
+const CB_SLOW_FACTOR = 0.30;
+
+// Best-effort vibration. Mobile-only; silently no-ops elsewhere. Wrapped
+// so a stray call from desktop / Safari doesn't blow up the loop.
+function cbVibrate(pattern) {
+  try {
+    if (typeof navigator !== "undefined" && navigator.vibrate) {
+      navigator.vibrate(pattern);
+    }
+  } catch {}
+}
+
+// Fire all three feedback channels at once with sane defaults. Most
+// callers want every channel for an event so this keeps trigger sites
+// terse (one line per event class).
+function cbJuice(g, opts) {
+  if (opts.shake) g.shake = Math.max(g.shake, opts.shake);
+  if (opts.pauseT) g.pauseT = Math.max(g.pauseT, opts.pauseT);
+  if (opts.slowT) g.slowT = Math.max(g.slowT, opts.slowT);
+  if (opts.vibrate) cbVibrate(opts.vibrate);
+}
+
+//----------------------------------------------------------
 // CAN BASH (first-person flick)
 //----------------------------------------------------------
 const CanBash = {
@@ -2880,6 +2906,14 @@ const CanBash = {
       dragStart: null, dragNow: null,
       _knockedAtThrow: 0,
       tutorialQueue, _tutorialNextAt: 0.5,
+      // Game-feel state. Each is decayed in update() over time.
+      //   shake     — pixel amplitude of screen-shake; render translates by
+      //               a random offset proportional to it.
+      //   pauseT    — when > 0, physics tick is paused for this many seconds
+      //               (hit-pause / impact freeze).
+      //   slowT     — when > 0, dt is multiplied by SLOW_FACTOR for this
+      //               many seconds (slow-motion).
+      shake: 0, pauseT: 0, slowT: 0,
     };
   },
   knock(g, c, vx, vy) {
@@ -2896,6 +2930,7 @@ const CanBash = {
     g.score += pts;
     if (c.type === "glass") {
       c.shatter = true;        // render branch swaps to shatter VFX
+      cbJuice(g, { shake: 3, vibrate: 12 });
       Sound.pickup && Sound.pickup();
     } else if (c.type === "explosive") {
       c.exploded = true;
@@ -2912,7 +2947,14 @@ const CanBash = {
             -0.8 + dyAoE * 0.5);
         }
       }
+      // Detonation feel: hard shake, brief freeze, slow-mo spillover so
+      // the player sees the AoE topple chain. Chunky double-pulse haptics.
+      cbJuice(g, { shake: 22, pauseT: 0.12, slowT: 0.45, vibrate: [0, 40, 30, 40] });
       Sound.crash && Sound.crash();
+    } else if (c.type === "lead") {
+      // Lead, when actually knocked, is the highlight of a hard flick.
+      cbJuice(g, { shake: 10, pauseT: 0.06, vibrate: 35 });
+      Sound.pickup && Sound.pickup();
     } else {
       Sound.pickup && Sound.pickup();
     }
@@ -3033,6 +3075,22 @@ const CanBash = {
   },
   update(g, dt) {
     if (!g.ball) CanBash.resetBall(g);
+    // Game-feel pacing: hit-pause freezes physics; slow-mo scales dt.
+    // Both decay on real wall-clock time (not physics dt) so the freeze
+    // doesn't extend itself.
+    if (g.pauseT > 0) {
+      g.pauseT -= dt;
+      // Still decay shake during pause so the screen doesn't lock-shake.
+      g.shake *= 0.85;
+      return;
+    }
+    if (g.slowT > 0) {
+      g.slowT -= dt;
+      dt *= CB_SLOW_FACTOR;
+    }
+    // Shake decays exponentially toward zero.
+    g.shake *= Math.exp(-dt * 6);
+    if (g.shake < 0.05) g.shake = 0;
     // Drive the first-encounter tutorial queue: one toast every ~2.5s,
     // only while the player hasn't thrown the first ball yet so it
     // doesn't compete with gameplay messages.
@@ -3066,6 +3124,9 @@ const CanBash = {
             if (impactSpeed >= info.knockSpeed) {
               CanBash.knock(g, c, b.vx * 0.4 + dx * 4, -b.vy * 0.5 + 1.2);
               directHits.push(c);
+              // Every direct hit gets a small kick. knock() already adds
+              // bigger juice for special types on top of this.
+              cbJuice(g, { shake: 4, pauseT: 0.03, vibrate: 15 });
             } else {
               // Bounce — show a glance message tailored to the type.
               if (!g.message) {
@@ -3073,6 +3134,10 @@ const CanBash = {
                 g.messageTimer = 1.0;
                 Sound.crash && Sound.crash();
               }
+              // Lead bounces feel chunky on purpose — the player should
+              // physically feel the rejection.
+              if (c.type === "lead") cbJuice(g, { shake: 6, vibrate: [0, 25, 15, 25] });
+              else cbJuice(g, { shake: 2, vibrate: 8 });
             }
             // Lead drains a lot more momentum from the ball than other
             // cans. Bounces off lead are dead (the ball doesn't carry on
@@ -3115,6 +3180,12 @@ const CanBash = {
           g.score += bonus;
           g.message = `${knockedThisThrow}-can KO! +${bonus}`;
           g.messageTimer = 1.6;
+          // Big play: ramp shake, hold a beat, drop into slow-mo so the
+          // cascade reads. Triple-pulse haptic.
+          cbJuice(g, {
+            shake: 14, pauseT: 0.10, slowT: 0.50,
+            vibrate: [0, 30, 20, 30, 20, 30],
+          });
         }
         g._knockedAtThrow = g.knocked;
         b.didHit = true;
@@ -3137,6 +3208,9 @@ const CanBash = {
         g.finished = true;
         g.cleared = cleared;
         g.stars = starsFor(g.level, g.thrown, cleared);
+        // Outcome haptic: cleared = ascending triple-pulse, failed = a
+        // single soft tap. The vibrate API ignores the call on desktop.
+        cbVibrate(cleared ? [0, 25, 30, 25, 30, 60] : 80);
         // Persist best result for this level. Stars never go down; ties keep
         // the better ball-count and score.
         save.canBashLevels = save.canBashLevels || {};
@@ -3154,6 +3228,14 @@ const CanBash = {
   },
   render(g) {
     if (!g.ball) CanBash.resetBall(g);
+    // Screen-shake: brackets the entire render. Random offset proportional
+    // to g.shake; restored at the end so the canvas state stays balanced.
+    ctx.save();
+    if (g.shake > 0.05) {
+      const sx = (Math.random() - 0.5) * g.shake;
+      const sy = (Math.random() - 0.5) * g.shake;
+      ctx.translate(sx, sy);
+    }
     fpSetCam(0);
     // Carnival sky — warm gradient, with a striped tent banner pinned to
     // the top and a string of bulbs swaying gently across the upper half.
@@ -3449,6 +3531,7 @@ const CanBash = {
       ctx.fillText("Flick UP at the cans — angle bends the throw", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
+    ctx.restore(); // matches the save() at the top of render() (shake)
   },
 };
 
