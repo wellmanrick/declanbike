@@ -26,6 +26,7 @@ export const DEFAULT_SAVE = {
     cleanLandings: 0, perfectLandings: 0, gems: 0, cleanRuns: 0,
   },
   minigameBest: {},
+  canBashLevels: {},              // levelId -> { stars, ballsUsed, score, cleared }
 };
 
 function _load() {
@@ -41,6 +42,7 @@ function _load() {
       quests: parsed.quests || {},
       unlockedLevels: Object.assign({}, DEFAULT_SAVE.unlockedLevels, parsed.unlockedLevels || {}),
       minigameBest: parsed.minigameBest || {},
+      canBashLevels: parsed.canBashLevels || {},
     });
   } catch (e) {
     console.warn("Save load failed", e);

@@ -12,6 +12,7 @@ export const STATE = Object.freeze({
   PAUSE: "pause",
   RESULT: "result",
   MINIGAME: "minigame",
+  CB_LEVELS: "cb-levels", // Can Bash level select
 });
 
 export const G = {
