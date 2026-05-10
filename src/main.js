@@ -80,13 +80,13 @@ function startRun(levelId) {
       onGround: true,
       airtime: 0,
       lastGroundedAt: performance.now(),
-      preload: 0,
       currentFlipRot: 0,
       airTrick: { tuck: 0, superman: 0, noHand: 0 },
       oilTime: 0,
       tireTrail: [], // recent ground positions for trail rendering
-      pendingFlips: 0,
-      pendingDirection: 0,
+      // Wheelie / stoppie hold state — `time` is the accumulated seconds
+      // of the current trick, `dir` is -1 (wheelie) or +1 (stoppie).
+      wheelie: { time: 0, dir: 0 },
       health: stats.durability,
       boost: stats.boostCap,
       throttleHeat: 0,
@@ -159,7 +159,7 @@ function updateBike(dt) {
       b.crashed = false;
       b.airtime = 0;
       b.currentFlipRot = 0;
-      b.pendingFlips = 0;
+      if (b.wheelie) { b.wheelie.time = 0; b.wheelie.dir = 0; }
       b.health = Math.max(b.health, r.stats.durability * 0.4);
       r.combo = 1;
     }
@@ -214,7 +214,6 @@ function updateBike(dt) {
   if (onGround) {
     // Wheelie / stoppie detection: hold throttle + back lean for wheelie,
     // brake + forward lean for stoppie. Builds a continuous bonus.
-    if (!b.wheelie) b.wheelie = { time: 0, dir: 0 };
     const wantsWheelie = inp.throttle && inp.leanBack && Math.abs(b.vx) > 60;
     const wantsStoppie = inp.brake    && inp.leanFwd  && Math.abs(b.vx) > 80;
     if (wantsWheelie)      { b.wheelie.time += dt; b.wheelie.dir = -1; }
@@ -740,8 +739,10 @@ function render() {
   const zoomTarget = clamp(Math.min(altZoom, speedZoom), 1.0, WORLD_ZOOM);
   if (r.cam.zoom == null) r.cam.zoom = WORLD_ZOOM;
   r.cam.zoom = lerp(r.cam.zoom, zoomTarget, 0.07);
-  VW = W / r.cam.zoom;
-  VH = H / r.cam.zoom;
+  // updateViewport() mutates VW/VH inside canvas.js — we can't reassign
+  // the imported `let` bindings from here (ES module imports are
+  // read-only), so the live values flow through the helper.
+  updateViewport(r.cam.zoom);
 
   // Camera target. At low speed bike sits ~38% from left; at high speed
   // it slides toward 20% so we see more of what's coming. When the bike
@@ -2308,6 +2309,9 @@ function bindMenuActions() {
       case "retry":
         if (G.runtime) startRun(G.runtime.level.id);
         break;
+      case "abandon":
+        if (G.runtime) abandonRun();
+        break;
       case "reset":
         if (confirm("Wipe save? You'll lose cash, parts, and quest progress.")) {
           resetSave();
@@ -2341,7 +2345,7 @@ window.__diag && window.__diag("[boot] menu actions bound to " + document.queryS
 try {
   const f = document.querySelector("#menu .footer");
   if (f) f.textContent += "  •  v" + (
-    document.querySelector('script[src*="game.js"]')?.src.split("?v=")[1] || "dev"
+    document.querySelector('script[src*="main.js"]')?.src.split("?v=")[1] || "dev"
   );
 } catch {}
 
@@ -6497,7 +6501,9 @@ function loop(now) {
     const m = Sound.toggleMute();
     pushToast(m ? "Muted" : "Sound on", m ? "red" : "green", 700);
   }
-  if (justPressed.has("KeyR") && G.state === STATE.PLAY && G.runtime) {
+  if (justPressed.has("KeyR") &&
+      (G.state === STATE.PLAY || G.state === STATE.PAUSE) &&
+      G.runtime) {
     justPressed.delete("KeyR");
     startRun(G.runtime.level.id);
   }
@@ -6611,21 +6617,19 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-// Auto-pause when tab hidden / phone screen locks.
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden && G.state === STATE.PLAY) {
-    G.state = STATE.PAUSE;
-    showOnly("pause");
-    Sound.stopEngine();
-  }
-});
-window.addEventListener("blur", () => {
+// Auto-pause when tab hidden / phone screen locks. Stops the engine
+// drone unconditionally so it doesn't loop in the background; opens
+// the pause overlay only from PLAY (mini-games freeze on their own
+// because requestAnimationFrame doesn't fire while hidden).
+function onLoseFocus() {
+  Sound.stopEngine && Sound.stopEngine();
   if (G.state === STATE.PLAY) {
     G.state = STATE.PAUSE;
     showOnly("pause");
-    Sound.stopEngine();
   }
-});
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) onLoseFocus(); });
+window.addEventListener("blur", onLoseFocus);
 
 // Boot
 window.__diag && window.__diag("[boot] entering boot block");

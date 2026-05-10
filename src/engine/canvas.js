@@ -19,9 +19,13 @@ export const WORLD_ZOOM = 1.55;
 export let VW = (W || 0) / WORLD_ZOOM;
 export let VH = (H || 0) / WORLD_ZOOM;
 
-export function updateViewport() {
-  VW = W / WORLD_ZOOM;
-  VH = H / WORLD_ZOOM;
+// Recompute the world viewport. Defaults to WORLD_ZOOM so resize at boot
+// works; the per-frame render path passes its dynamic camera zoom so the
+// camera follow + parallax stays correct.
+export function updateViewport(zoom) {
+  const z = zoom == null ? WORLD_ZOOM : zoom;
+  VW = W / z;
+  VH = H / z;
 }
 
 export function resizeCanvas() {
