@@ -14,6 +14,7 @@ export const STATE = Object.freeze({
   MINIGAME: "minigame",
   CB_LEVELS: "cb-levels", // Can Bash level select
   FG_LEVELS: "fg-levels", // Field Goal level select
+  PP_LEVELS: "pp-levels", // Party Pong level select
 });
 
 export const G = {

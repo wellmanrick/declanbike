@@ -193,6 +193,19 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   text-transform: uppercase; letter-spacing: 0.05em;
 }
 .fg-bests strong { color: var(--accent); font-size: 16px; letter-spacing: 0; }
+/* Party Pong global-bests header — same shape as .fg-bests with a
+   purple/teal neon palette to match the basement theme. */
+.pp-bests {
+  grid-column: 1 / -1;
+  display: flex; flex-wrap: wrap; gap: 12px 22px;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, rgba(125,93,255,0.14), rgba(255,105,180,0.06));
+  border: 1px solid rgba(125, 93, 255, 0.32);
+  border-radius: 10px;
+  font-size: 12px; color: var(--ink-dim);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.pp-bests strong { color: #b39bff; font-size: 16px; letter-spacing: 0; }
 
 /* Garage */
 .garage-grid {

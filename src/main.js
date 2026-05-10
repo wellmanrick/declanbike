@@ -30,6 +30,7 @@ import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE 
 import { STATE, G } from "./state.js";
 import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlocked as isCanLevelUnlocked, CAN_TYPE_INFO, POWER_INFO } from "./games/canBash/levels.js";
 import { FG_LEVELS, FG_CONDITION_INFO, FG_POWERUP_INFO, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
+import { PP_LEVELS, buildCups as ppBuildCups, starsFor as ppStarsFor, levelById as ppLevelById, isLevelUnlocked as isPpLevelUnlocked, CUP_BASE_R, CUP_HEIGHT, TABLE_Y, TABLE_W, TABLE_Z_NEAR } from "./games/partyPong/levels.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -1908,7 +1909,7 @@ function updateHUD() {
 // MENU / UI WIRING
 //==========================================================
 function showOnly(id) {
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels","fg-levels"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels","fg-levels","pp-levels"]) {
     const el = document.getElementById(overlay);
     if (!el) continue;
     if (overlay === id) el.classList.remove("hidden");
@@ -2086,6 +2087,15 @@ function buildQuests() {
         ? ` • Long ${best.longestMake || 0}yd • Streak ${best.bestStreak || 0}`
         : "";
       summary = `Stars: ${totalStars} / ${maxStars}${tail}`;
+    } else if (id === "party_pong") {
+      const lvls = save.partyPongLevels || {};
+      const totalStars = PP_LEVELS.reduce((s, l) => s + ((lvls[l.id]?.stars) || 0), 0);
+      const maxStars = PP_LEVELS.length * 3;
+      const best = save.partyPongBest || {};
+      const tail = (best.totalMakes || best.bestStreak)
+        ? ` • ${best.totalMakes || 0} cups • Streak ${best.bestStreak || 0}`
+        : "";
+      summary = `Stars: ${totalStars} / ${maxStars}${tail}`;
     } else {
       const best = (save.minigameBest && save.minigameBest[id]) || 0;
       summary = `Best: ${best} pts`;
@@ -2096,11 +2106,12 @@ function buildQuests() {
         <div class="qc-desc">${mg.desc}</div>
         <div class="qc-desc">${summary}</div>
       </div>
-      <div class="qc-reward">${id === "can_bash" || id === "field_goal" ? "Levels ▶" : "Play ▶"}</div>
+      <div class="qc-reward">${id === "can_bash" || id === "field_goal" || id === "party_pong" ? "Levels ▶" : "Play ▶"}</div>
     `;
     card.addEventListener("click", () => {
       if (id === "can_bash") openCanBashLevels();
       else if (id === "field_goal") openFieldGoalLevels();
+      else if (id === "party_pong") openPartyPongLevels();
       else startMinigame(id);
     });
     list.appendChild(card);
@@ -2191,6 +2202,54 @@ function buildFieldGoalLevelGrid() {
   });
 }
 
+function openPartyPongLevels() {
+  buildPartyPongLevelGrid();
+  G.state = STATE.PP_LEVELS;
+  showOnly("pp-levels");
+}
+
+function buildPartyPongLevelGrid() {
+  const grid = document.getElementById("pp-level-grid");
+  grid.innerHTML = "";
+  const progress = save.partyPongLevels || {};
+  // Header row showing the player's lifetime PP records.
+  const best = save.partyPongBest || {};
+  const totalStars = PP_LEVELS.reduce((s, l) => s + ((progress[l.id]?.stars) || 0), 0);
+  const maxStars = PP_LEVELS.length * 3;
+  const header = document.createElement("div");
+  header.className = "pp-bests";
+  header.innerHTML = `
+    <span><strong>${totalStars}/${maxStars}</strong> ★</span>
+    <span><strong>${best.totalMakes || 0}</strong> cups sunk</span>
+    <span><strong>${best.bestStreak || 0}</strong> streak</span>
+    <span><strong>${best.rackClears || 0}</strong> racks</span>
+  `;
+  grid.appendChild(header);
+  PP_LEVELS.forEach((lvl, idx) => {
+    const unlocked = isPpLevelUnlocked(progress, lvl.id);
+    const rec = progress[lvl.id];
+    const stars = (rec && rec.stars) || 0;
+    const card = document.createElement("div");
+    card.className = "level-card" + (unlocked ? "" : " locked");
+    card.style.setProperty("--i", idx);
+    const starsHtml =
+      `<span class="lc-stars">` +
+      `<span${stars >= 1 ? "" : ' class="empty"'}>★</span>` +
+      `<span${stars >= 2 ? "" : ' class="empty"'}>★</span>` +
+      `<span${stars >= 3 ? "" : ' class="empty"'}>★</span>` +
+      `</span>`;
+    card.innerHTML = `
+      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
+      <div class="lc-meta">${lvl.balls} ball${lvl.balls === 1 ? "" : "s"} • ${lvl.rack.type}</div>
+      <div class="lc-best">${lvl.subtitle}</div>
+      ${starsHtml}
+      ${rec && rec.cleared ? `<div class="lc-meta">Best: ${rec.ballsUsed} ball${rec.ballsUsed === 1 ? "" : "s"} • ${rec.score} pts</div>` : ""}
+    `;
+    if (unlocked) card.addEventListener("click", () => startMinigame("party_pong", lvl.id));
+    grid.appendChild(card);
+  });
+}
+
 function showResult(completed, extra) {
   const r = G.runtime;
   G.state = STATE.RESULT;
@@ -2244,6 +2303,7 @@ function bindMenuActions() {
       case "back-menu": G.runtime = null; G.state = STATE.MENU; showOnly("menu"); break;
       case "cb-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
       case "fg-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
+      case "pp-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
       case "resume": G.state = STATE.PLAY; showOnly("hud"); break;
       case "retry":
         if (G.runtime) startRun(G.runtime.level.id);
@@ -2303,12 +2363,14 @@ function startMinigame(id, levelId) {
     level = (levelId && canLevelById(levelId)) || CAN_LEVELS[0];
   } else if (id === "field_goal") {
     level = (levelId && fgLevelById(levelId)) || FG_LEVELS[0];
+  } else if (id === "party_pong") {
+    level = (levelId && ppLevelById(levelId)) || PP_LEVELS[0];
   }
   G.minigameRuntime = mg.init(level);
   G.minigameRuntime.id = id;
   G.state = STATE.MINIGAME;
   // Hide every overlay (and the touch UI). The canvas is the whole screen.
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels","pp-levels"]) {
     const el = document.getElementById(overlay);
     if (el) el.classList.add("hidden");
   }
@@ -2402,6 +2464,31 @@ function dispatchMinigamePointer(kind, e) {
           Sound.click && Sound.click();
           G.minigameRuntime = null;
           openFieldGoalLevels();
+        }
+        return;
+      }
+      if (rt.id === "party_pong") {
+        if (inBtn(rt._btnNextLevel)) {
+          Sound.click && Sound.click();
+          const idx = PP_LEVELS.findIndex(l => l.id === rt.level.id);
+          const next = (idx >= 0 && idx + 1 < PP_LEVELS.length) ? PP_LEVELS[idx + 1] : null;
+          const progress = save.partyPongLevels || {};
+          if (next && isPpLevelUnlocked(progress, next.id)) {
+            G.minigameRuntime = null;
+            startMinigame("party_pong", next.id);
+          } else {
+            G.minigameRuntime = null;
+            openPartyPongLevels();
+          }
+        } else if (inBtn(rt._btnRetry)) {
+          Sound.click && Sound.click();
+          const lvlId = rt.level.id;
+          G.minigameRuntime = null;
+          startMinigame("party_pong", lvlId);
+        } else if (inBtn(rt._btnLevels)) {
+          Sound.click && Sound.click();
+          G.minigameRuntime = null;
+          openPartyPongLevels();
         }
         return;
       }
@@ -3633,6 +3720,553 @@ const FieldGoal = {
     ctx.restore();
   },
 };
+
+//----------------------------------------------------------
+// PARTY PONG (first-person flick into a beer-pong rack)
+//----------------------------------------------------------
+// Ball spawned at the player's chest height in front of the table.
+// Flick releases it; physics integrate gravity + table bounce + cup
+// detection. Direct cups score 100, bounce shots 200, gold cups +250
+// bonus, streak chains add 50 each, rack clear bonus 500.
+const PP_BALL_R     = 0.045;
+const PP_TABLE_LEN  = 2.6;
+const PP_GRAVITY    = 9.8;
+const PP_BALL_SPAWN = { x: 0, y: 0.55, z: 0.30 };
+
+// Geometry constants — re-exported aliases of the levels.js exports
+// so the rest of this file can read them without the import names
+// proliferating through every helper.
+const PP_CUP_BASE_R = CUP_BASE_R;
+const PP_CUP_HEIGHT = CUP_HEIGHT;
+const PP_TABLE_Y    = TABLE_Y;
+const PP_TABLE_W    = TABLE_W;
+const PP_TABLE_Z_NEAR = TABLE_Z_NEAR;
+
+function ppRebuildRack(g) {
+  const cups = ppBuildCups(g.level);
+  // Each cup carries runtime state on top of its geometry: removed
+  // flag and a fall-out animation timer for the splash effect.
+  g.cups = cups.map(c => ({ ...c, removed: false, fallT: 0 }));
+}
+
+const PartyPong = {
+  name: "Party Pong Flick",
+  desc: "Flick the ball. Sink the cups. Clear the rack.",
+  icon: "🍺",
+  color: "#7d5dff",
+  init(level) {
+    const lvl = level || PP_LEVELS[0];
+    return {
+      level: lvl,
+      ball: null,
+      cups: [],
+      balls: lvl.balls,
+      thrown: 0, made: 0, score: 0,
+      cleared: false, finished: false,
+      message: "", messageTimer: 0,
+      cameraZ: 0,
+      stars: 0,
+      // Per-throw streak — incremented on consecutive makes within a
+      // single round. Resets on a missed throw. Drives crowd cheers
+      // and the streak bonus.
+      streak: 0, bestStreak: 0,
+      // Game-feel state shared with cbJuice (screen shake / hit-pause
+      // / slow-mo). All three decay or count down inside update().
+      shake: 0, pauseT: 0, slowT: 0,
+      // Splash particles spawned on each made cup. Stepped per frame.
+      splashes: [],
+      dragStart: null, dragNow: null,
+    };
+  },
+  payout(g) { return Math.floor((g.score || 0) * 0.3); },
+  // Reset just the ball — called between throws inside the round.
+  resetBall(g) {
+    g.ball = {
+      x: PP_BALL_SPAWN.x, y: PP_BALL_SPAWN.y, z: PP_BALL_SPAWN.z,
+      vx: 0, vy: 0, vz: 0,
+      thrown: false, gone: false, dead: false,
+      bounced: false, bounceCount: 0,
+      angle: 0,
+      t: 0,
+      // Shadow position on the table is recomputed each frame from x/z.
+      // Tracked here so cup-pass detection can interpolate cleanly.
+      prevY: PP_BALL_SPAWN.y,
+    };
+    g.message = ""; g.messageTimer = 0;
+    g.cameraZ = 0;
+  },
+  handlePointer(g, kind, x, y) {
+    if (g.finished) return;
+    if (!g.ball) PartyPong.resetBall(g);
+    if (g.ball.thrown) return;
+    const flick = fpProcessFlick(g, kind, x, y);
+    if (!flick) return;
+    const { power, lateral, upward } = flick;
+    // Tune the flick → throw mapping so a "max" flick lands at the
+    // back of the rack (~z = 2.4m). vz scales primarily with power
+    // and the upward component (a flatter flick travels less far).
+    const distScale = Math.max(0.7, (g.level.rack.zBack || 2.0) / 2.0);
+    g.ball.vz = (3.0 + power * 4.5) * distScale * (0.55 + 0.45 * upward);
+    g.ball.vy = 2.4 + power * 3.6 * upward;
+    g.ball.vx = lateral * 1.6 * power;
+    g.ball.thrown = true;
+    g.ball.prevY = g.ball.y;
+    Sound.boostHit && Sound.boostHit();
+    cbJuice(g, { vibrate: 14 });
+  },
+  update(g, dt) {
+    if (!g.ball) PartyPong.resetBall(g);
+    if (g.cups.length === 0) ppRebuildRack(g);
+    const b = g.ball;
+    // Shake decay + hit-pause + slow-mo (same juice flow as Field Goal).
+    if (g.shake > 0) g.shake = Math.max(0, g.shake - dt * 12);
+    if (g.pauseT > 0) { g.pauseT -= dt; return; }
+    if (g.slowT > 0) { g.slowT -= dt; dt *= CB_SLOW_FACTOR; }
+    // Step splash particles (always, so they continue to settle).
+    if (g.splashes.length > 0) {
+      for (const s of g.splashes) {
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.vy += 14 * dt;        // tiny gravity in screen space
+        s.life -= dt;
+      }
+      g.splashes = g.splashes.filter(s => s.life > 0);
+    }
+    if (b.thrown && !b.dead) {
+      b.t += dt;
+      b.prevY = b.y;
+      b.vy -= PP_GRAVITY * dt;
+      b.x  += b.vx * dt;
+      b.y  += b.vy * dt;
+      b.z  += b.vz * dt;
+      b.angle += 12 * dt;
+      // Camera trails the ball ~0.5m back so the rack grows on approach.
+      const targetCam = Math.max(0, b.z - 0.5);
+      g.cameraZ = g.cameraZ + (targetCam - g.cameraZ) * Math.min(1, dt * 4);
+      // Cup hit detection — check whether the ball just dropped past
+      // any live cup's rim plane.
+      const cupTopY = PP_TABLE_Y + PP_CUP_HEIGHT;
+      if (b.prevY >= cupTopY && b.y < cupTopY && b.vy < 0) {
+        for (const c of g.cups) {
+          if (c.removed) continue;
+          const dx = b.x - c.x, dz = b.z - c.z;
+          const d2 = dx * dx + dz * dz;
+          const inner = c.r - PP_BALL_R;
+          if (d2 < inner * inner) {
+            PartyPong.makeCup(g, c);
+            return;
+          }
+          const outer = c.r + PP_BALL_R;
+          if (d2 < outer * outer) {
+            // Rim deflection — small bounce up + lateral nudge. Ball
+            // continues but is unlikely to score.
+            b.vy = Math.max(1.5, -b.vy * 0.4);
+            b.vx += (Math.random() - 0.5) * 1.6;
+            b.vz *= 0.55;
+            cbJuice(g, { shake: 5, vibrate: 18 });
+            Sound.click && Sound.click();
+            break;
+          }
+        }
+      }
+      // Table bounce — only valid while the ball is over the table.
+      if (b.prevY >= PP_TABLE_Y && b.y < PP_TABLE_Y && b.vy < 0) {
+        const overTable = b.z >= PP_TABLE_Z_NEAR
+                          && b.z <= PP_TABLE_Z_NEAR + PP_TABLE_LEN
+                          && Math.abs(b.x) <= PP_TABLE_W / 2;
+        if (overTable) {
+          b.y = PP_TABLE_Y;
+          b.vy = -b.vy * 0.55;
+          b.vx *= 0.85; b.vz *= 0.85;
+          b.bounced = true;
+          b.bounceCount++;
+          Sound.land && Sound.land();
+          cbJuice(g, { vibrate: 8 });
+          if (b.bounceCount > 3 || Math.abs(b.vy) < 0.6) b.dead = true;
+        } else {
+          b.dead = true;
+        }
+      }
+      // Out-of-play conditions.
+      if (b.y < -0.6) b.dead = true;
+      if (b.z > PP_TABLE_Z_NEAR + PP_TABLE_LEN + 0.4) b.dead = true;
+    }
+    // After the ball settles, advance the round.
+    if (b.dead && !g.finished) {
+      g.thrown++;
+      if (!g.message) {
+        g.message = "Miss";
+        g.messageTimer = 0.8;
+        g.streak = 0;
+        Sound.groan && Sound.groan();
+      }
+    }
+    // Tick the message timer; once it expires, prep the next ball or
+    // finalize the round.
+    if (g.messageTimer > 0) g.messageTimer -= dt;
+    if (b.dead && g.messageTimer <= 0 && !g.finished) {
+      const cleared = g.cups.every(c => c.removed);
+      if (cleared || g.thrown >= g.balls) {
+        g.finished = true;
+        g.cleared = cleared;
+        if (cleared) g.score += 500;
+        g.stars = ppStarsFor(g.level, g.thrown, cleared);
+        // Persist best record for this level. Stars never go down;
+        // ties keep the better balls-used and score.
+        save.partyPongLevels = save.partyPongLevels || {};
+        const prev = save.partyPongLevels[g.level.id];
+        const rec = { stars: g.stars, ballsUsed: g.thrown, score: g.score, cleared };
+        if (!prev || rec.stars > (prev.stars || 0) ||
+            (rec.stars === prev.stars && rec.score > (prev.score || 0))) {
+          save.partyPongLevels[g.level.id] = rec;
+        }
+        // Lifetime records.
+        save.partyPongBest = save.partyPongBest ||
+          { bestStreak: 0, totalMakes: 0, rackClears: 0 };
+        if (g.bestStreak > save.partyPongBest.bestStreak) {
+          save.partyPongBest.bestStreak = g.bestStreak;
+        }
+        save.partyPongBest.totalMakes = (save.partyPongBest.totalMakes || 0) + g.made;
+        if (cleared) save.partyPongBest.rackClears = (save.partyPongBest.rackClears || 0) + 1;
+        // Cash payout (matches Field Goal pattern).
+        const cash = PartyPong.payout(g);
+        save.cash += cash;
+        g.cashEarned = cash;
+        persistSave();
+        cbJuice(g, cleared
+          ? { shake: 14, slowT: 0.5, vibrate: [0, 30, 30, 30, 30, 80] }
+          : { shake: 6, vibrate: 30 });
+      } else {
+        PartyPong.resetBall(g);
+      }
+    }
+  },
+  // Mark a cup made + score it + spawn splash + prep the next ball.
+  makeCup(g, cup) {
+    cup.removed = true;
+    cup.fallT = 0;
+    g.made++;
+    let pts = g.ball.bounced ? 200 : 100;
+    let msg = g.ball.bounced ? "BOUNCE +200" : "CUP +100";
+    if (cup.gold) { pts += 250; msg = "GOLD CUP! +" + (250 + (g.ball.bounced ? 200 : 100)); }
+    g.streak++;
+    if (g.streak > 1) {
+      const bonus = (g.streak - 1) * 50;
+      pts += bonus;
+      msg += `  x${g.streak}`;
+    }
+    if (g.streak > g.bestStreak) g.bestStreak = g.streak;
+    g.score += pts;
+    g.message = msg;
+    g.messageTimer = 1.0;
+    Sound.perfect && Sound.perfect();
+    Sound.cheer && Sound.cheer(cup.gold || g.streak >= 3);
+    cbJuice(g, {
+      shake: cup.gold ? 14 : 8,
+      slowT: cup.gold ? 0.45 : 0.20,
+      vibrate: cup.gold ? [0, 30, 30, 30, 30, 80] : [0, 20, 30, 50],
+    });
+    // Splash particles — radial burst above the cup top.
+    const top = fpProject(cup.x, PP_TABLE_Y + PP_CUP_HEIGHT, cup.z);
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const sp = 60 + Math.random() * 60;
+      g.splashes.push({
+        x: top.sx, y: top.sy,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 30,
+        life: 0.5 + Math.random() * 0.3,
+        hue: cup.gold ? 50 : (200 + Math.random() * 60),
+      });
+    }
+    // Mark ball gone immediately so the next ball preps after the
+    // brief message hold.
+    g.ball.gone = true;
+    g.ball.dead = true;
+  },
+  render(g) {
+    if (!g.ball) PartyPong.resetBall(g);
+    if (g.cups.length === 0) ppRebuildRack(g);
+    ctx.save();
+    if (g.shake > 0.05) {
+      const sx = (Math.random() - 0.5) * g.shake;
+      const sy = (Math.random() - 0.5) * g.shake;
+      ctx.translate(sx, sy);
+    }
+    fpSetCam(g.cameraZ || 0);
+    // Party basement scene + table.
+    ppDrawScene(g);
+    // Cups — sorted back-to-front so closer cups occlude farther ones.
+    const sorted = g.cups.slice().sort((a, b) => b.z - a.z);
+    for (const c of sorted) ppDrawCup(g, c);
+    // Splash particles — over cups, under ball.
+    for (const s of g.splashes) {
+      const a = Math.max(0, Math.min(1, s.life / 0.6));
+      ctx.fillStyle = `hsla(${s.hue}, 95%, 70%, ${a})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Ball — fixed bottom-center while at rest, projected once thrown.
+    const restSX = W / 2;
+    const restSY = H * 0.84;
+    const restR  = Math.min(40, Math.max(28, W * 0.06));
+    const b = g.ball;
+    let bx, by, r;
+    if (!b.thrown || b.gone) {
+      // Pre-throw: show ball at rest. Post-make: hide (ball is in the cup).
+      if (b.gone) { /* skip ball draw */ }
+      else { bx = restSX; by = restSY; r = restR; }
+    } else {
+      const proj = fpProject(b.x, b.y, b.z);
+      bx = proj.sx; by = proj.sy;
+      // Physical projection: 0.04m radius * scale * 60 → pixels. Floor
+      // of 3px so the ball stays legible far from the camera.
+      r = Math.max(3, PP_BALL_R * proj.scale * 60);
+    }
+    if (!b.gone && bx !== undefined) {
+      // Shadow on the table (project the ball's x,z onto the table plane).
+      if (b.thrown && b.y > PP_TABLE_Y) {
+        const shadow = fpProject(b.x, PP_TABLE_Y + 0.001, b.z);
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.beginPath();
+        const sr = Math.max(2, r * 0.7);
+        ctx.ellipse(shadow.sx, shadow.sy, sr, sr * 0.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.save();
+      ctx.translate(bx, by);
+      ctx.rotate(b.thrown ? b.angle : 0);
+      const grad = ctx.createRadialGradient(-r * 0.35, -r * 0.35, r * 0.1, 0, 0, r);
+      grad.addColorStop(0, "#fff");
+      grad.addColorStop(0.7, "#f0e8d6");
+      grad.addColorStop(1, "#a89870");
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.45)";
+      ctx.lineWidth = Math.max(0.5, r * 0.07);
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+      // Subtle equator stripe (ping pong seam).
+      ctx.strokeStyle = "rgba(0,0,0,0.18)";
+      ctx.lineWidth = Math.max(0.5, r * 0.05);
+      ctx.beginPath(); ctx.moveTo(-r * 0.85, 0); ctx.lineTo(r * 0.85, 0); ctx.stroke();
+      ctx.restore();
+    }
+    // Aim guide — predicted trajectory while dragging.
+    if (!b.thrown) {
+      const preview = fgFlickPreview(g);
+      if (preview) {
+        const path = ppPredictTrajectory(g, preview);
+        if (path.length >= 2) {
+          const alpha = 0.55 + 0.40 * preview.power;
+          ctx.strokeStyle = `rgba(180, 230, 255, ${alpha})`;
+          ctx.lineWidth = 3;
+          ctx.setLineDash([7, 6]);
+          ctx.beginPath();
+          ctx.moveTo(restSX, restSY);
+          for (const pt of path) ctx.lineTo(pt.sx, pt.sy);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Power bar.
+          ctx.fillStyle = "rgba(0,0,0,0.4)";
+          ctx.fillRect(W - 130, 20, 110, 10);
+          ctx.fillStyle = "#7d5dff";
+          ctx.fillRect(W - 130, 20, 110 * preview.power, 10);
+        } else {
+          fpDrawAimArc(g, restSX, restSY, "rgba(180, 230, 255, 0.85)");
+        }
+      }
+    }
+    // HUD — score, balls, cups left, streak.
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.textAlign = "start";
+    const cupsLeft = g.cups.filter(c => !c.removed).length;
+    ctx.fillText(`Score: ${g.score}`, 16, 26);
+    ctx.fillText(`Balls left: ${Math.max(0, g.balls - g.thrown)}`, 16, 50);
+    ctx.fillText(`Cups: ${cupsLeft} / ${g.cups.length}`, 16, 74);
+    if (g.level && g.level.name) {
+      ctx.font = "bold 13px ui-monospace, monospace";
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillText(g.level.name, 16, 96);
+    }
+    if (g.streak >= 2) {
+      ctx.font = "bold 15px ui-monospace, monospace";
+      ctx.fillStyle = "#ffd03a";
+      ctx.fillText(`🔥 Streak x${g.streak}`, 16, 118);
+    }
+    // Result message.
+    if (g.message && g.messageTimer > 0) {
+      ctx.font = "bold 44px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillText(g.message, W/2 + 2, H/2 + 2);
+      const positive = g.message.startsWith("CUP") ||
+                       g.message.startsWith("BOUNCE") ||
+                       g.message.startsWith("GOLD");
+      ctx.fillStyle = positive ? "#7df0a0" : "#ff6470";
+      ctx.fillText(g.message, W/2, H/2);
+      ctx.textAlign = "start";
+    }
+    if (!b.thrown && !g.dragStart) {
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Flick UP to throw — angle for power and arc", W/2, H * 0.95);
+      ctx.textAlign = "start";
+    }
+    ctx.restore();
+  },
+};
+
+// Forward-simulate the throw matching PartyPong physics so the aim
+// guide reads honestly. Mirrors fgPredictTrajectory.
+function ppPredictTrajectory(g, flick) {
+  const distScale = Math.max(0.7, (g.level.rack.zBack || 2.0) / 2.0);
+  let bx = PP_BALL_SPAWN.x, by = PP_BALL_SPAWN.y, bz = PP_BALL_SPAWN.z;
+  let vx = flick.lateral * 1.6 * flick.power;
+  let vy = 2.4 + flick.power * 3.6 * flick.upward;
+  let vz = (3.0 + flick.power * 4.5) * distScale * (0.55 + 0.45 * flick.upward);
+  const out = [];
+  const dt = 0.04;
+  for (let i = 0; i < 50; i++) {
+    vy -= PP_GRAVITY * dt;
+    bx += vx * dt; by += vy * dt; bz += vz * dt;
+    if (by < -0.4) break;
+    if (bz > PP_TABLE_Z_NEAR + PP_TABLE_LEN + 0.4) break;
+    // Skip points too close to the camera — they project off-screen
+    // and the line jumps. The rest sprite is the visual "release"
+    // anchor, so the path picks up once the ball's far enough.
+    if (bz < 0.6) continue;
+    const proj = fpProject(bx, by, bz);
+    out.push({ sx: proj.sx, sy: proj.sy });
+  }
+  return out;
+}
+
+// Party basement room: dark gradient sky with a few neon strips on
+// the back wall, then the pong table drawn as a perspective quad.
+function ppDrawScene(g) {
+  // Sky / wall gradient — deep purple to teal so the cups read.
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#150930");
+  sky.addColorStop(0.5, "#2a1a55");
+  sky.addColorStop(1, "#0d0820");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+  // Back wall — solid plane behind the table.
+  const wallZ = PP_TABLE_Z_NEAR + PP_TABLE_LEN + 0.6;
+  const wallTop = fpProject(0, 2.4, wallZ);
+  const wallBot = fpProject(0, PP_TABLE_Y, wallZ);
+  ctx.fillStyle = "#1a1230";
+  ctx.fillRect(0, wallTop.sy, W, wallBot.sy - wallTop.sy);
+  // Neon LED strip along the wall.
+  const stripL = fpProject(-3, 1.6, wallZ);
+  const stripR = fpProject( 3, 1.6, wallZ);
+  ctx.strokeStyle = "rgba(125, 93, 255, 0.85)";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(stripL.sx, stripL.sy);
+  ctx.lineTo(stripR.sx, stripR.sy);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(255, 105, 180, 0.55)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(stripL.sx, stripL.sy + 14);
+  ctx.lineTo(stripR.sx, stripR.sy + 14);
+  ctx.stroke();
+  // Floor — visible under the table front edge.
+  const floorBot = fpProject(0, 0, PP_TABLE_Z_NEAR);
+  ctx.fillStyle = "#0a0518";
+  ctx.fillRect(0, wallBot.sy, W, H - wallBot.sy);
+  // Pong table — perspective quad. Draw as a polygon then add an
+  // edge highlight along the front rail.
+  const tNL = fpProject(-PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR);
+  const tNR = fpProject( PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR);
+  const tFL = fpProject(-PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
+  const tFR = fpProject( PP_TABLE_W / 2, PP_TABLE_Y, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
+  // Top surface
+  const tableGrad = ctx.createLinearGradient(0, tFL.sy, 0, tNL.sy);
+  tableGrad.addColorStop(0, "#1a3050");
+  tableGrad.addColorStop(1, "#284870");
+  ctx.fillStyle = tableGrad;
+  ctx.beginPath();
+  ctx.moveTo(tNL.sx, tNL.sy);
+  ctx.lineTo(tNR.sx, tNR.sy);
+  ctx.lineTo(tFR.sx, tFR.sy);
+  ctx.lineTo(tFL.sx, tFL.sy);
+  ctx.closePath();
+  ctx.fill();
+  // Front rail
+  const rNL = fpProject(-PP_TABLE_W / 2, PP_TABLE_Y - 0.06, PP_TABLE_Z_NEAR);
+  const rNR = fpProject( PP_TABLE_W / 2, PP_TABLE_Y - 0.06, PP_TABLE_Z_NEAR);
+  ctx.fillStyle = "#0c1830";
+  ctx.beginPath();
+  ctx.moveTo(tNL.sx, tNL.sy);
+  ctx.lineTo(tNR.sx, tNR.sy);
+  ctx.lineTo(rNR.sx, rNR.sy);
+  ctx.lineTo(rNL.sx, rNL.sy);
+  ctx.closePath(); ctx.fill();
+  // Center stripe down the table — adds a focal axis for depth.
+  const cN = fpProject(0, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR);
+  const cF = fpProject(0, PP_TABLE_Y + 0.001, PP_TABLE_Z_NEAR + PP_TABLE_LEN);
+  ctx.strokeStyle = "rgba(180, 220, 255, 0.16)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cN.sx, cN.sy);
+  ctx.lineTo(cF.sx, cF.sy);
+  ctx.stroke();
+}
+
+// Draw a single cup. Side as a trapezoid with a gradient; top opening
+// as a perspective ellipse. Removed cups skipped.
+function ppDrawCup(g, c) {
+  if (c.removed) return;
+  const topY = PP_TABLE_Y + PP_CUP_HEIGHT;
+  const baseProj = fpProject(c.x, PP_TABLE_Y, c.z);
+  const topProj  = fpProject(c.x, topY, c.z);
+  // Width at top vs base in screen space. fpProject's `scale` is
+  // FP_FOCAL / z / 60, so multiplying world meters by scale*60 gives
+  // pixels at that depth.
+  const baseW = c.r * 2 * baseProj.scale * 60;
+  const topW  = c.r * 2 * topProj.scale * 60;
+  // Side walls.
+  const sideGrad = ctx.createLinearGradient(0, topProj.sy, 0, baseProj.sy);
+  if (c.gold) {
+    sideGrad.addColorStop(0, "#ffd03a");
+    sideGrad.addColorStop(1, "#a87a10");
+  } else {
+    sideGrad.addColorStop(0, "#ff5a3a");
+    sideGrad.addColorStop(0.7, "#cc3520");
+    sideGrad.addColorStop(1, "#7a1a10");
+  }
+  ctx.fillStyle = sideGrad;
+  ctx.beginPath();
+  ctx.moveTo(topProj.sx - topW / 2,  topProj.sy);
+  ctx.lineTo(topProj.sx + topW / 2,  topProj.sy);
+  ctx.lineTo(baseProj.sx + baseW / 2, baseProj.sy);
+  ctx.lineTo(baseProj.sx - baseW / 2, baseProj.sy);
+  ctx.closePath();
+  ctx.fill();
+  // Rim ellipse (top opening). Vertical squash approximates the
+  // perspective viewing angle from the camera.
+  const rimSquash = 0.32;
+  ctx.fillStyle = c.gold ? "#7a5a00" : "#2a0a0a";
+  ctx.beginPath();
+  ctx.ellipse(topProj.sx, topProj.sy, topW / 2, topW / 2 * rimSquash, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Rim highlight.
+  ctx.strokeStyle = c.gold ? "#fff8a0" : "#ffb09a";
+  ctx.lineWidth = Math.max(1, 2 * topProj.scale * 1.5);
+  ctx.beginPath();
+  ctx.ellipse(topProj.sx, topProj.sy, topW / 2, topW / 2 * rimSquash, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  // Subtle table shadow under the cup — improves grounding.
+  ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+  ctx.beginPath();
+  ctx.ellipse(baseProj.sx, baseProj.sy + 1, baseW / 2 * 0.95, baseW / 2 * 0.30, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
 
 //----------------------------------------------------------
 // CAN BASH — game-feel helpers
@@ -5336,6 +5970,7 @@ const QBChallenge = {
 
 const MINIGAMES = {
   field_goal: FieldGoal,
+  party_pong: PartyPong,
   can_bash: CanBash,
   duck_hunt: DuckHunt,
   hoops: Hoops,
@@ -5506,6 +6141,117 @@ function drawFieldGoalFinishedOverlay(g) {
   ctx.textAlign = "start";
 }
 
+// Party Pong result overlay. Mirrors the Field Goal layout — title
+// fades + slides, stars reveal left-to-right, stats / cash / buttons
+// stagger in. The "Next Level" button pulses to draw the eye.
+function drawPartyPongFinishedOverlay(g) {
+  const heldFor = Math.max(0, performance.now() - (g.finishHoldUntil - 600));
+  const bgAlpha = Math.min(0.78, heldFor / 240 * 0.78);
+  ctx.fillStyle = `rgba(0,0,0,${bgAlpha})`;
+  ctx.fillRect(0, 0, W, H);
+  const cleared = g.cleared;
+  ctx.textAlign = "center";
+  const titleA = Math.min(1, heldFor / 240);
+  const titleY = H * 0.20 - (1 - titleA) * 18;
+  ctx.fillStyle = cleared
+    ? `rgba(125, 240, 160, ${titleA})`
+    : `rgba(255, 138, 58, ${titleA})`;
+  ctx.font = "bold 34px ui-monospace, monospace";
+  ctx.fillText(cleared ? "Rack Cleared!" : "Out of Balls", W / 2, titleY);
+  const subA = Math.min(1, Math.max(0, (heldFor - 100) / 240));
+  ctx.fillStyle = `rgba(207, 214, 227, ${subA})`;
+  ctx.font = "bold 18px ui-monospace, monospace";
+  ctx.fillText(`${g.level.name}`, W / 2, H * 0.25);
+  // Stars
+  const starSize = Math.min(56, W * 0.085);
+  const starGap = starSize * 1.7;
+  const starY = H * 0.38;
+  for (let i = 0; i < 3; i++) {
+    const cx = W / 2 + (i - 1) * starGap;
+    const earned = i < g.stars;
+    const revealAt = 250 + i * 220;
+    const reveal = Math.max(0, Math.min(1, (heldFor - revealAt) / 220));
+    const pop = earned ? (1 + Math.sin(reveal * Math.PI) * 0.25) : 1;
+    ctx.save();
+    ctx.translate(cx, starY);
+    ctx.scale(pop, pop);
+    ctx.fillStyle = earned ? "#ffd03a" : "rgba(255,255,255,0.18)";
+    ctx.strokeStyle = earned ? "#ffae20" : "rgba(255,255,255,0.25)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let s = 0; s < 10; s++) {
+      const a = (s / 10) * Math.PI * 2 - Math.PI / 2;
+      const r = (s % 2 === 0) ? starSize : starSize * 0.45;
+      const x = Math.cos(a) * r, y = Math.sin(a) * r;
+      if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  // Stats line
+  const statsA = Math.min(1, Math.max(0, (heldFor - 1100) / 220));
+  if (statsA > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${statsA})`;
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(
+      `${g.made} / ${g.cups.length} cups  •  ${g.thrown} ball${g.thrown === 1 ? "" : "s"}  •  ${g.score} pts`,
+      W / 2, H * 0.53
+    );
+    if (g.bestStreak >= 2) {
+      ctx.fillStyle = `rgba(255, 220, 80, ${statsA})`;
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.fillText(`Best streak this round: x${g.bestStreak}`, W / 2, H * 0.575);
+    }
+  }
+  if (g.cashEarned) {
+    const cashA = Math.min(1, Math.max(0, (heldFor - 1300) / 220));
+    if (cashA > 0) {
+      ctx.fillStyle = `rgba(125, 220, 255, ${cashA})`;
+      ctx.font = "bold 22px ui-monospace, monospace";
+      ctx.fillText(`+$${g.cashEarned}`, W / 2, H * 0.62);
+    }
+  }
+  const idx = PP_LEVELS.findIndex(l => l.id === g.level.id);
+  const hasNext = cleared && idx >= 0 && idx + 1 < PP_LEVELS.length;
+  const labels = hasNext
+    ? [["next", "Next Level ▶", "#7d5dff"], ["retry", "Retry", "#ffb020"], ["levels", "Levels", "#2a3350"]]
+    : [["retry", "Retry", "#ffb020"], ["levels", "Levels", "#2a3350"]];
+  const bw = Math.min(220, W * 0.32);
+  const bh = 60;
+  const gap = 16;
+  const totalW = labels.length * bw + (labels.length - 1) * gap;
+  const startX = W / 2 - totalW / 2;
+  const cy = H * 0.70;
+  labels.forEach(([key, label, fill], i) => {
+    const btnA = Math.min(1, Math.max(0, (heldFor - 1500 - i * 120) / 220));
+    if (btnA <= 0) return;
+    const x = startX + i * (bw + gap);
+    const rect = { x, y: cy + (1 - btnA) * 12, w: bw, h: bh };
+    if (key === "next")   g._btnNextLevel = rect;
+    if (key === "retry")  g._btnRetry     = rect;
+    if (key === "levels") g._btnLevels    = rect;
+    let drawFill = fill;
+    if (key === "next") {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 220);
+      const lift = Math.floor(20 * pulse);
+      drawFill = `rgba(${125 + lift}, ${93 + lift}, 255, ${btnA})`;
+    }
+    ctx.globalAlpha = btnA;
+    ctx.fillStyle = drawFill;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 12);
+    else ctx.rect(rect.x, rect.y, rect.w, rect.h);
+    ctx.fill();
+    ctx.fillStyle = (fill === "#2a3350") ? "#fff" : "#fff";
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6);
+    ctx.globalAlpha = 1;
+  });
+  if (!hasNext) g._btnNextLevel = null;
+  ctx.textAlign = "start";
+}
+
 // Can Bash result overlay. Shows the level title, animated stars, the
 // score, and three buttons: Next Level (or Levels if locked / last),
 // Retry, Levels.
@@ -5608,9 +6354,10 @@ function loop(now) {
       G.minigameRuntime = null;
       if (rtId === "can_bash") { G.state = STATE.CB_LEVELS; openCanBashLevels(); }
       else if (rtId === "field_goal") { G.state = STATE.FG_LEVELS; openFieldGoalLevels(); }
+      else if (rtId === "party_pong") { G.state = STATE.PP_LEVELS; openPartyPongLevels(); }
       else { G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); }
     }
-    else if (G.state === STATE.CB_LEVELS || G.state === STATE.FG_LEVELS) {
+    else if (G.state === STATE.CB_LEVELS || G.state === STATE.FG_LEVELS || G.state === STATE.PP_LEVELS) {
       G.state = STATE.QUESTS; buildQuests(); showOnly("quests");
     }
     else if (G.state === STATE.LEVELS || G.state === STATE.GARAGE || G.state === STATE.QUESTS || G.state === STATE.HOW || G.state === STATE.RESULT) {
@@ -5641,6 +6388,8 @@ function loop(now) {
           drawCanBashFinishedOverlay(G.minigameRuntime);
         } else if (G.minigameRuntime.id === "field_goal") {
           drawFieldGoalFinishedOverlay(G.minigameRuntime);
+        } else if (G.minigameRuntime.id === "party_pong") {
+          drawPartyPongFinishedOverlay(G.minigameRuntime);
         } else {
           drawMinigameFinishedOverlay(G.minigameRuntime);
         }
