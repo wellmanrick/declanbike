@@ -1,60 +1,75 @@
 # Declan Bike — Excite Trails
 
-A side-scrolling dirt bike game inspired by Excitebike, built as a single static page.
-Build your bike. Hit the trails. Land flips. Eat dirt occasionally.
+Side-scrolling dirt-bike + flick-sports arcade. Browser game, no server.
 
-## Run it
+## Run it locally
 
-**Locally:** open `index.html` in any modern browser, or run `python3 -m http.server 8000` and visit `http://localhost:8000`. No build step.
+Open `index.html` in any modern browser, or `python3 -m http.server` and
+visit `http://localhost:8000`. The game loads as ES modules so the file
+must be served (not opened via `file://`) for the imports to resolve.
 
-**On your phone:** push to `main` (or any `claude/**` branch) and the included
-GitHub Actions workflow at `.github/workflows/pages.yml` builds and deploys to
-GitHub Pages. First-time setup: in the repo settings, **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-After the first successful run, your game lives at
-`https://<username>.github.io/<repo>/`.
+## Deploy
+
+`.github/workflows/pages.yml` runs on every push to `main` or
+`claude/**` — it lints the JS, stamps a build hash into the asset
+URLs for cache-busting, and publishes to GitHub Pages.
+
+## Architecture
+
+The codebase is split into ES modules under `src/`. Browsers load
+`index.html` → `<script type="module" src="src/main.js">` and ES module
+imports resolve the rest.
+
+```
+src/
+├─ main.js                  Entry. Bike physics, world rendering, UI flow,
+│                           mini-games, and the RAF loop. Future rounds
+│                           keep splitting this file into the directories
+│                           below.
+├─ state.js                 STATE enum + G mutable runtime container.
+├─ engine/
+│  ├─ canvas.js             Canvas + ctx + W/H/DPR + viewport + helpers
+│  │                        (clamp, lerp, wrapAngle). Resize-safe.
+│  ├─ audio.js              Procedural Web Audio engine: SFX, engine
+│  │                        drone, background music scheduler. Mute
+│  │                        persisted to localStorage.
+│  ├─ input.js              Keyboard + on-screen touch buttons. Synthesizes
+│  │                        a uniform key set + an `input()` view of held
+│  │                        intent. setupTouchControls() wires DOM buttons.
+│  ├─ rng.js                Seedable mulberry32 PRNG.
+│  ├─ save.js               Profile, localStorage-backed, with safe
+│  │                        defaults for failed reads (Safari Private).
+│  └─ juice.js              Toasts, particle spawners, floating world
+│                           text. Reads the active runtime via the G
+│                           container.
+├─ config/
+│  ├─ parts.js              Bike parts catalog + lookup.
+│  ├─ characters.js         Rider catalog + lookup.
+│  ├─ stats.js              Compose effective stats from parts + character.
+│  ├─ themes.js             Visual themes per biome (sky/mountains/grass).
+│  ├─ levels.js             Trail catalog + medal helpers + unlock check.
+│  └─ quests.js             Lifetime quest catalog + progress + auto-claim.
+└─ world/
+   └─ terrain.js            Procedural heightmap generator + sample
+                            helpers.
+```
+
+## Adding a new mode
+
+1. Add a config to `src/config/levels.js` (or a sibling list).
+2. Implement game-specific logic in a new module under `src/games/`.
+3. Register from `src/main.js`.
 
 ## Controls
 
-| Key | Action |
-| --- | --- |
-| `→` / `D` | Throttle |
-| `←` / `A` | Brake / lean back |
-| `↑` / `W` | Lean forward — in air, front-flip rotation |
-| `↓` / `S` | Lean back — in air, back-flip rotation |
-| `Space` | Boost (drains the boost meter) |
-| `Shift` | **Jump** — tap to launch off the ground (air = stop charging gravity) |
-| `M` | Mute / unmute sound |
-| `R` | Restart current run |
-| `Esc` | Pause / quit to menu |
+- `→`/`D` (or GAS paddle): throttle. In air: front flip.
+- `←`/`A` (or BRAKE paddle): brake. In air: back flip.
+- `↑`/`W`: lean forward (extra rotation in air).
+- `↓`/`S`: lean back.
+- `Shift` (or ⤴): jump.
+- `Space` (or ⚡): boost.
+- `M`: mute / unmute.
+- `R`: restart run. `Esc`: pause / quit.
 
-**Touch / phone controls** (auto-shown on touch devices):
-on-screen ◀ (brake / back-flip), ▶ (throttle), ⤴ (jump), ↻ (front-flip),
-⚡ (boost), `II` pause and `♪` mute buttons in the top-right.
-
-## Audio
-
-All sounds are synthesized live with Web Audio API — no asset files. The engine
-hum modulates with throttle/speed/boost; landings, flips, pickups, and crashes
-each have their own procedural blip. Tap any key/button to enable audio (browser
-gesture requirement). Mute with `M` or the `♪` button.
-
-## What's in the game
-
-- **6 procedurally generated trails**, unlocking as you complete them.
-- **The Garage**: bike-builder with **5 categories** of parts — engine, tires,
-  suspension, frame, paint — totaling 21 swappable components, each with its
-  own stats and price.
-- **14 side quests** with auto-paying cash rewards: flip totals, distance,
-  combos, perfect landings, completion goals, and more.
-- **Combo & trick scoring** with multipliers, perfect-landing bonuses, and
-  cash-per-flip payouts.
-- **Persistent save** via `localStorage` (cash, parts owned, equipped loadout,
-  best times, lifetime quest progress).
-
-## Files
-
-- `index.html` — page shell, HUD, and overlay UIs
-- `style.css` — all styling
-- `game.js` — game loop, physics, terrain generation, rendering, UI wiring
-
-That's it — three files, no dependencies.
+Touch devices: the on-screen ◀ BRAKE / GAS ▶ paddles + ⤴ jump + ⚡ boost
+buttons appear automatically.
