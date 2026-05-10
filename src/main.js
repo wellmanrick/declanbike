@@ -3157,36 +3157,35 @@ const CanBash = {
     }
     g.dragStart = null; g.dragNow = null; g.dragHistory = null;
 
-    // Aim direction: vector from the ball's rest position to the finger's
-    // release position. Up = high arc target; lateral = side aim.
+    // Aim mapping. The release POSITION on screen — not the drag
+    // direction — drives both yaw and the target row. Inverse-project
+    // the release point through the FP camera so the spot the finger
+    // landed maps to a world target at the table's depth (z = tableZ).
+    //
+    // This is what the player intuits: "release at the bottom row" hits
+    // the bottom row, "release at the apex" hits the apex. Drag length
+    // and finger speed only set power, not aim height.
     const ballSX = W / 2;
     const ballSY = H * 0.84;
-    const dx = x - ballSX;
-    const dy = y - ballSY;
-    if (dy > -40) return;     // ignore if release wasn't above the ball
-    const dist = Math.hypot(dx, dy);
-    const nx = dx / dist;
-    const ny = dy / dist;     // negative (above ball)
+    if (y > ballSY - 40) return;                              // must release above the ball
 
     // Power from finger speed. ~600 px/s = soft, ~2400 px/s = full.
     const power = Math.max(0.18, Math.min(1, fingerSpeed / 2200));
     const speed = 11 + power * 23;                            // 11 → 34 m/s
 
-    // Aim mapping. nx (lateral) drives yaw; ny (vertical) picks a TARGET
-    // row on the table. Then we solve for the loft angle that lands the
-    // ball there at this speed and yaw.
-    //
-    // Why solve instead of mapping ny directly to loft: at low speeds a
-    // shallow loft drops below the table before reaching it, so the
-    // player can't hit the bottom row with a soft flick. Tying loft to
-    // an explicit target Y guarantees every flick lands on the row the
-    // player aimed at, regardless of power.
-    const yaw  = nx * (Math.PI / 4);                          // ±45°
-    // Vertical aim. ny ranges 0 (release at ball level — already filtered
-    // out by the dy > -40 check) to -1 (release straight up). Useful
-    // range is roughly [-1, -0.3]; map to a target row 0..top.
-    const aim_t = Math.max(0, Math.min(1, (-ny - 0.3) / 0.7));
-    const target_y = 0.875 + aim_t * 2.75;                    // bottom row → ~6th row
+    // Inverse-project screen Y at z=tableZ to a world Y. The FP camera
+    // formula is sy = horizonY + (CAMERA_H − y) · focal / z, so:
+    //   y = CAMERA_H − (sy − horizonY) · z / focal
+    const horizonY = H * 0.55;                                // matches fpHorizonY()
+    const tableZ = 10;
+    const projY = 1.6 - (y - horizonY) * tableZ / 600;
+    // Clamp to plausible can-row span so wild releases bias to the top
+    // or bottom row instead of overshooting the stack.
+    const target_y = Math.max(0.6, Math.min(4.0, projY));
+
+    // Lateral aim from horizontal screen position. Center → straight,
+    // far-left/right → ±45° yaw.
+    const yaw = Math.max(-1, Math.min(1, (x - ballSX) / (W * 0.4))) * (Math.PI / 4);
     // Quadratic in u = tan(loft):  A·u² − B·u + (A + Δy) = 0
     //   A = g·Δz² / (speed² · cos²(yaw))   (gravity drop term)
     //   B = Δz / cos(yaw)                  (forward travel)
