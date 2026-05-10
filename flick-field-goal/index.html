@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0a1018" />
+<title>Flick Field Goal</title>
+<link rel="stylesheet" href="style.css?v=__BUILD__" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <!-- Three.js mounts here -->
+  <div id="scene"></div>
+
+  <!-- HUD: shown during play -->
+  <div id="hud" class="hud hidden">
+    <div class="hud-row top">
+      <div class="hud-pill"><span class="lbl">Score</span><span id="hud-score">0</span></div>
+      <div class="hud-pill"><span class="lbl">Streak</span>×<span id="hud-streak">1</span></div>
+      <div class="hud-pill"><span class="lbl">Best</span><span id="hud-best">0</span></div>
+    </div>
+    <div class="hud-row mid">
+      <div class="hud-pill big"><span class="lbl">Distance</span><span id="hud-distance">20</span><span class="unit">yd</span></div>
+      <div id="wind-meter" class="wind-meter">
+        <div class="wind-arrow" id="wind-arrow"></div>
+        <span id="wind-text">0 mph</span>
+      </div>
+      <div class="hud-pill"><span class="lbl">Balls</span><span id="hud-balls">3</span></div>
+    </div>
+    <!-- Power bar appears during the drag -->
+    <div id="power-meter" class="power-meter hidden">
+      <div id="power-fill" class="power-fill"></div>
+    </div>
+    <!-- Floating perfect-kick text shows in the middle of the screen -->
+    <div id="kick-feedback" class="kick-feedback"></div>
+  </div>
+
+  <!-- Main menu -->
+  <div id="menu" class="overlay">
+    <div class="title">
+      <span class="title-main">FLICK</span>
+      <span class="title-sub">FIELD GOAL</span>
+    </div>
+    <div class="menu-buttons">
+      <button data-action="play-classic">Classic</button>
+      <button data-action="play-timed">60 Seconds</button>
+      <button data-action="play-sudden">Sudden Death</button>
+      <button data-action="play-wind">Wind Challenge</button>
+    </div>
+    <div class="footer">Drag to aim & power up. Release to kick.</div>
+  </div>
+
+  <!-- Game over screen -->
+  <div id="gameover" class="overlay hidden">
+    <h2 id="gameover-title">Game Over</h2>
+    <div id="gameover-body" class="result-body"></div>
+    <div class="result-buttons">
+      <button data-action="restart">Play Again ▶</button>
+      <button data-action="menu">Menu</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="main.js?v=__BUILD__"></script>
+</body>
+</html>
