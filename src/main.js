@@ -334,8 +334,12 @@ function updateBike(dt) {
     // air
     b.airtime += dt;
     r.runStats.airtime += dt;
-    // gravity
-    b.vy += GRAVITY * (r.gravityScale || 1.0) * dt;
+    // Variable gravity: lighter while rising (floaty hang at the apex),
+    // heavier while falling (snappy descent so jumps feel responsive
+    // instead of mushy). Peak height stays roughly the same — only the
+    // shape of the arc changes.
+    const gravMul = b.vy < 0 ? 0.78 : 1.18;
+    b.vy += GRAVITY * (r.gravityScale || 1.0) * gravMul * dt;
     // boost in air slightly extends jumps
     if (inp.boost && b.boost > 1) {
       const dir = b.vx >= 0 ? 1 : -1;
