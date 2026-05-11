@@ -5270,9 +5270,15 @@ const DuckHunt = {
     return {
       ducks: [], shots: 10, fired: 0, hits: 0, score: 0, time: 0,
       spawnTimer: 0, finished: false, message: "", messageTimer: 0,
-      muzzle: 0, // briefly flash on shot
+      muzzle: 0,                   // brief screen-flash on shot
       cursor: { x: W / 2, y: H / 2, active: false },
-      streak: 0,
+      // Combo multiplier — captured before the bump on each hit so the
+      // throw that builds combo uses the prior value. Reset on miss.
+      combo: 1, bestCombo: 1,
+      // Feather burst on hits / puff on misses, plus per-duck floating
+      // "+pts xN" callouts.
+      particles: [],
+      floats: [],
     };
   },
   payout(g) { return g.hits * 25; },
@@ -5292,6 +5298,13 @@ const DuckHunt = {
       hit: false, alpha: 1, t: 0,
       gold, small,
       size: small ? 0.7 : 1.0,
+      // Vertical sin-wave bob so ducks don't track on a flat line.
+      waveOffset: Math.random() * Math.PI * 2,
+      waveAmp:    18 + Math.random() * 14,
+      flap:       Math.random() * Math.PI * 2,
+      // Death rotation when shot — applied as the duck falls.
+      rot: 0,
+      rotVel: (Math.random() < 0.5 ? -1 : 1) * (3 + Math.random() * 4),
     });
   },
   handlePointer(g, kind, x, y) {
@@ -5316,16 +5329,57 @@ const DuckHunt = {
       best.hit = true; best.vy = 320; best.vx *= 0.3;
       g.hits++;
       const base = best.gold ? 200 : (best.small ? 80 : 50);
-      g.streak++;
-      const mult = Math.min(3, 1 + g.streak * 0.25);
-      const earn = Math.round(base * mult);
+      // Capture combo BEFORE bumping it so this hit uses the multiplier
+      // that prior hits built up. Combo caps at 5x.
+      const mult = g.combo;
+      const earn = base * mult;
       g.score += earn;
-      g.message = `+${earn}${g.streak >= 3 ? "  x" + g.streak : ""}`;
-      g.messageTimer = 0.7;
+      g.combo = Math.min(5, g.combo + 1);
+      if (g.combo > g.bestCombo) g.bestCombo = g.combo;
+      DuckHunt.spawnFeathers(g, best.x, best.y, best.gold);
+      const tag = mult > 1 ? `+${earn}  x${mult}` : `+${earn}`;
+      DuckHunt.pushFloat(g, tag, best.x, best.y - 18, best.gold ? "#ffe680" : "#ffb020");
       Sound.gem && Sound.gem();
     } else {
-      g.streak = 0;
+      g.combo = 1;
+      DuckHunt.spawnPuff(g, x, y);
+      DuckHunt.pushFloat(g, "MISS", x, y - 14, "#ff5a3a");
     }
+  },
+  spawnFeathers(g, x, y, gold) {
+    const colors = gold
+      ? ["#ffe680", "#ffc940", "#fff4b8"]
+      : ["#ffffff", "#cfd6e3", "#7d8898"];
+    for (let i = 0; i < 16; i++) {
+      g.particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 280,
+        vy: -120 - Math.random() * 180,
+        life: 0.8 + Math.random() * 0.5,
+        maxLife: 1.2,
+        size: 3 + Math.random() * 4,
+        rot: Math.random() * Math.PI * 2,
+        rotVel: (Math.random() - 0.5) * 8,
+        color: colors[Math.floor(Math.random() * colors.length)],
+      });
+    }
+  },
+  spawnPuff(g, x, y) {
+    for (let i = 0; i < 6; i++) {
+      g.particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 90,
+        vy: (Math.random() - 0.5) * 90,
+        life: 0.28,
+        maxLife: 0.28,
+        size: 5 + Math.random() * 5,
+        rot: 0, rotVel: 0,
+        color: "rgba(255,255,255,0.45)",
+      });
+    }
+  },
+  pushFloat(g, text, x, y, color) {
+    g.floats.push({ text, x, y, vy: -55, life: 0.9, maxLife: 0.9, color });
   },
   update(g, dt) {
     g.time += dt;
@@ -5344,12 +5398,30 @@ const DuckHunt = {
       if (d.hit) {
         d.vy += 600 * dt;
         d.y += d.vy * dt;
+        d.rot += d.rotVel * dt;
         d.alpha = Math.max(0, d.alpha - dt * 0.5);
       } else {
-        d.y += d.vy * dt;
+        // Living ducks bob on a sin wave instead of tracking flat.
+        d.y += d.vy * dt + Math.sin(d.t * 3 + d.waveOffset) * d.waveAmp * dt;
+        d.flap += dt * 12;
       }
     }
     g.ducks = g.ducks.filter(d => d.x > -60 && d.x < W + 60 && d.y < H + 60 && d.alpha > 0);
+    // Feather / puff particles.
+    for (const p of g.particles) {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 180 * dt;
+      p.rot += p.rotVel * dt;
+      p.life -= dt;
+    }
+    g.particles = g.particles.filter(p => p.life > 0);
+    // Floating text.
+    for (const f of g.floats) {
+      f.y += f.vy * dt;
+      f.life -= dt;
+    }
+    g.floats = g.floats.filter(f => f.life > 0);
     // End when out of shots and ducks have left.
     if (g.fired >= g.shots && g.ducks.length === 0 && !g.finished) {
       g.finished = true;
@@ -5385,34 +5457,50 @@ const DuckHunt = {
         ctx.fill();
       }
     }
-    // Ducks
+    // Ducks — body, wing (flapping), neck/head, triangle beak, eye, tail.
+    // Death rotation applied via d.rot so shot ducks tumble as they fall.
     for (const d of g.ducks) {
       ctx.save();
       ctx.translate(d.x, d.y);
+      if (d.hit) ctx.rotate(d.rot);
       ctx.scale((d.vx < 0 ? -1 : 1) * d.size, d.size);
       ctx.globalAlpha = d.alpha;
       const bodyCol = d.gold ? "#ffce6e" : (d.hit ? "#7a4a14" : "#4a3018");
+      const wingCol = d.gold ? "#fff4b8" : "#3a2410";
       const headCol = d.gold ? "#a07020" : "#1a4f2a";
-      const wingCol = d.gold ? "#7a4a00" : "#2a1a08";
+      const tailCol = d.gold ? "#ffd966" : "#3b2412";
       // Body
       ctx.fillStyle = bodyCol;
-      ctx.beginPath(); ctx.ellipse(0, 0, 18, 10, 0, 0, Math.PI * 2); ctx.fill();
-      // Head
-      ctx.fillStyle = headCol;
-      ctx.beginPath(); ctx.arc(14, -8, 7, 0, Math.PI * 2); ctx.fill();
-      // Beak
-      ctx.fillStyle = "#ffb020";
-      ctx.fillRect(20, -8, 7, 3);
-      // Wing flap
-      const flap = d.hit ? -0.3 : Math.sin(d.t * 18) * 0.6;
+      ctx.beginPath(); ctx.ellipse(0, 4, 18, 10, 0, 0, Math.PI * 2); ctx.fill();
+      // Wing (flap)
+      const flap = d.hit ? -0.3 : Math.sin(d.flap) * 0.6;
       ctx.fillStyle = wingCol;
       ctx.save();
       ctx.rotate(flap);
-      ctx.beginPath(); ctx.ellipse(0, -6, 14, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(-2, -2, 13, 6, 0, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
+      // Neck / head
+      ctx.fillStyle = headCol;
+      ctx.beginPath(); ctx.arc(15, -6, 7, 0, Math.PI * 2); ctx.fill();
+      // Triangle beak
+      ctx.fillStyle = "#ff9f1c";
+      ctx.beginPath();
+      ctx.moveTo(21, -8);
+      ctx.lineTo(30, -5);
+      ctx.lineTo(21, -2);
+      ctx.closePath();
+      ctx.fill();
       // Eye
-      ctx.fillStyle = "#fff";
-      ctx.beginPath(); ctx.arc(16, -10, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#111";
+      ctx.beginPath(); ctx.arc(17, -8, 1.5, 0, Math.PI * 2); ctx.fill();
+      // Tail
+      ctx.fillStyle = tailCol;
+      ctx.beginPath();
+      ctx.moveTo(-16, 2);
+      ctx.lineTo(-25, -3);
+      ctx.lineTo(-22, 7);
+      ctx.closePath();
+      ctx.fill();
       // Gold halo
       if (d.gold && !d.hit) {
         const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 36);
@@ -5423,6 +5511,32 @@ const DuckHunt = {
       }
       ctx.restore();
     }
+    // Feather / puff particles — over ducks, under HUD.
+    for (const p of g.particles) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, p.size, p.size * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    // Floating "+pts xN" callouts at the duck position.
+    ctx.font = "bold 18px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    for (const f of g.floats) {
+      const a = Math.max(0, f.life / f.maxLife);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillText(f.text, f.x + 2, f.y + 2);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "start";
     // Muzzle flash
     if (g.muzzle > 0) {
       ctx.fillStyle = `rgba(255, 230, 120, ${g.muzzle * 5})`;
@@ -5441,27 +5555,36 @@ const DuckHunt = {
       ctx.moveTo(cx, cy - 28); ctx.lineTo(cx, cy - 8);
       ctx.moveTo(cx, cy + 8);  ctx.lineTo(cx, cy + 28);
       ctx.stroke();
-      ctx.fillStyle = "rgba(255, 80, 80, 0.85)";
+      ctx.fillStyle = "rgba(255, 80, 80, 0.95)";
       ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2); ctx.fill();
-    }
-    // Floating "+pts" message
-    if (g.message && g.messageTimer > 0) {
-      const a = Math.min(1, g.messageTimer / 0.7);
-      ctx.globalAlpha = a;
-      ctx.font = "bold 22px ui-monospace, monospace";
-      ctx.fillStyle = "#ffe680";
-      ctx.textAlign = "center";
-      ctx.fillText(g.message, W / 2, H * 0.18);
-      ctx.textAlign = "start";
-      ctx.globalAlpha = 1;
     }
     // HUD
     ctx.fillStyle = "rgba(0,0,0,0.6)";
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(`Hits: ${g.hits} / ${g.fired}    Score: ${g.score}`, 16, 28);
     ctx.fillText(`Shots left: ${Math.max(0, g.shots - g.fired)}`, 16, 52);
+    // Combo dots — five pips that fill as the streak builds. Same
+    // pattern as QB Challenge's combo strip.
+    const dotCount = 5, dotR = 6, dotGap = 16, dotY = 78, dotX0 = 16;
+    const filled = Math.min(g.combo - 1, dotCount);
+    for (let i = 0; i < dotCount; i++) {
+      const dx = dotX0 + i * dotGap + dotR;
+      ctx.fillStyle = i < filled ? "#ffd03a" : "rgba(0,0,0,0.18)";
+      ctx.beginPath();
+      ctx.arc(dx, dotY, dotR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    if (g.combo > 1) {
+      ctx.fillStyle = "#d49600";
+      ctx.font = "bold 14px ui-monospace, monospace";
+      ctx.fillText(`x${g.combo}`, dotX0 + dotCount * dotGap + 14, dotY + 5);
+    }
     if (g.fired === 0) {
       ctx.font = "bold 16px ui-monospace, monospace";
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.textAlign = "center";
       ctx.fillText("Tap a duck to shoot it", W/2, H * 0.95);
       ctx.textAlign = "start";
