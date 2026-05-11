@@ -445,7 +445,11 @@ function updateBike(dt) {
   if (b.oilTime > 0) b.oilTime = Math.max(0, b.oilTime - dt);
   for (const hz of r.terrain.hazards || []) {
     if (b.x < hz.x || b.x > hz.x + hz.w) continue;
-    if (hz.type === "fire" && !b.crashed) {
+    // Fire only crashes when the bike is actually on the ground over
+    // the pit. Flying over the pit (b.onGround === false) is the whole
+    // point — the previous gate just used the x-range, which crashed
+    // even at the apex of a clearing jump.
+    if (hz.type === "fire" && b.onGround && !b.crashed) {
       crash("Fire pit!");
       return;
     }
