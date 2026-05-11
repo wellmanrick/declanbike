@@ -80,6 +80,8 @@ function startRun(levelId) {
       onGround: true,
       airtime: 0,
       lastGroundedAt: performance.now(),
+      // Jump-input forgiveness timers (see updateBike for use).
+      jumpBuffer: 0, coyote: 0,
       currentFlipRot: 0,
       airTrick: { tuck: 0, superman: 0, noHand: 0 },
       oilTime: 0,
@@ -159,6 +161,7 @@ function updateBike(dt) {
       b.crashed = false;
       b.airtime = 0;
       b.currentFlipRot = 0;
+      b.jumpBuffer = 0; b.coyote = 0;
       if (b.wheelie) { b.wheelie.time = 0; b.wheelie.dir = 0; }
       b.health = Math.max(b.health, r.stats.durability * 0.4);
       r.combo = 1;
@@ -185,9 +188,24 @@ function updateBike(dt) {
   const groundY = terrainHeightAt(r.terrain, b.x);
   let onGround = (b.y >= groundY - 4);
 
-  // Explicit jump action: tap Shift (or on-screen jump button) while grounded.
+  // Jump scheduling: input buffer + coyote time. The buffer remembers
+  // a jump press for JUMP_BUFFER_T seconds so a too-early tap still
+  // fires when the bike actually lands; coyote time leaves a small
+  // grace window after rolling off a crest so a too-late tap still
+  // counts. Both bands are tuned for the way-it-feels test, not the
+  // way-it-is test.
+  const JUMP_BUFFER_T = 0.12;
+  const COYOTE_T      = 0.10;
   const jumpPressed = justPressed.has("ShiftLeft") || justPressed.has("ShiftRight");
-  if (jumpPressed && onGround && !b.crashed && !b.finished) {
+  if (jumpPressed) b.jumpBuffer = JUMP_BUFFER_T;
+  else             b.jumpBuffer = Math.max(0, b.jumpBuffer - dt);
+  b.coyote = onGround ? COYOTE_T : Math.max(0, b.coyote - dt);
+
+  // Fire when there's a recent press AND we still have coyote runway.
+  const fireJump = b.jumpBuffer > 0 && b.coyote > 0 && !b.crashed && !b.finished;
+  if (fireJump) {
+    b.jumpBuffer = 0;
+    b.coyote = 0;
     b.y -= 8;
     b.vy = -480;
     b.airtime = 0;
@@ -209,7 +227,7 @@ function updateBike(dt) {
     r.runStats.jumps++;
     pushToast("Air!", "gold", 800);
   }
-  if (!jumpPressed) b.onGround = onGround;
+  if (!fireJump) b.onGround = onGround;
 
   if (onGround) {
     // Wheelie / stoppie detection: hold throttle + back lean for wheelie,
