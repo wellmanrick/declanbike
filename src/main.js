@@ -76,6 +76,7 @@ function startRun(levelId) {
       angle: 0, angVel: 0,
       wheelAngle: 0,
       landSquash: 0,
+      wobble: 0,           // post-save jitter, decays over ~1s
       boostingPrev: false,
       onGround: true,
       airtime: 0,
@@ -162,6 +163,7 @@ function updateBike(dt) {
       b.airtime = 0;
       b.currentFlipRot = 0;
       b.jumpBuffer = 0; b.coyote = 0;
+      b.wobble = 0;
       if (b.wheelie) { b.wheelie.time = 0; b.wheelie.dir = 0; }
       b.health = Math.max(b.health, r.stats.durability * 0.4);
       r.combo = 1;
@@ -385,6 +387,7 @@ function updateBike(dt) {
   b.wheelAngle = (b.wheelAngle + (b.vx / 13) * dt) % (Math.PI * 2);
   // landing squash decays
   if (b.landSquash > 0) b.landSquash = Math.max(0, b.landSquash - dt * 4);
+  if (b.wobble > 0)     b.wobble     = Math.max(0, b.wobble - dt * 1.2);
 
   // Track per-run bests for quest metrics
   const speedMph = Math.abs(b.vx) / 6;
@@ -535,12 +538,13 @@ function handleLanding(slopeAngle) {
   const flips = Math.round(b.currentFlipRot / (Math.PI * 2));
   const absFlips = Math.abs(flips);
 
-  // Tolerance bands:
-  //   < 6°   : Perfect — bonus + cash + sfx
-  //   < 35°  : Clean — small bonus
-  //   < 65°  : Save — auto-correct angle, no bonus, no crash
-  //   ≥ 65°  : Bail — crash
-  const PERFECT = 6, CLEAN = 35, SAVE = 65;
+  // Tolerance bands (widened to feel pack #3 numbers — fewer abrupt
+  // crashes, more "I saved that" moments):
+  //   < 8°   : Perfect — bonus + cash + sfx
+  //   < 45°  : Clean — small bonus
+  //   < 80°  : Save — auto-correct angle, no bonus, no crash, wobble
+  //   ≥ 80°  : Bail — crash
+  const PERFECT = 8, CLEAN = 45, SAVE = 80;
 
   if (angDiffDeg < CLEAN) {
     let bonus = 0;
@@ -596,7 +600,9 @@ function handleLanding(slopeAngle) {
     b.vy *= (1 - absorb) * 0.4;
     spawnLandingDust(Math.max(0.5, b.landSquash * 1.2));
   } else if (angDiffDeg < SAVE) {
-    // Sketchy save — don't crash, but punish: lose combo, no bonus, big squash.
+    // Sketchy save — don't crash, but punish: lose combo, no bonus,
+    // big squash, plus a wobble that decays over the next ~1s so the
+    // recovery reads visually.
     pushToast("Save!", "gold", 700);
     r.combo = 1; r.comboTimer = 0;
     b.angle = slopeAngle;
@@ -604,6 +610,7 @@ function handleLanding(slopeAngle) {
     b.vx *= 0.6;
     b.vy *= 0.2;
     b.landSquash = 1;
+    b.wobble = 1;
     Sound.land();
     spawnLandingDust(1.0);
   } else {
@@ -1858,6 +1865,11 @@ function drawBike(b, stats) {
   let tilt = 0;
   if (b.onGround && b.wheelie && b.wheelie.time > 0) {
     tilt = b.wheelie.dir * Math.min(0.55, b.wheelie.time * 1.6);
+  }
+  // Post-save wobble — small angle jitter that decays over ~1s, so a
+  // recovered landing reads visibly shaky for a beat before settling.
+  if (b.wobble > 0) {
+    tilt += Math.sin(performance.now() / 35) * b.wobble * 0.08;
   }
   ctx.rotate(b.angle + tilt);
   const theme = G.runtime ? THEMES[G.runtime.level.theme] : null;
