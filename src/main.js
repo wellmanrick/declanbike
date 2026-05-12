@@ -5292,12 +5292,16 @@ const DuckHunt = {
     const speed = (220 + Math.random() * 180) * speedMul;
     g.ducks.push({
       x: fromLeft ? -30 : W + 30,
-      y: H * (0.25 + Math.random() * 0.45),
+      // Spawn above the new lake horizon (~63%) so ducks don't appear to
+      // fly through water. 18%–60% of screen height.
+      y: H * (0.18 + Math.random() * 0.42),
       vx: fromLeft ? speed : -speed,
       vy: -20 - Math.random() * 40,
       hit: false, alpha: 1, t: 0,
       gold, small,
-      size: small ? 0.7 : 1.0,
+      // Tuned down so the bigger polished art stays close to the original
+      // on-screen footprint (hit radius unchanged at 44px).
+      size: small ? 0.5 : 0.65,
       // Vertical sin-wave bob so ducks don't track on a flat line.
       waveOffset: Math.random() * Math.PI * 2,
       waveAmp:    18 + Math.random() * 14,
@@ -5428,36 +5432,126 @@ const DuckHunt = {
     }
   },
   render(g) {
+    // ---- Layered background: sky -> clouds -> mountains -> trees ----
+    //      -> lake (with animated ripples) -> grass -> cattails -> vignette.
     // Sky
     const sky = ctx.createLinearGradient(0, 0, 0, H);
-    sky.addColorStop(0, "#9ad0ff"); sky.addColorStop(0.6, "#cfe7ff"); sky.addColorStop(1, "#7da64a");
+    sky.addColorStop(0,    "#1e9bff");
+    sky.addColorStop(0.55, "#7fd4ff");
+    sky.addColorStop(1,    "#dff6ff");
     ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
-    // Hills
-    ctx.fillStyle = "#3a7a1f";
-    ctx.beginPath();
-    ctx.moveTo(0, H);
-    for (let x = 0; x <= W; x += 40) ctx.lineTo(x, H * 0.78 + Math.sin(x * 0.012) * 16);
-    ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
-    // Reeds
-    ctx.fillStyle = "#1a3010";
-    for (let x = 0; x < W; x += 14) ctx.fillRect(x, H * 0.84, 2, 14);
 
-    // Drifting clouds for some sky depth.
-    {
-      const t = performance.now() / 1000;
-      ctx.fillStyle = "rgba(255,255,255,0.55)";
-      for (let i = 0; i < 4; i++) {
-        const cx = ((i * 280 + t * (10 + i * 4)) % (W + 200)) - 100;
-        const cy = 60 + (i % 3) * 40;
-        const cw = 36 + (i % 3) * 10;
-        ctx.beginPath();
-        ctx.arc(cx, cy, cw, 0, Math.PI * 2);
-        ctx.arc(cx + cw * 0.7, cy + 4, cw * 0.7, 0, Math.PI * 2);
-        ctx.arc(cx - cw * 0.7, cy + 4, cw * 0.65, 0, Math.PI * 2);
-        ctx.fill();
-      }
+    const t = performance.now() / 1000;
+
+    // Clouds — soft, drifting.
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    for (let i = 0; i < 7; i++) {
+      const cx = ((i * 260 + t * (18 + i * 2)) % (W + 220)) - 110;
+      const cy = 55 + (i % 4) * 55;
+      const r = 28 + (i % 3) * 8;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.arc(cx + r * 0.8, cy + 5, r * 0.75, 0, Math.PI * 2);
+      ctx.arc(cx - r * 0.8, cy + 6, r * 0.65, 0, Math.PI * 2);
+      ctx.arc(cx + r * 1.45, cy + 10, r * 0.45, 0, Math.PI * 2);
+      ctx.fill();
     }
-    // Ducks — body, wing (flapping), neck/head, triangle beak, eye, tail.
+
+    // Mountains — two ranges for depth.
+    const baseY = H * 0.62;
+    ctx.fillStyle = "#5fa2c8";
+    ctx.beginPath();
+    ctx.moveTo(0, baseY);
+    for (let x = 0; x <= W + 80; x += 80) {
+      ctx.lineTo(x, baseY - 90 - Math.sin(x * 0.012) * 35);
+    }
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = "#3d7aa4";
+    ctx.beginPath();
+    ctx.moveTo(0, baseY + 45);
+    for (let x = 0; x <= W + 80; x += 70) {
+      ctx.lineTo(x, baseY - 35 - Math.sin(x * 0.018 + 1.4) * 28);
+    }
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+    // Pine trees along the foothills.
+    ctx.fillStyle = "#2f6b45";
+    for (let x = -20; x < W + 40; x += 30) {
+      const h = 35 + Math.sin(x * 0.08) * 12;
+      ctx.beginPath();
+      ctx.moveTo(x,       baseY + 28);
+      ctx.lineTo(x + 13,  baseY - h);
+      ctx.lineTo(x + 26,  baseY + 28);
+      ctx.closePath(); ctx.fill();
+    }
+
+    // Lake — vertical gradient + animated wave lines.
+    const lakeTop = H * 0.63;
+    const lake = ctx.createLinearGradient(0, lakeTop, 0, H * 0.82);
+    lake.addColorStop(0, "#2d9fd6");
+    lake.addColorStop(1, "#0d5d84");
+    ctx.fillStyle = lake;
+    ctx.fillRect(0, lakeTop, W, H * 0.2);
+
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 2;
+    const wt = performance.now() / 600;
+    for (let i = 0; i < 18; i++) {
+      const yy = lakeTop + 12 + i * 8;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 40) {
+        const wave = Math.sin(x * 0.025 + wt + i) * 6;
+        if (x === 0) ctx.moveTo(x, yy + wave);
+        else         ctx.lineTo(x, yy + wave);
+      }
+      ctx.stroke();
+    }
+
+    // Grass — solid ground + individual blades (deterministic height per x
+    // so they sway via sin() but don't twitch frame-to-frame).
+    const groundY = H * 0.78;
+    ctx.fillStyle = "#294f24";
+    ctx.fillRect(0, groundY, W, H - groundY);
+
+    const gt = performance.now() / 400;
+    for (let x = -10; x < W + 20; x += 8) {
+      const h = 35 + Math.sin(x * 0.07 + gt) * 10 + (x * 7 % 11);
+      ctx.fillStyle = x % 3 === 0 ? "#3f7d33" : x % 2 === 0 ? "#2f6b2e" : "#1e4f24";
+      ctx.beginPath();
+      ctx.moveTo(x, H);
+      ctx.quadraticCurveTo(x + 6, groundY + 35, x + 2, groundY - h);
+      ctx.quadraticCurveTo(x + 12, groundY + 30, x + 10, H);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Cattails — brown ellipse heads on slender stems.
+    for (let x = 20; x < W; x += 90) {
+      const y = groundY + 15 + Math.sin(x) * 10;
+      ctx.strokeStyle = "#1d3d1d";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x, H);
+      ctx.lineTo(x + 6, y);
+      ctx.stroke();
+      ctx.fillStyle = "#8b5a2b";
+      ctx.beginPath();
+      ctx.ellipse(x + 6, y - 14, 5, 17, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Vignette — softens edges, focuses the eye on the action.
+    const vg = ctx.createRadialGradient(
+      W / 2, H / 2, Math.min(W, H) * 0.35,
+      W / 2, H / 2, Math.max(W, H) * 0.75
+    );
+    vg.addColorStop(0, "rgba(0,0,0,0)");
+    vg.addColorStop(1, "rgba(0,0,0,0.28)");
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, W, H);
+    // Ducks — polished art: drop shadow, body, flapping wing, neck/head,
+    // triangle beak, eye + highlight, tail, chest sheen, gold halo, kill X.
     // Death rotation applied via d.rot so shot ducks tumble as they fall.
     for (const d of g.ducks) {
       ctx.save();
@@ -5465,50 +5559,80 @@ const DuckHunt = {
       if (d.hit) ctx.rotate(d.rot);
       ctx.scale((d.vx < 0 ? -1 : 1) * d.size, d.size);
       ctx.globalAlpha = d.alpha;
-      const bodyCol = d.gold ? "#ffce6e" : (d.hit ? "#7a4a14" : "#4a3018");
-      const wingCol = d.gold ? "#fff4b8" : "#3a2410";
-      const headCol = d.gold ? "#a07020" : "#1a4f2a";
-      const tailCol = d.gold ? "#ffd966" : "#3b2412";
-      // Body
-      ctx.fillStyle = bodyCol;
-      ctx.beginPath(); ctx.ellipse(0, 4, 18, 10, 0, 0, Math.PI * 2); ctx.fill();
-      // Wing (flap)
-      const flap = d.hit ? -0.3 : Math.sin(d.flap) * 0.6;
-      ctx.fillStyle = wingCol;
+
+      const body = d.gold ? "#ffc940" : d.small ? "#55d8ff" : "#8b5a2b";
+      const wing = d.gold ? "#ffe680" : d.small ? "#b5f4ff" : "#5a351a";
+      const head = d.gold ? "#ffe680" : "#147d5c";
+
+      const flap  = Math.sin(d.flap);
+      const wingY = flap * 16;
+
+      // Drop shadow — draws the silhouette offset, then the real duck on top.
+      const drawDuckShape = (color, wingCol, headCol) => {
+        // Body
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.ellipse(0, 10, 31, 18, 0, 0, Math.PI * 2); ctx.fill();
+        // Wing (flap controls vertical offset)
+        ctx.fillStyle = wingCol;
+        ctx.beginPath();
+        ctx.ellipse(-8, 4 + wingY * 0.28, 21, 9, wingY * 0.03, 0, Math.PI * 2);
+        ctx.fill();
+        // Head
+        ctx.fillStyle = headCol;
+        ctx.beginPath(); ctx.arc(25, -5, 13, 0, Math.PI * 2); ctx.fill();
+        // Beak
+        ctx.fillStyle = color === "#000" ? "#000" : "#ff9f1c";
+        ctx.beginPath();
+        ctx.moveTo(36, -7); ctx.lineTo(53, -1); ctx.lineTo(36, 5);
+        ctx.closePath(); ctx.fill();
+        // Tail
+        ctx.fillStyle = color === "#000" ? "#000" : "#2c1a0e";
+        ctx.beginPath();
+        ctx.moveTo(-27, 5); ctx.lineTo(-47, -9); ctx.lineTo(-39, 13);
+        ctx.closePath(); ctx.fill();
+      };
+
       ctx.save();
-      ctx.rotate(flap);
-      ctx.beginPath(); ctx.ellipse(-2, -2, 13, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.translate(3, 4);
+      ctx.globalAlpha = d.alpha * 0.35;
+      drawDuckShape("#000", "#000", "#000");
       ctx.restore();
-      // Neck / head
-      ctx.fillStyle = headCol;
-      ctx.beginPath(); ctx.arc(15, -6, 7, 0, Math.PI * 2); ctx.fill();
-      // Triangle beak
-      ctx.fillStyle = "#ff9f1c";
-      ctx.beginPath();
-      ctx.moveTo(21, -8);
-      ctx.lineTo(30, -5);
-      ctx.lineTo(21, -2);
-      ctx.closePath();
-      ctx.fill();
-      // Eye
+
+      drawDuckShape(body, wing, head);
+
+      // Eye highlight (white) + pupil (black).
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(29, -9, 3, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#111";
-      ctx.beginPath(); ctx.arc(17, -8, 1.5, 0, Math.PI * 2); ctx.fill();
-      // Tail
-      ctx.fillStyle = tailCol;
+      ctx.beginPath(); ctx.arc(30, -9, 1.5, 0, Math.PI * 2); ctx.fill();
+
+      // Chest sheen — subtle highlight curve along the belly.
+      ctx.strokeStyle = "rgba(255,255,255,0.45)";
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(-16, 2);
-      ctx.lineTo(-25, -3);
-      ctx.lineTo(-22, 7);
-      ctx.closePath();
-      ctx.fill();
+      ctx.moveTo(-18, 2);
+      ctx.quadraticCurveTo(-5, -4, 11, 3);
+      ctx.stroke();
+
       // Gold halo
       if (d.gold && !d.hit) {
-        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 36);
+        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 56);
         grad.addColorStop(0, "rgba(255, 220, 80, 0.55)");
         grad.addColorStop(1, "rgba(255, 220, 80, 0)");
         ctx.fillStyle = grad;
-        ctx.fillRect(-44, -44, 88, 88);
+        ctx.fillRect(-64, -64, 128, 128);
       }
+
+      // Kill marker — red X overlaid on shot ducks.
+      if (d.hit) {
+        ctx.strokeStyle = "#ff3030";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(-14, -14); ctx.lineTo(14, 14);
+        ctx.moveTo(14, -14);  ctx.lineTo(-14, 14);
+        ctx.stroke();
+      }
+
       ctx.restore();
     }
     // Feather / puff particles — over ducks, under HUD.
@@ -5524,19 +5648,23 @@ const DuckHunt = {
       ctx.restore();
     }
     ctx.globalAlpha = 1;
-    // Floating "+pts xN" callouts at the duck position.
-    ctx.font = "bold 18px ui-monospace, monospace";
+    // Floating "+pts xN" callouts at the duck position — stroked so they
+    // stay legible against the busier scene.
+    ctx.font = "bold 24px ui-monospace, monospace";
     ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 5;
     for (const f of g.floats) {
       const a = Math.max(0, f.life / f.maxLife);
       ctx.globalAlpha = a;
-      ctx.fillStyle = "rgba(0,0,0,0.6)";
-      ctx.fillText(f.text, f.x + 2, f.y + 2);
+      ctx.strokeStyle = "rgba(0,0,0,0.75)";
+      ctx.strokeText(f.text, f.x, f.y);
       ctx.fillStyle = f.color;
       ctx.fillText(f.text, f.x, f.y);
     }
     ctx.globalAlpha = 1;
     ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
     // Muzzle flash
     if (g.muzzle > 0) {
       ctx.fillStyle = `rgba(255, 230, 120, ${g.muzzle * 5})`;
