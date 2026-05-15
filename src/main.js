@@ -18,7 +18,7 @@
 import { save, persistSave, resetSave, DEFAULT_SAVE } from "./engine/save.js";
 import { PARTS, partById } from "./config/parts.js";
 import { CHARACTERS, characterById } from "./config/characters.js";
-import { getEquippedStats } from "./config/stats.js";
+import { getEquippedStats, composeStats } from "./config/stats.js";
 import { THEMES } from "./config/themes.js";
 import { LEVELS, medalForTime, medalRank, medalIcon, levelUnlocked } from "./config/levels.js";
 import { QUESTS, getQuestProgress, refreshQuestStates } from "./config/quests.js";
@@ -2012,6 +2012,34 @@ function showOnly(id) {
 function showHud() { document.getElementById("hud").classList.remove("hidden"); }
 function hideHud() { document.getElementById("hud").classList.add("hidden"); }
 
+
+function objectiveValue(metric, runtime) {
+  const rs = runtime.runStats || {};
+  switch (metric) {
+    case "score": return runtime.score || 0;
+    case "time": return runtime.time || 0;
+    case "crashes": return rs.crashes || 0;
+    case "airtime": return Math.floor(rs.airtime || 0);
+    case "topSpeed": return Math.floor(rs.topSpeed || 0);
+    case "longestAir": return Math.floor((rs.longestAir || 0) * 10) / 10;
+    default: return rs[metric] || 0;
+  }
+}
+
+function objectiveDone(objective, runtime) {
+  if (!objective) return false;
+  const value = objectiveValue(objective.metric, runtime);
+  return objective.compare === "lte" ? value <= objective.target : value >= objective.target;
+}
+
+function objectiveProgressText(objective, runtime = null) {
+  if (!objective) return "";
+  if (!runtime) return objective.label;
+  const value = objectiveValue(objective.metric, runtime);
+  const suffix = objective.metric === "airtime" || objective.metric === "longestAir" ? "s" : objective.metric === "topSpeed" ? " mph" : "";
+  return `${objectiveDone(objective, runtime) ? "✓" : "○"} ${objective.label} (${value}${suffix}/${objective.target}${suffix})`;
+}
+
 function buildLevelGrid() {
   const grid = document.getElementById("level-grid");
   grid.innerHTML = "";
@@ -2029,6 +2057,7 @@ function buildLevelGrid() {
         ? `Best: ${best.score} pts • ${best.time.toFixed(1)}s`
         : "Not completed"}</div>
       <div class="lc-meta">🥇 ${lvl.medals.gold}s &nbsp; 🥈 ${lvl.medals.silver}s &nbsp; 🥉 ${lvl.medals.bronze}s</div>
+      ${lvl.objective ? `<div class="lc-objective">🎯 ${objectiveProgressText(lvl.objective)}</div>` : ""}
       <div class="lc-meta">${lvl.desc}</div>
     `;
     if (unlocked) card.addEventListener("click", () => startRun(lvl.id));
@@ -2052,30 +2081,73 @@ document.querySelectorAll(".parts-tabs .tab").forEach(t => {
   });
 });
 
+
+const STAT_LABELS = {
+  topSpeed: "Speed", accel: "Accel", grip: "Grip", suspension: "Susp",
+  boostCap: "Boost", boostRegen: "Regen", durability: "Durability", weight: "Weight",
+};
+const STAT_KEYS = ["topSpeed", "accel", "grip", "suspension", "boostCap", "boostRegen", "durability", "weight"];
+
+function formatStatValue(key, value) {
+  if (key === "topSpeed") return `${Math.round(value)} mph`;
+  if (key === "boostCap" || key === "durability") return `${Math.round(value)}`;
+  if (key === "boostRegen") return `${Math.round(value)}/s`;
+  return value.toFixed(2).replace(/\.00$/, "");
+}
+
+function statDeltaHtml(current, candidate) {
+  const chips = [];
+  for (const key of STAT_KEYS) {
+    const a = current[key];
+    const b = candidate[key];
+    if (typeof a !== "number" || typeof b !== "number") continue;
+    const diff = b - a;
+    if (Math.abs(diff) < 0.001) continue;
+    const good = key === "weight" ? diff < 0 : diff > 0;
+    const sign = diff > 0 ? "+" : "";
+    const display = key === "topSpeed" || key === "boostCap" || key === "durability"
+      ? `${sign}${Math.round(diff)}`
+      : `${sign}${diff.toFixed(2).replace(/0$/, "")}`;
+    chips.push(`<span class="pc-delta ${good ? "up" : "down"}">${STAT_LABELS[key]} ${display}</span>`);
+  }
+  return chips.length ? `<div class="pc-deltas">${chips.slice(0, 4).join("")}</div>` : "";
+}
+
+function partCandidateStats(slot, partId) {
+  return composeStats({ ...save.equipped, [slot]: partId });
+}
+
 function buildPartsList(tab) {
   const list = document.getElementById("parts-list");
   list.innerHTML = "";
   // The "character" tab uses a different catalog and equipment slot.
   const items = (tab === "character") ? CHARACTERS : PARTS[tab];
   const slot = (tab === "character") ? "character" : tab;
+  const currentStats = getEquippedStats();
   for (const p of items) {
     const owned = !!save.ownedParts[p.id];
     const equipped = save.equipped[slot] === p.id;
     const card = document.createElement("div");
     card.className = "part-card" + (equipped ? " equipped" : "") + (owned || save.cash >= p.cost ? "" : " locked");
-    const stats = Object.entries(p.stats || {}).filter(([k,v]) => k !== "paint" && k !== "accent" && k !== "boots")
+    const rawStats = Object.entries(p.stats || {}).filter(([k,v]) => k !== "paint" && k !== "accent" && k !== "boots")
       .map(([k,v]) => {
         const sign = (typeof v === "number" && v > 0) ? "+" : "";
         return `${k}: ${sign}${v}`;
       }).join("  •  ");
+    const candidateStats = partCandidateStats(slot, p.id);
+    const deltaHtml = equipped ? "" : statDeltaHtml(currentStats, candidateStats);
+    const missingCash = Math.max(0, p.cost - save.cash);
+    const tag = equipped ? "Equipped" : owned ? "Owned" : missingCash === 0 ? "Ready" : `Need $${missingCash}`;
     card.innerHTML = `
       <div>
-        <div class="pc-name">${p.name}</div>
+        <div class="pc-name">${p.name}${(!owned && missingCash === 0 && p.cost > 0) ? `<span class="pc-tag">Recommended</span>` : ""}</div>
         <div class="pc-desc">${p.desc}</div>
-        <div class="pc-stats">${stats || ""}</div>
+        <div class="pc-stats">${rawStats || ""}</div>
+        ${deltaHtml}
       </div>
       <div class="pc-buy">
-        <div class="pc-cost">${owned ? (equipped ? "Equipped" : "Owned") : `$${p.cost}`}</div>
+        <div class="pc-cost">${tag}</div>
+        ${!owned ? `<div class="pc-price">$${p.cost}</div>` : ""}
         <button>${equipped ? "Equipped" : (owned ? "Equip" : "Buy")}</button>
       </div>
     `;
@@ -2347,14 +2419,21 @@ function showResult(completed, extra) {
     titleEl.textContent = `Run Ended — ${r.level.name}`;
   }
   let html = "";
+  const rs = r.runStats;
+  const stylePoints = (rs.perfectLandings * 2) + rs.cleanLandings + (rs.flips * 2) + Math.floor(rs.airtime / 2) + rs.maxCombo - (rs.crashes * 3);
+  const grade = stylePoints >= 24 ? "S" : stylePoints >= 18 ? "A" : stylePoints >= 12 ? "B" : stylePoints >= 7 ? "C" : "D";
+  html += `<div class="recap-card"><div class="recap-grade">${grade}</div><div><div class="recap-title">Stunt Recap</div><div class="recap-sub">${objectiveProgressText(r.level.objective, r)}</div></div></div>`;
   html += `<div class="row"><span>Time</span><span>${r.time.toFixed(1)}s</span></div>`;
   html += `<div class="row"><span>Distance</span><span>${Math.floor(r.distance/10)} m</span></div>`;
   html += `<div class="row"><span>Score</span><span>${r.score}</span></div>`;
-  html += `<div class="row"><span>Flips</span><span>${r.runStats.flips}</span></div>`;
-  html += `<div class="row"><span>Clean Landings</span><span>${r.runStats.cleanLandings}</span></div>`;
-  html += `<div class="row"><span>Perfect Landings</span><span>${r.runStats.perfectLandings}</span></div>`;
-  html += `<div class="row"><span>Max Combo</span><span>x${r.runStats.maxCombo}</span></div>`;
-  html += `<div class="row"><span>Crashes</span><span>${r.runStats.crashes}</span></div>`;
+  html += `<div class="row"><span>Flips</span><span>${rs.flips}</span></div>`;
+  html += `<div class="row"><span>Air Time</span><span>${rs.airtime.toFixed(1)}s</span></div>`;
+  html += `<div class="row"><span>Longest Air</span><span>${rs.longestAir.toFixed(1)}s</span></div>`;
+  html += `<div class="row"><span>Top Speed</span><span>${Math.floor(rs.topSpeed)} mph</span></div>`;
+  html += `<div class="row"><span>Clean Landings</span><span>${rs.cleanLandings}</span></div>`;
+  html += `<div class="row"><span>Perfect Landings</span><span>${rs.perfectLandings}</span></div>`;
+  html += `<div class="row"><span>Max Combo</span><span>x${rs.maxCombo}</span></div>`;
+  html += `<div class="row"><span>Crashes</span><span>${rs.crashes}</span></div>`;
   if (completed) {
     html += `<div class="row bonus"><span>Time bonus</span><span>+$${extra.timeBonus}</span></div>`;
     html += `<div class="row bonus"><span>Distance bonus</span><span>+$${Math.floor(extra.distBonus * 0.5)}</span></div>`;
