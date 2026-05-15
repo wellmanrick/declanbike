@@ -6,13 +6,13 @@ import { characterById } from "./characters.js";
 
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
-export function getEquippedStats() {
+export function composeStats(equipped = save.equipped) {
   const base = {
     topSpeed: 60, accel: 1.0, grip: 0.55, suspension: 0.35,
     boostCap: 100, boostRegen: 8, durability: 100, weight: 1.0, paint: "#e94c3a",
   };
   for (const cat of ["engine", "tire", "suspension", "frame", "paint"]) {
-    const p = partById(save.equipped[cat]);
+    const p = partById(equipped[cat]);
     if (!p) continue;
     const s = p.stats;
     if (s.speedBoost) base.topSpeed += s.speedBoost;
@@ -26,7 +26,7 @@ export function getEquippedStats() {
     if (s.paint) base.paint = s.paint;
   }
   // Character modifiers — additive on top of bike parts.
-  const ch = characterById(save.equipped.character || "char_declan");
+  const ch = characterById(equipped.character || "char_declan");
   if (ch) {
     const cs = ch.stats || {};
     if (cs.topSpeed)   base.topSpeed += cs.topSpeed;
@@ -41,4 +41,8 @@ export function getEquippedStats() {
     base.charName = ch.name;
   }
   return base;
+}
+
+export function getEquippedStats() {
+  return composeStats(save.equipped);
 }

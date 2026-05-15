@@ -18,7 +18,7 @@
 import { save, persistSave, resetSave, DEFAULT_SAVE } from "./engine/save.js";
 import { PARTS, partById } from "./config/parts.js";
 import { CHARACTERS, characterById } from "./config/characters.js";
-import { getEquippedStats } from "./config/stats.js";
+import { getEquippedStats, composeStats } from "./config/stats.js";
 import { THEMES } from "./config/themes.js";
 import { LEVELS, medalForTime, medalRank, medalIcon, levelUnlocked } from "./config/levels.js";
 import { QUESTS, getQuestProgress, refreshQuestStates } from "./config/quests.js";
@@ -76,6 +76,7 @@ function startRun(levelId) {
       angle: 0, angVel: 0,
       wheelAngle: 0,
       landSquash: 0,
+      landingFlash: null,   // short local ring flash on perfect/clean/save landings
       wobble: 0,           // post-save jitter, decays over ~1s
       boostingPrev: false,
       onGround: true,
@@ -164,6 +165,7 @@ function updateBike(dt) {
       b.currentFlipRot = 0;
       b.jumpBuffer = 0; b.coyote = 0;
       b.wobble = 0;
+      b.landingFlash = null;
       if (b.wheelie) { b.wheelie.time = 0; b.wheelie.dir = 0; }
       b.health = Math.max(b.health, r.stats.durability * 0.4);
       r.combo = 1;
@@ -388,6 +390,10 @@ function updateBike(dt) {
   // landing squash decays
   if (b.landSquash > 0) b.landSquash = Math.max(0, b.landSquash - dt * 4);
   if (b.wobble > 0)     b.wobble     = Math.max(0, b.wobble - dt * 1.2);
+  if (b.landingFlash) {
+    b.landingFlash.time = Math.max(0, b.landingFlash.time - dt);
+    if (b.landingFlash.time <= 0) b.landingFlash = null;
+  }
 
   // Track per-run bests for quest metrics
   const speedMph = Math.abs(b.vx) / 6;
@@ -553,10 +559,12 @@ function handleLanding(slopeAngle) {
       label = "Perfect!"; bonus += 100;
       r.runStats.perfectLandings++;
       save.totals.perfectLandings++;
+      b.landingFlash = { time: 0.48, max: 0.48, color: "#4ddc8c", label: "PERFECT" };
       Sound.perfect();
       if (r.shake) r.shake.mag = Math.max(r.shake.mag, 5);
     } else {
       bonus += 30;
+      b.landingFlash = { time: 0.34, max: 0.34, color: "#ffb020", label: "CLEAN" };
       Sound.land();
     }
     r.runStats.cleanLandings++;
@@ -610,6 +618,7 @@ function handleLanding(slopeAngle) {
     b.vx *= 0.6;
     b.vy *= 0.2;
     b.landSquash = 1;
+    b.landingFlash = { time: 0.38, max: 0.38, color: "#ffd166", label: "SAVE" };
     b.wobble = 1;
     Sound.land();
     spawnLandingDust(1.0);
@@ -643,6 +652,7 @@ function crash(reason) {
   b.vy = -200;
   b.angVel = (Math.random() - 0.5) * 12;
   b.health = Math.max(0, b.health - 25);
+  b.landingFlash = null;
   r.combo = 1;
   r.comboTimer = 0;
   r.runStats.crashes++;
@@ -821,6 +831,7 @@ function render() {
   drawParticles();
 
   drawBike(r.bike, r.stats);
+  drawLandingFlash(r.bike);
   drawFloatingTexts();
 
   // Foreground silhouette layer — closer parallax props, drawn over the bike
@@ -839,6 +850,7 @@ function render() {
 
   updateHUD();
 }
+
 
 function drawColorGrade(theme) {
   if (!theme.tint) return;
@@ -1493,6 +1505,7 @@ function drawCollectibles(terrain, camX) {
   }
 }
 
+
 function drawFinishLine(x, terrain) {
   const groundY = terrainHeightAt(terrain, x);
   // checker pole
@@ -1533,6 +1546,37 @@ function drawFloatingTexts() {
   }
   ctx.globalAlpha = 1;
   ctx.textAlign = "start";
+}
+
+
+function drawLandingFlash(b) {
+  const f = b && b.landingFlash;
+  if (!f || !f.max) return;
+  const phase = 1 - f.time / f.max;
+  const alpha = Math.max(0, 1 - phase);
+  const radius = 22 + phase * 34;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.strokeStyle = f.color;
+  ctx.fillStyle = f.color;
+  ctx.globalAlpha = alpha * 0.55;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y - 15, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.globalAlpha = alpha * 0.9;
+  ctx.font = "bold 12px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.strokeText(f.label, b.x, b.y - 50 - phase * 12);
+  ctx.fillText(f.label, b.x, b.y - 50 - phase * 12);
+  ctx.restore();
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
 }
 
 // Shared bike renderer. `g` is the 2D context, already translated/rotated.
@@ -1968,6 +2012,34 @@ function showOnly(id) {
 function showHud() { document.getElementById("hud").classList.remove("hidden"); }
 function hideHud() { document.getElementById("hud").classList.add("hidden"); }
 
+
+function objectiveValue(metric, runtime) {
+  const rs = runtime.runStats || {};
+  switch (metric) {
+    case "score": return runtime.score || 0;
+    case "time": return runtime.time || 0;
+    case "crashes": return rs.crashes || 0;
+    case "airtime": return Math.floor(rs.airtime || 0);
+    case "topSpeed": return Math.floor(rs.topSpeed || 0);
+    case "longestAir": return Math.floor((rs.longestAir || 0) * 10) / 10;
+    default: return rs[metric] || 0;
+  }
+}
+
+function objectiveDone(objective, runtime) {
+  if (!objective) return false;
+  const value = objectiveValue(objective.metric, runtime);
+  return objective.compare === "lte" ? value <= objective.target : value >= objective.target;
+}
+
+function objectiveProgressText(objective, runtime = null) {
+  if (!objective) return "";
+  if (!runtime) return objective.label;
+  const value = objectiveValue(objective.metric, runtime);
+  const suffix = objective.metric === "airtime" || objective.metric === "longestAir" ? "s" : objective.metric === "topSpeed" ? " mph" : "";
+  return `${objectiveDone(objective, runtime) ? "✓" : "○"} ${objective.label} (${value}${suffix}/${objective.target}${suffix})`;
+}
+
 function buildLevelGrid() {
   const grid = document.getElementById("level-grid");
   grid.innerHTML = "";
@@ -1985,6 +2057,7 @@ function buildLevelGrid() {
         ? `Best: ${best.score} pts • ${best.time.toFixed(1)}s`
         : "Not completed"}</div>
       <div class="lc-meta">🥇 ${lvl.medals.gold}s &nbsp; 🥈 ${lvl.medals.silver}s &nbsp; 🥉 ${lvl.medals.bronze}s</div>
+      ${lvl.objective ? `<div class="lc-objective">🎯 ${objectiveProgressText(lvl.objective)}</div>` : ""}
       <div class="lc-meta">${lvl.desc}</div>
     `;
     if (unlocked) card.addEventListener("click", () => startRun(lvl.id));
@@ -2008,30 +2081,73 @@ document.querySelectorAll(".parts-tabs .tab").forEach(t => {
   });
 });
 
+
+const STAT_LABELS = {
+  topSpeed: "Speed", accel: "Accel", grip: "Grip", suspension: "Susp",
+  boostCap: "Boost", boostRegen: "Regen", durability: "Durability", weight: "Weight",
+};
+const STAT_KEYS = ["topSpeed", "accel", "grip", "suspension", "boostCap", "boostRegen", "durability", "weight"];
+
+function formatStatValue(key, value) {
+  if (key === "topSpeed") return `${Math.round(value)} mph`;
+  if (key === "boostCap" || key === "durability") return `${Math.round(value)}`;
+  if (key === "boostRegen") return `${Math.round(value)}/s`;
+  return value.toFixed(2).replace(/\.00$/, "");
+}
+
+function statDeltaHtml(current, candidate) {
+  const chips = [];
+  for (const key of STAT_KEYS) {
+    const a = current[key];
+    const b = candidate[key];
+    if (typeof a !== "number" || typeof b !== "number") continue;
+    const diff = b - a;
+    if (Math.abs(diff) < 0.001) continue;
+    const good = key === "weight" ? diff < 0 : diff > 0;
+    const sign = diff > 0 ? "+" : "";
+    const display = key === "topSpeed" || key === "boostCap" || key === "durability"
+      ? `${sign}${Math.round(diff)}`
+      : `${sign}${diff.toFixed(2).replace(/0$/, "")}`;
+    chips.push(`<span class="pc-delta ${good ? "up" : "down"}">${STAT_LABELS[key]} ${display}</span>`);
+  }
+  return chips.length ? `<div class="pc-deltas">${chips.slice(0, 4).join("")}</div>` : "";
+}
+
+function partCandidateStats(slot, partId) {
+  return composeStats({ ...save.equipped, [slot]: partId });
+}
+
 function buildPartsList(tab) {
   const list = document.getElementById("parts-list");
   list.innerHTML = "";
   // The "character" tab uses a different catalog and equipment slot.
   const items = (tab === "character") ? CHARACTERS : PARTS[tab];
   const slot = (tab === "character") ? "character" : tab;
+  const currentStats = getEquippedStats();
   for (const p of items) {
     const owned = !!save.ownedParts[p.id];
     const equipped = save.equipped[slot] === p.id;
     const card = document.createElement("div");
     card.className = "part-card" + (equipped ? " equipped" : "") + (owned || save.cash >= p.cost ? "" : " locked");
-    const stats = Object.entries(p.stats || {}).filter(([k,v]) => k !== "paint" && k !== "accent" && k !== "boots")
+    const rawStats = Object.entries(p.stats || {}).filter(([k,v]) => k !== "paint" && k !== "accent" && k !== "boots")
       .map(([k,v]) => {
         const sign = (typeof v === "number" && v > 0) ? "+" : "";
         return `${k}: ${sign}${v}`;
       }).join("  •  ");
+    const candidateStats = partCandidateStats(slot, p.id);
+    const deltaHtml = equipped ? "" : statDeltaHtml(currentStats, candidateStats);
+    const missingCash = Math.max(0, p.cost - save.cash);
+    const tag = equipped ? "Equipped" : owned ? "Owned" : missingCash === 0 ? "Ready" : `Need $${missingCash}`;
     card.innerHTML = `
       <div>
-        <div class="pc-name">${p.name}</div>
+        <div class="pc-name">${p.name}${(!owned && missingCash === 0 && p.cost > 0) ? `<span class="pc-tag">Recommended</span>` : ""}</div>
         <div class="pc-desc">${p.desc}</div>
-        <div class="pc-stats">${stats || ""}</div>
+        <div class="pc-stats">${rawStats || ""}</div>
+        ${deltaHtml}
       </div>
       <div class="pc-buy">
-        <div class="pc-cost">${owned ? (equipped ? "Equipped" : "Owned") : `$${p.cost}`}</div>
+        <div class="pc-cost">${tag}</div>
+        ${!owned ? `<div class="pc-price">$${p.cost}</div>` : ""}
         <button>${equipped ? "Equipped" : (owned ? "Equip" : "Buy")}</button>
       </div>
     `;
@@ -2303,14 +2419,21 @@ function showResult(completed, extra) {
     titleEl.textContent = `Run Ended — ${r.level.name}`;
   }
   let html = "";
+  const rs = r.runStats;
+  const stylePoints = (rs.perfectLandings * 2) + rs.cleanLandings + (rs.flips * 2) + Math.floor(rs.airtime / 2) + rs.maxCombo - (rs.crashes * 3);
+  const grade = stylePoints >= 24 ? "S" : stylePoints >= 18 ? "A" : stylePoints >= 12 ? "B" : stylePoints >= 7 ? "C" : "D";
+  html += `<div class="recap-card"><div class="recap-grade">${grade}</div><div><div class="recap-title">Stunt Recap</div><div class="recap-sub">${objectiveProgressText(r.level.objective, r)}</div></div></div>`;
   html += `<div class="row"><span>Time</span><span>${r.time.toFixed(1)}s</span></div>`;
   html += `<div class="row"><span>Distance</span><span>${Math.floor(r.distance/10)} m</span></div>`;
   html += `<div class="row"><span>Score</span><span>${r.score}</span></div>`;
-  html += `<div class="row"><span>Flips</span><span>${r.runStats.flips}</span></div>`;
-  html += `<div class="row"><span>Clean Landings</span><span>${r.runStats.cleanLandings}</span></div>`;
-  html += `<div class="row"><span>Perfect Landings</span><span>${r.runStats.perfectLandings}</span></div>`;
-  html += `<div class="row"><span>Max Combo</span><span>x${r.runStats.maxCombo}</span></div>`;
-  html += `<div class="row"><span>Crashes</span><span>${r.runStats.crashes}</span></div>`;
+  html += `<div class="row"><span>Flips</span><span>${rs.flips}</span></div>`;
+  html += `<div class="row"><span>Air Time</span><span>${rs.airtime.toFixed(1)}s</span></div>`;
+  html += `<div class="row"><span>Longest Air</span><span>${rs.longestAir.toFixed(1)}s</span></div>`;
+  html += `<div class="row"><span>Top Speed</span><span>${Math.floor(rs.topSpeed)} mph</span></div>`;
+  html += `<div class="row"><span>Clean Landings</span><span>${rs.cleanLandings}</span></div>`;
+  html += `<div class="row"><span>Perfect Landings</span><span>${rs.perfectLandings}</span></div>`;
+  html += `<div class="row"><span>Max Combo</span><span>x${rs.maxCombo}</span></div>`;
+  html += `<div class="row"><span>Crashes</span><span>${rs.crashes}</span></div>`;
   if (completed) {
     html += `<div class="row bonus"><span>Time bonus</span><span>+$${extra.timeBonus}</span></div>`;
     html += `<div class="row bonus"><span>Distance bonus</span><span>+$${Math.floor(extra.distBonus * 0.5)}</span></div>`;
