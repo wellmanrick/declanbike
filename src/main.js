@@ -76,6 +76,7 @@ function startRun(levelId) {
       angle: 0, angVel: 0,
       wheelAngle: 0,
       landSquash: 0,
+      landingFlash: null,   // short local ring flash on perfect/clean/save landings
       wobble: 0,           // post-save jitter, decays over ~1s
       boostingPrev: false,
       onGround: true,
@@ -93,7 +94,6 @@ function startRun(levelId) {
       health: stats.durability,
       boost: stats.boostCap,
       throttleHeat: 0,
-      flowTime: 0,         // short post-landing momentum glow from clean/perfect landings
       crashed: false,
       crashTimer: 0,
       finished: false,
@@ -107,7 +107,7 @@ function startRun(levelId) {
     distance: 0,
     particles: [],
     floatingTexts: [],
-    runStats: { flips: 0, airtime: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, crashes: 0, maxCombo: 1, collectibles: 0, gems: 0, topSpeed: 0, longestAir: 0, runPerfects: 0, flowBoosts: 0 },
+    runStats: { flips: 0, airtime: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, crashes: 0, maxCombo: 1, collectibles: 0, gems: 0, topSpeed: 0, longestAir: 0, runPerfects: 0 },
     finishLineX: level.length - 60,
     paused: false,
     finishedAt: null,
@@ -165,7 +165,7 @@ function updateBike(dt) {
       b.currentFlipRot = 0;
       b.jumpBuffer = 0; b.coyote = 0;
       b.wobble = 0;
-      b.flowTime = 0;
+      b.landingFlash = null;
       if (b.wheelie) { b.wheelie.time = 0; b.wheelie.dir = 0; }
       b.health = Math.max(b.health, r.stats.durability * 0.4);
       r.combo = 1;
@@ -390,7 +390,10 @@ function updateBike(dt) {
   // landing squash decays
   if (b.landSquash > 0) b.landSquash = Math.max(0, b.landSquash - dt * 4);
   if (b.wobble > 0)     b.wobble     = Math.max(0, b.wobble - dt * 1.2);
-  if (b.flowTime > 0)   b.flowTime   = Math.max(0, b.flowTime - dt);
+  if (b.landingFlash) {
+    b.landingFlash.time = Math.max(0, b.landingFlash.time - dt);
+    if (b.landingFlash.time <= 0) b.landingFlash = null;
+  }
 
   // Track per-run bests for quest metrics
   const speedMph = Math.abs(b.vx) / 6;
@@ -556,22 +559,12 @@ function handleLanding(slopeAngle) {
       label = "Perfect!"; bonus += 100;
       r.runStats.perfectLandings++;
       save.totals.perfectLandings++;
-      // Perfect landings now feed a short "flow" burst: a little speed,
-      // boost refill, and a visual trail. It rewards skill without turning
-      // every landing into a mandatory boost-pad.
-      const flowBoost = 45 + Math.min(40, Math.abs(b.vx) * 0.08);
-      b.vx += b.vx >= 0 ? flowBoost : -flowBoost;
-      b.boost = Math.min(r.stats.boostCap, b.boost + 14);
-      b.flowTime = 0.9;
-      r.runStats.flowBoosts = (r.runStats.flowBoosts || 0) + 1;
+      b.landingFlash = { time: 0.48, max: 0.48, color: "#4ddc8c", label: "PERFECT" };
       Sound.perfect();
       if (r.shake) r.shake.mag = Math.max(r.shake.mag, 5);
     } else {
       bonus += 30;
-      // Clean landings get a smaller boost-meter refund so staying smooth
-      // keeps the next jump playful even when it was not frame-perfect.
-      b.boost = Math.min(r.stats.boostCap, b.boost + 5);
-      b.flowTime = Math.max(b.flowTime || 0, 0.35);
+      b.landingFlash = { time: 0.34, max: 0.34, color: "#ffb020", label: "CLEAN" };
       Sound.land();
     }
     r.runStats.cleanLandings++;
@@ -587,7 +580,7 @@ function handleLanding(slopeAngle) {
       pushToast(`${absFlips}x ${flips > 0 ? "Front" : "Back"}flip! +${flipBonus} (x${r.combo})`, "gold", 1400);
       Sound.flip(Math.min(4, absFlips + 1));
     } else {
-      pushToast(label === "Perfect!" ? "Perfect flow boost!" : label, label === "Perfect!" ? "gold" : "green", 800);
+      pushToast(label, "green", 800);
     }
 
     // Air-trick bonuses (independent of flip count). Awarded if held >0.4s.
@@ -625,8 +618,8 @@ function handleLanding(slopeAngle) {
     b.vx *= 0.6;
     b.vy *= 0.2;
     b.landSquash = 1;
+    b.landingFlash = { time: 0.38, max: 0.38, color: "#ffd166", label: "SAVE" };
     b.wobble = 1;
-    b.flowTime = 0;
     Sound.land();
     spawnLandingDust(1.0);
   } else {
@@ -659,7 +652,7 @@ function crash(reason) {
   b.vy = -200;
   b.angVel = (Math.random() - 0.5) * 12;
   b.health = Math.max(0, b.health - 25);
-  b.flowTime = 0;
+  b.landingFlash = null;
   r.combo = 1;
   r.comboTimer = 0;
   r.runStats.crashes++;
@@ -831,15 +824,14 @@ function render() {
   drawCheckpoints(r.terrain, r.cam.x);
   drawObstacles(r.terrain, r.cam.x);
   drawCollectibles(r.terrain, r.cam.x);
-  drawTrailWarnings(r);
   drawFinishLine(r.finishLineX, r.terrain);
 
   // tire trail + particles behind bike
   drawTireTrail(r.bike);
   drawParticles();
-  drawLandingGuide(r.bike);
 
   drawBike(r.bike, r.stats);
+  drawLandingFlash(r.bike);
   drawFloatingTexts();
 
   // Foreground silhouette layer — closer parallax props, drawn over the bike
@@ -855,109 +847,10 @@ function render() {
   drawVignette();
   if (r.countdown > 0) drawCountdown(r.countdown);
   if (r.powerup) drawPowerupBadge(r.powerup);
-  drawAirCoach(r);
 
   updateHUD();
 }
 
-
-function landingQualityColor(angleDeg) {
-  if (angleDeg < 8) return { color: "#4ddc8c", label: "PERFECT" };
-  if (angleDeg < 45) return { color: "#ffb020", label: "CLEAN" };
-  if (angleDeg < 80) return { color: "#ffd166", label: "SAVE" };
-  return { color: "#ff5a3a", label: "BAIL" };
-}
-
-function drawLandingGuide(b) {
-  const r = G.runtime;
-  if (!r || b.onGround || b.crashed || b.finished || b.airtime < 0.18) return;
-
-  const lead = clamp(Math.abs(b.vx) * 0.35, 80, 230) * (b.vx >= 0 ? 1 : -1);
-  const x = clamp(b.x + lead, 40, r.finishLineX - 10);
-  const y = terrainHeightAt(r.terrain, x);
-  const slope = terrainSlopeAt(r.terrain, x);
-  const angleDeg = Math.abs(wrapAngle(b.angle - slope)) * 180 / Math.PI;
-  const q = landingQualityColor(angleDeg);
-  const len = 95;
-  const t = performance.now() / 1000;
-
-  ctx.save();
-  ctx.globalAlpha = 0.72 + 0.18 * Math.sin(t * 8);
-  ctx.strokeStyle = q.color;
-  ctx.fillStyle = q.color;
-  ctx.lineWidth = 4;
-  ctx.setLineDash([12, 8]);
-  ctx.beginPath();
-  ctx.moveTo(x - Math.cos(slope) * len / 2, y - Math.sin(slope) * len / 2 - 4);
-  ctx.lineTo(x + Math.cos(slope) * len / 2, y + Math.sin(slope) * len / 2 - 4);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Drop marker from the predicted landing point and a tiny slope-match label.
-  ctx.lineWidth = 2;
-  ctx.globalAlpha = 0.45;
-  ctx.beginPath();
-  ctx.moveTo(x, b.y);
-  ctx.lineTo(x, y - 10);
-  ctx.stroke();
-  ctx.globalAlpha = 0.95;
-  ctx.beginPath();
-  ctx.arc(x, y - 9, 6, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.font = "bold 13px ui-monospace, monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "bottom";
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = "rgba(0,0,0,0.55)";
-  ctx.strokeText(q.label, x, y - 22);
-  ctx.fillText(q.label, x, y - 22);
-  ctx.restore();
-  ctx.textAlign = "start";
-  ctx.textBaseline = "alphabetic";
-}
-
-function drawAirCoach(r) {
-  const b = r && r.bike;
-  if (!b || b.onGround || b.crashed || b.finished || b.airtime < 0.2) return;
-
-  const slope = terrainSlopeAt(r.terrain, b.x + clamp(b.vx * 0.2, -160, 180));
-  const angleDeg = Math.abs(wrapAngle(b.angle - slope)) * 180 / Math.PI;
-  const q = landingQualityColor(angleDeg);
-  const flipProgress = Math.abs(b.currentFlipRot) / (Math.PI * 2);
-  const wholeFlips = Math.floor(flipProgress);
-  const partial = flipProgress - wholeFlips;
-  const x = W / 2;
-  const y = 108;
-  const w = 230;
-  const h = 52;
-
-  ctx.save();
-  ctx.fillStyle = "rgba(11,13,18,0.66)";
-  ctx.strokeStyle = q.color;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.roundRect ? ctx.roundRect(x - w/2, y - h/2, w, h, 14) : ctx.rect(x - w/2, y - h/2, w, h);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = "rgba(255,255,255,0.76)";
-  ctx.font = "12px ui-monospace, monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(`Landing: ${q.label} • ${Math.round(angleDeg)}°`, x, y - 12);
-
-  ctx.fillStyle = "rgba(255,255,255,0.16)";
-  ctx.fillRect(x - 82, y + 8, 164, 8);
-  ctx.fillStyle = q.color;
-  ctx.fillRect(x - 82, y + 8, 164 * clamp(partial, 0, 1), 8);
-  ctx.fillStyle = "rgba(255,255,255,0.82)";
-  ctx.font = "bold 12px ui-monospace, monospace";
-  ctx.fillText(`${wholeFlips} flip${wholeFlips === 1 ? "" : "s"} queued`, x, y + 23);
-  ctx.restore();
-  ctx.textAlign = "start";
-  ctx.textBaseline = "alphabetic";
-}
 
 function drawColorGrade(theme) {
   if (!theme.tint) return;
@@ -1613,58 +1506,6 @@ function drawCollectibles(terrain, camX) {
 }
 
 
-function drawTrailWarnings(r) {
-  const b = r && r.bike;
-  if (!b || b.crashed || b.finished) return;
-  const minAhead = 120;
-  const maxAhead = 620;
-  const t = performance.now() / 1000;
-  const warnings = [];
-
-  for (const hz of r.terrain.hazards || []) {
-    const dx = hz.x - b.x;
-    if (dx < minAhead || dx > maxAhead) continue;
-    const icon = hz.type === "fire" ? "🔥" : hz.type === "spring" ? "↟" : hz.type === "mud" ? "MUD" : "OIL";
-    const color = hz.type === "fire" ? "#ff5a3a" : hz.type === "spring" ? "#4ddc8c" : hz.type === "mud" ? "#8b5a2b" : "#ffd166";
-    warnings.push({ x: hz.x + hz.w / 2, y: terrainHeightAt(r.terrain, hz.x + hz.w / 2) - 78, icon, color, dx });
-  }
-
-  for (const obs of r.terrain.obstacles || []) {
-    if (obs.hit) continue;
-    const dx = obs.x - b.x;
-    if (dx < minAhead || dx > maxAhead) continue;
-    warnings.push({ x: obs.x, y: obs.y - 70, icon: obs.type === "tire" ? "TIRE" : "!", color: obs.type === "tire" ? "#ffb020" : "#ff5a3a", dx });
-  }
-
-  warnings.sort((a, b) => a.dx - b.dx);
-  for (const w of warnings.slice(0, 3)) {
-    const urgency = 1 - clamp((w.dx - minAhead) / (maxAhead - minAhead), 0, 1);
-    const bob = Math.sin(t * 7 + w.x * 0.02) * 3;
-    ctx.save();
-    ctx.globalAlpha = 0.55 + urgency * 0.4;
-    ctx.fillStyle = "rgba(11,13,18,0.72)";
-    ctx.strokeStyle = w.color;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(w.x - 25, w.y + bob - 18, 50, 30, 8) : ctx.rect(w.x - 25, w.y + bob - 18, 50, 30);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = w.color;
-    ctx.font = "bold 13px ui-monospace, monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(w.icon, w.x, w.y + bob - 3);
-    ctx.strokeStyle = w.color;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(w.x, w.y + bob + 12);
-    ctx.lineTo(w.x, w.y + bob + 28);
-    ctx.stroke();
-    ctx.restore();
-  }
-  ctx.textAlign = "start";
-  ctx.textBaseline = "alphabetic";
-}
-
 function drawFinishLine(x, terrain) {
   const groundY = terrainHeightAt(terrain, x);
   // checker pole
@@ -1707,9 +1548,40 @@ function drawFloatingTexts() {
   ctx.textAlign = "start";
 }
 
+
+function drawLandingFlash(b) {
+  const f = b && b.landingFlash;
+  if (!f || !f.max) return;
+  const phase = 1 - f.time / f.max;
+  const alpha = Math.max(0, 1 - phase);
+  const radius = 22 + phase * 34;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.strokeStyle = f.color;
+  ctx.fillStyle = f.color;
+  ctx.globalAlpha = alpha * 0.55;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y - 15, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.globalAlpha = alpha * 0.9;
+  ctx.font = "bold 12px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.strokeText(f.label, b.x, b.y - 50 - phase * 12);
+  ctx.fillText(f.label, b.x, b.y - 50 - phase * 12);
+  ctx.restore();
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+}
+
 // Shared bike renderer. `g` is the 2D context, already translated/rotated.
 // `opts` carries: paint, wheelAngle, lean ({x, y}), squash (0..1 landing impact),
-// boosting, flow landing glow, and braking.
+// boosting, throttling.
 function paintBike(g, opts) {
   const paint = opts.paint || "#e94c3a";
   const accent = opts.accent || "#ffffff";
@@ -1718,7 +1590,6 @@ function paintBike(g, opts) {
   const lean = opts.lean || { x: 0, y: 0 };
   const squash = opts.squash || 0;
   const boosting = !!opts.boosting;
-  const flow = clamp(opts.flow || 0, 0, 1);
   const dark = !!opts.dark;       // theme is dark → draw a headlight beam
   const braking = !!opts.braking; // brake light when slowing down
 
@@ -1738,22 +1609,6 @@ function paintBike(g, opts) {
     g.lineTo(220, 30);
     g.lineTo(26, -2);
     g.closePath();
-    g.fill();
-    g.restore();
-  }
-
-  // ----- Flow aura --------------------------------------------------------
-  if (flow > 0) {
-    g.save();
-    g.globalCompositeOperation = "lighter";
-    g.globalAlpha = Math.min(0.65, flow * 0.8);
-    const flowGrad = g.createLinearGradient(-48, -12, 34, -12);
-    flowGrad.addColorStop(0, "rgba(110, 231, 255, 0)");
-    flowGrad.addColorStop(0.45, "rgba(110, 231, 255, 0.30)");
-    flowGrad.addColorStop(1, "rgba(255, 255, 255, 0.10)");
-    g.fillStyle = flowGrad;
-    g.beginPath();
-    g.ellipse(-7, -10, 54, 28, 0, 0, Math.PI * 2);
     g.fill();
     g.restore();
   }
@@ -1983,24 +1838,6 @@ function paintBike(g, opts) {
   g.moveTo(-22, 0); g.lineTo(-3, -2);
   g.stroke();
 
-  // Blue flow streak from the rear wheel after a perfect/clean landing.
-  if (flow > 0) {
-    const t = performance.now() / 70;
-    g.save();
-    g.globalCompositeOperation = "lighter";
-    g.globalAlpha = Math.min(0.75, flow);
-    g.strokeStyle = "rgba(110, 231, 255, 0.78)";
-    g.lineWidth = 2.5;
-    for (let i = 0; i < 3; i++) {
-      const off = i * 5 + Math.sin(t + i) * 2;
-      g.beginPath();
-      g.moveTo(-28 - off, -2 + i * 3);
-      g.quadraticCurveTo(-52 - off, -8 + i * 2, -76 - off, -3 + i * 4);
-      g.stroke();
-    }
-    g.restore();
-  }
-
   // Boost flame from exhaust
   if (boosting) {
     const t = performance.now() / 60;
@@ -2040,17 +1877,6 @@ function drawBike(b, stats) {
       ctx.arc(b.x, b.y - 12, 36, 0, Math.PI * 2);
       ctx.stroke();
     }
-  }
-  if (b.flowTime > 0) {
-    const pulse = clamp(b.flowTime, 0, 1);
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    const grad = ctx.createRadialGradient(b.x, b.y - 12, 0, b.x, b.y - 12, 56 + pulse * 22);
-    grad.addColorStop(0, `rgba(110, 231, 255, ${0.22 * pulse})`);
-    grad.addColorStop(1, "rgba(110, 231, 255, 0)");
-    ctx.fillStyle = grad;
-    ctx.fillRect(b.x - 86, b.y - 82, 172, 120);
-    ctx.restore();
   }
   // Ground shadow (drawn in world coords, no rotation)
   if (!b.onGround && G.runtime) {
@@ -2098,7 +1924,6 @@ function drawBike(b, stats) {
     wheelAngle: b.wheelAngle || 0,
     lean: { x: leanX, y: leanY },
     squash, boosting,
-    flow: b.flowTime || 0,
     dark: !!(theme && theme.dark),
     braking: !!inp.brake && b.onGround,
   });
