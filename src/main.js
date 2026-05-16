@@ -2896,6 +2896,12 @@ const FieldGoal = {
       // hits 5. The session-best streak is folded into the global
       // save record on level finish.
       streak: 0, bestStreak: 0,
+      // Last scoring breakdown — copied from the standalone Flick Field
+      // Goal scoring model so makes can show base, distance, perfect,
+      // wind, long-kick, streak, and power-up bonuses.
+      lastScoreBreakdown: null,
+      lastScoreText: "",
+      lastScoreTimer: 0,
       // Firework particles — purely visual, spawned by the streak
       // milestone and stepped each frame in update().
       fireworks: [],
@@ -2952,7 +2958,51 @@ const FieldGoal = {
     }
     return flakes;
   },
-  payout(g) { return Math.floor((g.score || 0) * 1.0); },
+  payout(g) { return Math.floor((g.score || 0) * 0.08); },
+  scoreMultiplier(streak) {
+    if (streak >= 8) return 5;
+    if (streak >= 5) return 3;
+    if (streak >= 3) return 2;
+    return 1;
+  },
+  windHelped(g, drift) {
+    if (Math.abs(g.wind) < 1.5) return false;
+    return Math.sign(drift) === Math.sign(g.wind) && Math.abs(drift) > 0.4;
+  },
+  formatScoreBreakdown(breakdown) {
+    if (!breakdown) return "";
+    const bits = [`+${breakdown.base}`, `Dist +${breakdown.distanceBonus}`];
+    if (breakdown.perfect) bits.push(`Perfect +${breakdown.perfect}`);
+    if (breakdown.windBonus) bits.push(`Wind +${breakdown.windBonus}`);
+    if (breakdown.longKick) bits.push(`Long +${breakdown.longKick}`);
+    if (breakdown.bullseye) bits.push(`Bullseye +${breakdown.bullseye}`);
+    if (breakdown.streakMultiplier > 1) bits.push(`Streak x${breakdown.streakMultiplier}`);
+    if (breakdown.powerMultiplier > 1) bits.push(`Power x${breakdown.powerMultiplier}`);
+    bits.push(`= +${breakdown.total}`);
+    return bits.join("  •  ");
+  },
+  scoreMadeKick(g, { perfect = false, ringHit = false, drift = 0 } = {}) {
+    const yards = Math.round(((g.level && g.level.distance) || g.posts.z) * 1.094);
+    const breakdown = {
+      base: 100,
+      distanceBonus: Math.round(yards * 5),
+      perfect: perfect ? 250 : 0,
+      windBonus: FieldGoal.windHelped(g, drift) ? 100 : 0,
+      longKick: yards >= 50 ? 150 : 0,
+      bullseye: ringHit ? 500 : 0,
+      streakMultiplier: FieldGoal.scoreMultiplier(g.streak + 1),
+      powerMultiplier: (g.powerup && g.powerup.activeEffect === "double") ? 2 : 1,
+      total: 0,
+    };
+    const subtotal = breakdown.base + breakdown.distanceBonus + breakdown.perfect +
+      breakdown.windBonus + breakdown.longKick + breakdown.bullseye;
+    breakdown.total = subtotal * breakdown.streakMultiplier * breakdown.powerMultiplier;
+    g.score += breakdown.total;
+    g.lastScoreBreakdown = breakdown;
+    g.lastScoreText = FieldGoal.formatScoreBreakdown(breakdown);
+    g.lastScoreTimer = 2.2;
+    return breakdown;
+  },
   reset(g) {
     // Per-attempt randomness inside the level's configured ranges. Distance
     // and gap stay constant for the level; wind and lateral offset roll
@@ -3051,6 +3101,7 @@ const FieldGoal = {
     if (!g.ball) FieldGoal.reset(g);
     const b = g.ball, p = g.posts;
     if (g.kickFx > 0) g.kickFx = Math.max(0, g.kickFx - dt);
+    if (g.lastScoreTimer > 0) g.lastScoreTimer = Math.max(0, g.lastScoreTimer - dt);
     // Shake decays in real time, regardless of pause/slow-mo, so the
     // visual settles even during a hit-pause.
     if (g.shake > 0) g.shake = Math.max(0, g.shake - dt * 12);
@@ -3221,29 +3272,38 @@ const FieldGoal = {
         // misses both tally correctly.
         let madeIt = false;
         if (g.condition === "two_point" && through && !tightWindow) {
+          g.lastScoreText = ""; g.lastScoreTimer = 0; g.lastScoreBreakdown = null;
           g.message = "Sailed!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 6, vibrate: 35 });
         } else if (through && liveOK) {
           madeIt = true;
           g.made++;
-          let pts = 7;
-          let msg = "GOOD!";
-          let big = false;
-          if (ringHit) { pts += 5; msg = "BULLSEYE!"; big = true; }
-          if (g.powerup && g.powerup.activeEffect === "double") {
-            pts *= 2;
-            msg = msg === "BULLSEYE!" ? "BULLSEYE x2!" : "GOOD x2!";
+          const perfectCenter = Math.abs(offset) < p.gap * 0.16
+                                && b.y > p.crossbar + 0.5
+                                && b.y < p.crossbar + 2.2;
+          const breakdown = FieldGoal.scoreMadeKick(g, {
+            perfect: perfectCenter,
+            ringHit,
+            drift: b.x,
+          });
+          const doubled = breakdown.powerMultiplier > 1;
+          let msg = perfectCenter ? "PERFECT!" : "GOOD!";
+          let big = perfectCenter || breakdown.streakMultiplier >= 2;
+          if (ringHit) { msg = "BULLSEYE!"; big = true; }
+          if (doubled) {
+            msg = msg === "BULLSEYE!" ? "BULLSEYE x2!" : `${msg.replace("!", "")} x2!`;
             big = true;
           }
-          g.score += pts;
           g.message = msg; g.messageTimer = 1.4;
           Sound.perfect && Sound.perfect();
           // Make = mid shake + brief slow-mo + ascending haptic.
-          // Bullseye dials all three up.
+          // Perfects, bullseyes, streak multipliers, and double-power
+          // kicks dial all three up.
           cbJuice(g, big
             ? { shake: 14, slowT: 0.55, vibrate: [0, 30, 30, 30, 30, 80] }
             : { shake: 8,  slowT: 0.30, vibrate: [0, 20, 30, 60] });
         } else if (throughDecoy) {
+          g.lastScoreText = ""; g.lastScoreTimer = 0; g.lastScoreBreakdown = null;
           g.message = "Wrong door!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 9, slowT: 0.30, vibrate: [0, 30, 50, 30] });
         } else if (g.condition === "doink" && Math.abs(offset) >= p.gap / 2
@@ -3257,19 +3317,29 @@ const FieldGoal = {
             doinkMsg = "Doink! +6";
           }
           g.score += doinkPts;
+          g.lastScoreBreakdown = {
+            base: doinkPts, distanceBonus: 0, perfect: 0, windBonus: 0,
+            longKick: 0, bullseye: 0, streakMultiplier: 1,
+            powerMultiplier: 1, total: doinkPts,
+          };
+          g.lastScoreText = `Upright bonus = +${doinkPts}`;
+          g.lastScoreTimer = 2.0;
           g.message = doinkMsg; g.messageTimer = 1.4;
           Sound.boostHit && Sound.boostHit();
           // Brief hit-pause + clang-shake — sells the upright contact.
           cbJuice(g, { shake: 10, pauseT: 0.06, vibrate: [0, 35] });
         } else if (between && b.y <= p.crossbar) {
+          g.lastScoreText = ""; g.lastScoreTimer = 0; g.lastScoreBreakdown = null;
           g.message = "Short!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 4, vibrate: 25 });
         } else if (Math.abs(offset) < p.gap) {
+          g.lastScoreText = ""; g.lastScoreTimer = 0; g.lastScoreBreakdown = null;
           g.message = "Doinked!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           // Standard doinks (non-doink condition) get a meaty hit-pause
           // and vibration since the post contact is loud.
           cbJuice(g, { shake: 12, pauseT: 0.08, vibrate: [0, 35, 30, 35] });
         } else {
+          g.lastScoreText = ""; g.lastScoreTimer = 0; g.lastScoreBreakdown = null;
           g.message = "Wide!"; g.messageTimer = 1.4; Sound.crash && Sound.crash();
           cbJuice(g, { shake: 5, vibrate: 30 });
         }
@@ -3283,7 +3353,7 @@ const FieldGoal = {
           // a clean make so doinks/triple-decoys don't qualify.
           const lvlYards = Math.round(g.level.distance * 1.094);
           save.fieldGoalBest = save.fieldGoalBest ||
-            { longestMake: 0, bestStreak: 0, totalMakes: 0 };
+            { longestMake: 0, bestStreak: 0, bestScore: 0, totalMakes: 0 };
           if (lvlYards > (save.fieldGoalBest.longestMake || 0)) {
             save.fieldGoalBest.longestMake = lvlYards;
           }
@@ -3331,9 +3401,12 @@ const FieldGoal = {
           // lifetime makes counter. longestMake is updated per-make in
           // the make branch; this is the round-end bookkeeping.
           save.fieldGoalBest = save.fieldGoalBest ||
-            { longestMake: 0, bestStreak: 0, totalMakes: 0 };
+            { longestMake: 0, bestStreak: 0, bestScore: 0, totalMakes: 0 };
           if (g.bestStreak > (save.fieldGoalBest.bestStreak || 0)) {
             save.fieldGoalBest.bestStreak = g.bestStreak;
+          }
+          if (g.score > (save.fieldGoalBest.bestScore || 0)) {
+            save.fieldGoalBest.bestScore = g.score;
           }
           save.fieldGoalBest.totalMakes = (save.fieldGoalBest.totalMakes || 0) + g.made;
           persistSave();
@@ -3609,6 +3682,18 @@ const FieldGoal = {
       ctx.font = `bold ${Math.round(15 * pulse)}px ui-monospace, monospace`;
       ctx.fillStyle = milestone ? "#ffd03a" : "rgba(255, 220, 80, 0.95)";
       ctx.fillText(`🔥 Streak x${g.streak}`, 16, 156);
+    }
+    if (g.lastScoreText && g.lastScoreTimer > 0) {
+      const a = Math.min(1, g.lastScoreTimer / 0.35);
+      ctx.font = "bold 12px ui-monospace, monospace";
+      ctx.fillStyle = `rgba(15, 25, 35, ${0.62 * a})`;
+      const tw = Math.min(W - 32, ctx.measureText(g.lastScoreText).width + 18);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(16, 168, tw, 28, 8);
+      else ctx.rect(16, 168, tw, 28);
+      ctx.fill();
+      ctx.fillStyle = `rgba(255, 235, 150, ${a})`;
+      ctx.fillText(g.lastScoreText, 25, 187);
     }
     // Power-up badge — top-right corner. Tap-target rect is cached on
     // g.powerup.badge so handlePointer can hit-test the same area.
