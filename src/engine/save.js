@@ -42,6 +42,7 @@ export const DEFAULT_SAVE = {
   fieldGoalBest: {                // Lifetime Field Goal records.
     longestMake: 0,               //   farthest converted kick in yards
     bestStreak: 0,                //   longest in-round consecutive-make streak
+    bestScore: 0,                 //   highest round score with FG scoring
     totalMakes: 0,                //   lifetime makes across all rounds
   },
   partyPongLevels: {},            // levelId -> { stars, ballsUsed, score, cleared }
