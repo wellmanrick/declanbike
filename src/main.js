@@ -5843,6 +5843,48 @@ const DuckHunt = {
   },
 };
 
+
+function hoopsFlickPreview(state) {
+  if (!state.dragStart || !state.dragNow) return null;
+  const sx = state.dragStart.x, sy = state.dragStart.y;
+  const ex = state.dragNow.x,   ey = state.dragNow.y;
+  const dx = ex - sx, dy = ey - sy;
+  const dist = Math.hypot(dx, dy);
+  if (dy > -25 || dist < 60) return null;
+  const power = Math.min(1, dist / 360);
+  const lateral = Math.max(-1, Math.min(1, dx / Math.max(60, -dy)));
+  const upward = -dy / dist;
+  return { power, lateral, upward };
+}
+
+function hoopsPredictTrajectory(g, flick) {
+  const h = g.hoop;
+  const distScale = Math.max(0.7, h.z / 7);
+  let x = 0, y = 0.4, z = 1.6;
+  let vx = flick.lateral * 5 * flick.power;
+  let vy = 5 + flick.power * 9 * flick.upward;
+  let vz = (8 + flick.power * 9) * distScale * (0.6 + 0.4 * flick.upward);
+  const pts = [];
+  let crossed = false, make = false;
+  const step = 1 / 40;
+  for (let i = 0; i < 95; i++) {
+    const lx = x, ly = y, lz = z;
+    vy -= 9.8 * step;
+    x += vx * step; y += vy * step; z += vz * step;
+    const p = fpProject(x, y, z);
+    pts.push({ sx: p.sx, sy: p.sy });
+    if (!crossed && ly >= h.y && y < h.y && vy < 0) {
+      const t = (h.y - ly) / Math.max(0.0001, y - ly);
+      const ix = lx + (x - lx) * t;
+      const iz = lz + (z - lz) * t;
+      make = Math.hypot(ix - h.x, iz - h.z) < 0.34;
+      crossed = true;
+    }
+    if (y < 0 || z > h.z + 6 || z < 0.4 || Math.abs(x) > 16) break;
+  }
+  return { pts, make, crossed };
+}
+
 //----------------------------------------------------------
 // HOOPS (first-person flick — basketball)
 //----------------------------------------------------------
@@ -5855,8 +5897,9 @@ const Hoops = {
     return {
       ball: null, hoop: null, shotType: "free",
       attempts: 8, taken: 0, made: 0, swishes: 0, score: 0,
+      streak: 0, bestStreak: 0, bankShots: 0, closeCalls: 0,
       message: "", messageTimer: 0, finished: false,
-      dragStart: null, dragNow: null, cameraZ: 0,
+      dragStart: null, dragNow: null, cameraZ: 0, makeFlash: 0,
     };
   },
   payout(g) { return Math.floor((g.score || 0) * 1.0); },
@@ -5870,11 +5913,14 @@ const Hoops = {
     else if (r < 0.8)   { shotType = "THREE"; hoopZ = 7  + Math.random() * 1.5; hoopX = (Math.random()-0.5) * 4.0; }
     else                { shotType = "DEEP";  hoopZ = 9  + Math.random() * 2.0; hoopX = (Math.random()-0.5) * 5.0; }
     g.shotType = shotType;
-    g.hoop = { z: hoopZ, x: hoopX, y: 3.05 };
+    const points = shotType === "FREE" ? 2 : (shotType === "THREE" ? 3 : 4);
+    g.hoop = { z: hoopZ, x: hoopX, y: 3.05, points };
     g.ball = { x: 0, y: 0.4, z: 1.6, vx: 0, vy: 0, vz: 0,
-               released: false, scored: false, gone: false, t: 0,
+               released: false, scored: false, gone: false, banked: false,
+               rimTouched: false, lastX: 0, lastY: 0.4, lastZ: 1.6, t: 0,
                trail: [] };
     g.netFlop = 0;
+    g.rimPulse = 0;
     g.message = ""; g.messageTimer = 0;
     g.cameraZ = 0;
   },
@@ -5890,6 +5936,7 @@ const Hoops = {
     g.ball.vy = 5 + power * 9 * upward;
     g.ball.vx = lateral * 5 * power;
     g.ball.released = true;
+    g.ball.release = { power, lateral, upward };
     Sound.boostHit && Sound.boostHit();
   },
   update(g, dt) {
@@ -5897,36 +5944,82 @@ const Hoops = {
     const b = g.ball, h = g.hoop;
     if (b.released && !b.gone) {
       b.t += dt;
+      b.lastX = b.x; b.lastY = b.y; b.lastZ = b.z;
       b.vy -= 9.8 * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.z += b.vz * dt;
       g.cameraZ = g.cameraZ + (Math.max(0, b.z - 3) - g.cameraZ) * Math.min(1, dt * 4);
-      // Score: ball passes through rim plane (y = h.y) descending, within ~0.30m radius.
-      if (!b.scored && b.y < h.y && b.vy < 0) {
-        const dx = b.x - h.x;
-        const dz = b.z - h.z;
+
+      // Bank shots off the glass. The old Hoops mode only accepted clean
+      // swishes; adding glass and rim interaction makes misses feel physical
+      // instead of arbitrary.
+      const bbZ = h.z + 0.10;
+      const crossedBackboard = b.lastZ < bbZ && b.z >= bbZ;
+      if (!b.scored && !b.banked && crossedBackboard && b.y > h.y - 0.15 && b.y < h.y + 1.45 && Math.abs(b.x - h.x) < 0.95) {
+        b.z = bbZ - 0.04;
+        b.vz = -Math.abs(b.vz) * 0.34;
+        b.vx += (h.x - b.x) * 1.8;
+        b.vy *= 0.72;
+        b.banked = true;
+        g.rimPulse = 0.35;
+        Sound.bump && Sound.bump();
+      }
+
+      // Score by interpolating the instant the ball crosses rim height. This
+      // removes frame-rate dependence and makes borderline makes consistent.
+      if (!b.scored && b.lastY >= h.y && b.y < h.y && b.vy < 0) {
+        const t = (h.y - b.lastY) / Math.max(0.0001, b.y - b.lastY);
+        const ix = b.lastX + (b.x - b.lastX) * t;
+        const iz = b.lastZ + (b.z - b.lastZ) * t;
+        const dx = ix - h.x;
+        const dz = iz - h.z;
         const radial = Math.sqrt(dx*dx + dz*dz);
-        if (radial < 0.30) {
+        if (radial < 0.34) {
           b.scored = true;
-          const points = g.shotType === "FREE" ? 2 : (g.shotType === "THREE" ? 3 : 4);
-          const swish = radial < 0.14 && Math.abs(dz) < 0.08;
+          const swish = radial < 0.14 && Math.abs(dz) < 0.08 && !b.rimTouched && !b.banked;
           g.made++;
+          g.streak++;
+          g.bestStreak = Math.max(g.bestStreak || 0, g.streak);
           if (swish) g.swishes++;
-          const earn = points + (swish ? 1 : 0);
+          if (b.banked) g.bankShots++;
+          const streakBonus = Math.max(0, Math.min(3, g.streak - 1));
+          const earn = h.points + (swish ? 1 : 0) + (b.banked ? 1 : 0) + streakBonus;
           g.score += earn;
-          g.message = swish ? `SWISH! +${earn}` : `MAKE! +${earn}`;
-          g.messageTimer = 1.4;
+          const prefix = swish ? "SWISH" : (b.banked ? "BANK" : "MAKE");
+          g.message = streakBonus ? `${prefix}! +${earn}  x${g.streak}` : `${prefix}! +${earn}`;
+          g.messageTimer = 1.35;
+          g.makeFlash = 0.45;
           Sound.perfect && Sound.perfect();
-          // Damp the ball so it falls through the net visibly.
-          b.vy = -2; b.vx *= 0.4; b.vz *= 0.2;
-          g.netFlop = 0.6; // animate the net flopping outward
+          b.vy = -2; b.vx *= 0.35; b.vz *= 0.18;
+          g.netFlop = 0.7;
+        } else if (radial < 0.48 && !b.rimTouched) {
+          b.rimTouched = true;
+          g.rimPulse = 0.45;
+          b.vx += dx * 1.7;
+          b.vz += dz * 1.2;
+          b.vy = Math.max(1.2, Math.abs(b.vy) * 0.28);
+          Sound.bump && Sound.bump();
         }
       }
       if (g.netFlop > 0) g.netFlop = Math.max(0, g.netFlop - dt * 1.5);
-      if (b.y < 0 || b.z > h.z + 6 || Math.abs(b.x) > 16) {
+      if (g.rimPulse > 0) g.rimPulse = Math.max(0, g.rimPulse - dt * 2.4);
+      if (g.makeFlash > 0) g.makeFlash = Math.max(0, g.makeFlash - dt * 1.8);
+      if (b.y < 0 || b.z > h.z + 6 || b.z < 0.4 || Math.abs(b.x) > 16) {
         b.gone = true;
-        if (!b.scored) { g.message = "Miss"; g.messageTimer = 1.0; Sound.crash && Sound.crash(); }
+        if (!b.scored) {
+          const missDx = b.x - h.x;
+          const missDz = b.z - h.z;
+          if (Math.hypot(missDx, missDz) < 0.75 || b.rimTouched) {
+            g.closeCalls++;
+            g.message = "In and out";
+          } else if (b.z < h.z - 0.7) g.message = "Short";
+          else if (b.z > h.z + 0.9) g.message = "Long";
+          else g.message = missDx < 0 ? "Left" : "Right";
+          g.streak = 0;
+          g.messageTimer = 1.0;
+          Sound.crash && Sound.crash();
+        }
       }
     }
     if ((b.gone || b.scored) && !g.finished) {
@@ -5943,10 +6036,31 @@ const Hoops = {
     fpSetCam(g.cameraZ || 0);
     // Indoor gym: warm overhead lights blending down to a hardwood floor.
     fpDrawSky("#1a1226", "#2c2236", "#4a2a14");
+    if (g.makeFlash > 0) {
+      ctx.fillStyle = `rgba(255, 224, 128, ${g.makeFlash * 0.18})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    // Crowd silhouettes and arena lights make the mode feel like an event.
+    const horizon = fpHorizonY();
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    for (let i = 0; i < 30; i++) {
+      const x = (i / 29) * W;
+      const bob = Math.sin(performance.now() / 500 + i * 1.7) * 3;
+      ctx.beginPath();
+      ctx.arc(x, horizon - 42 + bob, 9 + (i % 4), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(x - 12, horizon - 34 + bob, 24, 36);
+    }
+    for (const lx of [W * 0.18, W * 0.38, W * 0.62, W * 0.82]) {
+      const beam = ctx.createRadialGradient(lx, 18, 4, lx, 80, 180);
+      beam.addColorStop(0, "rgba(255,238,190,0.35)");
+      beam.addColorStop(1, "rgba(255,238,190,0)");
+      ctx.fillStyle = beam;
+      ctx.fillRect(lx - 180, 0, 360, 220);
+    }
 
     // Court floor — perspective hardwood with a court-line key, free-throw
     // line, and 3-point arc.
-    const horizon = fpHorizonY();
     // Hardwood (skip fpDrawField — we draw our own court markings here).
     {
       const grad = ctx.createLinearGradient(0, horizon, 0, H);
@@ -6066,8 +6180,8 @@ const Hoops = {
     ctx.ellipse(rimC.sx, rimC.sy + rimRY * 0.5, rimRX, rimRY, 0, 0, Math.PI * 2);
     ctx.fill();
     // Rim itself
-    ctx.strokeStyle = "#ff7a2c";
-    ctx.lineWidth = Math.max(2.5, 5 * rimC.scale * 6);
+    ctx.strokeStyle = g.rimPulse > 0 ? "#ffe680" : "#ff7a2c";
+    ctx.lineWidth = Math.max(2.5, (5 + (g.rimPulse || 0) * 8) * rimC.scale * 6);
     ctx.beginPath();
     ctx.ellipse(rimC.sx, rimC.sy, rimRX, rimRY, 0, 0, Math.PI * 2);
     ctx.stroke();
@@ -6112,19 +6226,43 @@ const Hoops = {
     // HUD
     ctx.fillStyle = "rgba(0,0,0,0.7)";
     ctx.font = "bold 16px ui-monospace, monospace";
-    ctx.fillText(`${g.shotType}  •  ${Math.round(h.z * 1.094)} yd`, 16, 26);
+    ctx.fillText(`${g.shotType}  •  ${Math.round(h.z * 1.094)} yd  •  ${h.points} pts`, 16, 26);
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillText(`Made: ${g.made}/${g.taken}    Score: ${g.score}`, 16, 50);
     ctx.fillText(`Shots left: ${Math.max(0, g.attempts - g.taken)}`, 16, 72);
-    if (g.swishes > 0) {
+    let statY = 94;
+    if (g.streak > 0) {
+      ctx.fillStyle = "#4ddc8c";
+      ctx.fillText(`Streak: ${g.streak}  (+${Math.min(3, Math.max(0, g.streak - 1))} bonus next make)`, 16, statY);
+      statY += 22;
+    }
+    if (g.swishes > 0 || g.bankShots > 0 || g.closeCalls > 0) {
       ctx.fillStyle = "#ffe680";
-      ctx.fillText(`Swishes: ${g.swishes}`, 16, 94);
+      ctx.fillText(`Swish ${g.swishes}  Bank ${g.bankShots}  Close ${g.closeCalls}`, 16, statY);
     }
 
     // Aim preview
     const restSX = W / 2, restSY = H * 0.84;
     const restR = Math.min(56, Math.max(38, W * 0.075));
-    if (!g.ball.released) fpDrawAimArc(g, restSX, restSY, "rgba(255, 122, 44, 0.85)");
+    if (!g.ball.released) {
+      fpDrawAimArc(g, restSX, restSY, "rgba(255, 122, 44, 0.85)");
+      const preview = hoopsFlickPreview(g);
+      if (preview) {
+        const pred = hoopsPredictTrajectory(g, preview);
+        ctx.strokeStyle = pred.make ? "rgba(77, 220, 140, 0.95)" : "rgba(255, 255, 255, 0.62)";
+        ctx.lineWidth = pred.make ? 5 : 3;
+        ctx.setLineDash(pred.make ? [] : [10, 9]);
+        ctx.beginPath();
+        pred.pts.forEach((pt, i) => { if (i === 0) ctx.moveTo(pt.sx, pt.sy); else ctx.lineTo(pt.sx, pt.sy); });
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = pred.make ? "#4ddc8c" : "rgba(0,0,0,0.65)";
+        ctx.font = "bold 13px ui-monospace, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(pred.make ? "GREEN RELEASE" : "Adjust power / angle", W / 2, H * 0.78);
+        ctx.textAlign = "start";
+      }
+    }
 
     // Basketball
     const b = g.ball;
@@ -6171,7 +6309,8 @@ const Hoops = {
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.fillText(g.message, W/2 + 3, H/2 + 3);
       ctx.fillStyle = g.message.includes("SWISH") ? "#ffe680"
-                    : g.message.includes("MAKE")  ? "#4ddc8c"
+                    : g.message.includes("MAKE") || g.message.includes("BANK") ? "#4ddc8c"
+                    : g.message.includes("In and out") ? "#ffb020"
                     : "#ff5470";
       ctx.fillText(g.message, W/2, H/2);
       ctx.textAlign = "start";
@@ -6180,7 +6319,7 @@ const Hoops = {
       ctx.fillStyle = "rgba(0,0,0,0.65)";
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Flick UP at the rim — arc it in", W/2, H * 0.95);
+      ctx.fillText("Flick UP at the rim — green preview can swish, glass banks count too", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
   },
@@ -6531,6 +6670,11 @@ function drawMinigameFinishedOverlay(g) {
   ctx.fillStyle = "#fff";
   ctx.font = "bold 24px ui-monospace, monospace";
   ctx.fillText(`Score: ${g.score || 0}`, W/2, H * 0.40);
+  if (g.id === "hoops") {
+    ctx.fillStyle = "#cfd6e3";
+    ctx.font = "bold 16px ui-monospace, monospace";
+    ctx.fillText(`${g.made || 0}/${g.attempts || 0} made  •  ${g.swishes || 0} swish  •  ${g.bankShots || 0} bank  •  best streak ${g.bestStreak || 0}`, W/2, H * 0.435);
+  }
   const mg = MINIGAMES[g.id];
   const cash = mg && mg.payout ? mg.payout(g) : Math.floor((g.score||0) / 2);
   const best = (save.minigameBest && save.minigameBest[g.id]) || 0;
