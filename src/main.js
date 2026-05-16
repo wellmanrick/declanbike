@@ -77,6 +77,10 @@ function startRun(levelId) {
       wheelAngle: 0,
       landSquash: 0,
       landingFlash: null,   // short local ring flash on perfect/clean/save landings
+      // Flow window — set on clean/perfect landings. Drives a velocity nudge
+      // and boost refill (applied in handleLanding), a cyan radial glow in
+      // drawBike, and a rear streak in paintBike. Decays in updateBike.
+      flowTime: 0,
       wobble: 0,           // post-save jitter, decays over ~1s
       boostingPrev: false,
       onGround: true,
@@ -107,7 +111,7 @@ function startRun(levelId) {
     distance: 0,
     particles: [],
     floatingTexts: [],
-    runStats: { flips: 0, airtime: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, crashes: 0, maxCombo: 1, collectibles: 0, gems: 0, topSpeed: 0, longestAir: 0, runPerfects: 0 },
+    runStats: { flips: 0, airtime: 0, jumps: 0, cleanLandings: 0, perfectLandings: 0, crashes: 0, maxCombo: 1, collectibles: 0, gems: 0, topSpeed: 0, longestAir: 0, runPerfects: 0, flowBoosts: 0 },
     finishLineX: level.length - 60,
     paused: false,
     finishedAt: null,
@@ -166,6 +170,7 @@ function updateBike(dt) {
       b.jumpBuffer = 0; b.coyote = 0;
       b.wobble = 0;
       b.landingFlash = null;
+      b.flowTime = 0;
       if (b.wheelie) { b.wheelie.time = 0; b.wheelie.dir = 0; }
       b.health = Math.max(b.health, r.stats.durability * 0.4);
       r.combo = 1;
@@ -394,6 +399,7 @@ function updateBike(dt) {
     b.landingFlash.time = Math.max(0, b.landingFlash.time - dt);
     if (b.landingFlash.time <= 0) b.landingFlash = null;
   }
+  if (b.flowTime > 0) b.flowTime = Math.max(0, b.flowTime - dt);
 
   // Track per-run bests for quest metrics
   const speedMph = Math.abs(b.vx) / 6;
@@ -556,15 +562,25 @@ function handleLanding(slopeAngle) {
     let bonus = 0;
     let label = "Clean!";
     if (angDiffDeg < PERFECT) {
-      label = "Perfect!"; bonus += 100;
+      label = "Perfect Flow!"; bonus += 100;
       r.runStats.perfectLandings++;
       save.totals.perfectLandings++;
       b.landingFlash = { time: 0.48, max: 0.48, color: "#4ddc8c", label: "PERFECT" };
+      // Flow reward — short window of velocity + boost refill.
+      b.flowTime = 1.5;
+      b.vx *= 1.12;
+      b.boost = Math.min(r.stats.boostCap, b.boost + r.stats.boostCap * 0.30);
+      r.runStats.flowBoosts++;
       Sound.perfect();
       if (r.shake) r.shake.mag = Math.max(r.shake.mag, 5);
     } else {
       bonus += 30;
       b.landingFlash = { time: 0.34, max: 0.34, color: "#ffb020", label: "CLEAN" };
+      // Smaller flow reward for clean (not perfect) landings.
+      b.flowTime = Math.max(b.flowTime, 0.9);
+      b.vx *= 1.06;
+      b.boost = Math.min(r.stats.boostCap, b.boost + r.stats.boostCap * 0.15);
+      r.runStats.flowBoosts++;
       Sound.land();
     }
     r.runStats.cleanLandings++;
@@ -653,6 +669,7 @@ function crash(reason) {
   b.angVel = (Math.random() - 0.5) * 12;
   b.health = Math.max(0, b.health - 25);
   b.landingFlash = null;
+  b.flowTime = 0;
   r.combo = 1;
   r.comboTimer = 0;
   r.runStats.crashes++;
@@ -813,6 +830,13 @@ function render() {
   // parallax background layers (in screen space, theme-aware)
   drawParallax(theme, r.cam.x, sx, sy);
 
+  // Predict the bike's next landing once per frame; shared between the
+  // in-world landing-quality marker and the screen-space air coach.
+  const _airborne = !r.bike.onGround && !r.bike.crashed && !r.bike.finished;
+  r._prediction = (_airborne && r.bike.airtime > 0.15)
+    ? predictLanding(r.bike, r.terrain, r.gravityScale)
+    : null;
+
   // World transform: zoom + camera + screen shake
   ctx.save();
   ctx.scale(r.cam.zoom, r.cam.zoom);
@@ -830,6 +854,9 @@ function render() {
   drawTireTrail(r.bike);
   drawParticles();
 
+  drawTrailWarnings(r);
+  drawLandingGuide(r._prediction);
+
   drawBike(r.bike, r.stats);
   drawLandingFlash(r.bike);
   drawFloatingTexts();
@@ -845,6 +872,7 @@ function render() {
   if (input().boost && G.runtime.bike.boost > 1) drawSpeedLines();
   drawColorGrade(theme);
   drawVignette();
+  drawAirCoach(r.bike, r._prediction);
   if (r.countdown > 0) drawCountdown(r.countdown);
   if (r.powerup) drawPowerupBadge(r.powerup);
 
@@ -1549,6 +1577,172 @@ function drawFloatingTexts() {
 }
 
 
+// Trajectory projection — steps forward in time until the bike crosses
+// the terrain or we run out of horizon. Returns null if no landing
+// found within `maxTime` seconds. Used by the landing guide + air coach.
+function predictLanding(b, terrain, gravityScale, maxTime) {
+  if (maxTime == null) maxTime = 3;
+  const grav = GRAVITY * (gravityScale || 1);
+  const step = 1 / 30;
+  const xMax = terrain.heights.length * TERRAIN_DX;
+  let x = b.x, y = b.y, vx = b.vx, vy = b.vy;
+  for (let t = step; t < maxTime; t += step) {
+    x += vx * step;
+    y += vy * step;
+    vy += grav * step;
+    if (x < 20 || x > xMax) return null;
+    const groundY = terrainHeightAt(terrain, x);
+    if (y >= groundY - 4) {
+      const slope = terrainSlopeAt(terrain, x);
+      const predAngle = b.angle + b.angVel * t;
+      const angDiffDeg = Math.abs(wrapAngle(predAngle - slope)) * 180 / Math.PI;
+      let quality, color;
+      if (angDiffDeg < 8)       { quality = "PERFECT"; color = "#4ddc8c"; }
+      else if (angDiffDeg < 45) { quality = "CLEAN";   color = "#ffb020"; }
+      else if (angDiffDeg < 80) { quality = "SAVE";    color = "#ffd166"; }
+      else                      { quality = "BAIL";    color = "#ff5a3a"; }
+      return { x, y: groundY, t, slope, slopeDeg: slope * 180 / Math.PI, angDiffDeg, quality, color };
+    }
+  }
+  return null;
+}
+
+// In-world marker at the predicted landing point — color-coded by quality.
+function drawLandingGuide(prediction) {
+  if (!prediction) return;
+  const { x, y, color, slopeDeg } = prediction;
+  const t = performance.now() / 200;
+  const pulse = 1 + 0.15 * Math.sin(t);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y - 4, 10 * pulse, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  ctx.arc(x, y - 4, 3, 0, Math.PI * 2);
+  ctx.fill();
+  // Slope angle label above the marker.
+  ctx.globalAlpha = 0.9;
+  ctx.font = "bold 11px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  const label = `${Math.round(Math.abs(slopeDeg))}°`;
+  ctx.strokeText(label, x, y - 22);
+  ctx.fillStyle = color;
+  ctx.fillText(label, x, y - 22);
+  ctx.restore();
+  ctx.textAlign = "start";
+}
+
+// Warning triangles above upcoming hazards / obstacles. Fade with distance.
+function drawTrailWarnings(r) {
+  const b = r.bike;
+  if (b.crashed || b.finished) return;
+  const LOOK = 600;
+  const minX = b.x + 60;
+  const maxX = b.x + LOOK;
+  const items = [];
+  for (const h of r.terrain.hazards || []) {
+    if (h.x < minX || h.x > maxX) continue;
+    let color = "#ff5a3a", glyph = "!";
+    if (h.type === "fire") { color = "#ff5a3a"; glyph = "🔥"; }
+    else if (h.type === "oil")  { color = "#6ee7ff"; glyph = "≈"; }
+    else if (h.type === "mud")  { color = "#a07050"; glyph = "≡"; }
+    items.push({ x: h.x, color, glyph });
+  }
+  for (const o of r.terrain.obstacles || []) {
+    if (o.x < minX || o.x > maxX) continue;
+    items.push({ x: o.x, color: "#cfd6e3", glyph: "!" });
+  }
+  if (items.length === 0) return;
+  ctx.save();
+  for (const it of items) {
+    const dist = it.x - b.x;
+    const t01 = clamp(1 - (dist - 60) / (LOOK - 60), 0, 1);
+    const alpha = 0.35 + t01 * 0.5;
+    const groundY = terrainHeightAt(r.terrain, it.x);
+    const cy = groundY - 60 - t01 * 12;
+    ctx.globalAlpha = alpha;
+    // Triangle background.
+    ctx.fillStyle = it.color;
+    ctx.beginPath();
+    ctx.moveTo(it.x, cy - 10);
+    ctx.lineTo(it.x + 9, cy + 6);
+    ctx.lineTo(it.x - 9, cy + 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Glyph centered.
+    ctx.fillStyle = "#0a0a0e";
+    ctx.font = "bold 11px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(it.glyph, it.x, cy);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+}
+
+// Screen-space HUD panel that surfaces queued-flips and predicted landing
+// quality while airborne. Only shown after a brief delay so micro-hops
+// don't strobe it on/off.
+function drawAirCoach(b, prediction) {
+  if (b.onGround || b.crashed || b.finished) return;
+  if (!b.airtime || b.airtime < 0.4) return;
+  const flips = b.currentFlipRot / (Math.PI * 2);
+  const absFlips = Math.abs(flips);
+  const flipDir = flips > 0 ? "Front" : flips < 0 ? "Back" : "";
+  // Top-center, just below the HUD pill row at the top-left and clear of
+  // the quest tracker at the top-right.
+  const panelW = 168;
+  const panelH = 64;
+  const x = W / 2 - panelW / 2;
+  const y = 14;
+  ctx.save();
+  ctx.fillStyle = "rgba(7,13,22,0.78)";
+  ctx.fillRect(x, y, panelW, panelH);
+  ctx.strokeStyle = "rgba(255,255,255,0.18)";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x, y, panelW, panelH);
+  // Flips row.
+  ctx.fillStyle = "#cfd6e3";
+  ctx.font = "bold 12px ui-monospace, monospace";
+  ctx.fillText("AIR", x + 10, y + 18);
+  ctx.fillStyle = absFlips > 0.5 ? "#ffd03a" : "#cfd6e3";
+  ctx.font = "bold 14px ui-monospace, monospace";
+  const flipLabel = absFlips < 0.25 ? "no flip" : `${flipDir} ${absFlips.toFixed(1)}x`;
+  ctx.fillText(flipLabel, x + 44, y + 18);
+  // Landing quality row.
+  ctx.fillStyle = "#cfd6e3";
+  ctx.font = "bold 12px ui-monospace, monospace";
+  ctx.fillText("LAND", x + 10, y + 42);
+  if (prediction) {
+    ctx.fillStyle = prediction.color;
+    ctx.font = "bold 14px ui-monospace, monospace";
+    ctx.fillText(prediction.quality, x + 50, y + 42);
+    // Small color chip.
+    ctx.fillStyle = prediction.color;
+    ctx.fillRect(x + panelW - 22, y + 32, 12, 12);
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + panelW - 22, y + 32, 12, 12);
+  } else {
+    ctx.fillStyle = "#7d8898";
+    ctx.font = "bold 14px ui-monospace, monospace";
+    ctx.fillText("—", x + 50, y + 42);
+  }
+  ctx.restore();
+}
+
 function drawLandingFlash(b) {
   const f = b && b.landingFlash;
   if (!f || !f.max) return;
@@ -1592,6 +1786,24 @@ function paintBike(g, opts) {
   const boosting = !!opts.boosting;
   const dark = !!opts.dark;       // theme is dark → draw a headlight beam
   const braking = !!opts.braking; // brake light when slowing down
+  const flow   = opts.flow || 0;  // 0..~1.5 post-landing flow window
+
+  // ----- Flow streak — long cyan comet trail behind the bike during the
+  // post-landing flow window. Drawn first so wheels/frame sit on top.
+  if (flow > 0) {
+    const flow01 = Math.min(1, flow / 1.5);
+    const len = 50 + flow01 * 70;
+    const trail = g.createLinearGradient(-24, 0, -24 - len, 0);
+    trail.addColorStop(0, `rgba(110, 231, 255, ${0.60 * flow01})`);
+    trail.addColorStop(1, "rgba(110, 231, 255, 0)");
+    g.fillStyle = trail;
+    g.beginPath();
+    g.moveTo(-24, -8);
+    g.quadraticCurveTo(-24 - len * 0.5, -10, -24 - len, -2);
+    g.quadraticCurveTo(-24 - len * 0.5, 6, -24, 8);
+    g.closePath();
+    g.fill();
+  }
 
   // ----- Headlight beam (dark themes only) — drawn first so the bike
   // covers its base. Cone of light projecting forward.
@@ -1863,6 +2075,17 @@ function drawBike(b, stats) {
   const r = G.runtime;
   if (r) {
     const t = performance.now() / 1000;
+    // Flow aura — cyan radial glow during post-landing flow window. Stacks
+    // with star/shield so a perfect landing under a powerup still shows.
+    if (b.flowTime > 0) {
+      const intensity = Math.min(1, b.flowTime / 1.5);
+      const pulse = 1 + 0.08 * Math.sin(t * 10);
+      const grad = ctx.createRadialGradient(b.x, b.y - 10, 0, b.x, b.y - 10, 46 * pulse);
+      grad.addColorStop(0, `rgba(110, 231, 255, ${0.50 * intensity})`);
+      grad.addColorStop(1, "rgba(110, 231, 255, 0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(b.x - 70, b.y - 80, 140, 120);
+    }
     if (r.powerup && r.powerup.type === "star" && r.powerup.time > 0) {
       const pulse = 1 + 0.12 * Math.sin(t * 12);
       const grad = ctx.createRadialGradient(b.x, b.y - 10, 0, b.x, b.y - 10, 60 * pulse);
@@ -1926,6 +2149,7 @@ function drawBike(b, stats) {
     squash, boosting,
     dark: !!(theme && theme.dark),
     braking: !!inp.brake && b.onGround,
+    flow: b.flowTime || 0,
   });
   ctx.restore();
 }
@@ -2432,6 +2656,7 @@ function showResult(completed, extra) {
   html += `<div class="row"><span>Top Speed</span><span>${Math.floor(rs.topSpeed)} mph</span></div>`;
   html += `<div class="row"><span>Clean Landings</span><span>${rs.cleanLandings}</span></div>`;
   html += `<div class="row"><span>Perfect Landings</span><span>${rs.perfectLandings}</span></div>`;
+  html += `<div class="row"><span>Flow Boosts</span><span>${rs.flowBoosts || 0}</span></div>`;
   html += `<div class="row"><span>Max Combo</span><span>x${rs.maxCombo}</span></div>`;
   html += `<div class="row"><span>Crashes</span><span>${rs.crashes}</span></div>`;
   if (completed) {
