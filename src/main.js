@@ -224,7 +224,6 @@ function updateBike(dt) {
     onGround = false; // skip the on-ground branch this frame so vy survives
     r.runStats.jumps++;
     Sound.jump();
-    pushToast("Jump!", "gold", 600);
   } else if (onGround && !b.onGround) {
     // landing event
     handleLanding(slopeAngle);
@@ -234,7 +233,6 @@ function updateBike(dt) {
     b.currentFlipRot = 0;
     b.airTrick = { tuck: 0, superman: 0, noHand: 0 };
     r.runStats.jumps++;
-    pushToast("Air!", "gold", 800);
   }
   if (!fireJump) b.onGround = onGround;
 
@@ -253,7 +251,6 @@ function updateBike(dt) {
         const name = b.wheelie.dir < 0 ? "Wheelie" : "Stoppie";
         r.score += bonus;
         r.cashEarned += Math.floor(bonus * 0.05);
-        pushFloating(`${name} +${bonus}`, b.x, b.y - 36, "#ffb020");
         if (sec > 1.5) {
           r.combo = Math.min(10, r.combo + 1);
           r.comboTimer = Math.max(r.comboTimer, 3);
@@ -441,7 +438,6 @@ function updateBike(dt) {
       r.cashEarned += Math.floor(reward * 0.1);
       b.health = Math.max(0, b.health - (isSoft ? 4 : 12));
       b.vx *= isSoft ? 0.92 : 0.78;
-      pushFloating(`SMASH +${reward}`, obs.x, obs.y - 30, "#ffb020");
       Sound.boostHit && Sound.boostHit();
       if (r.shake) r.shake.mag = Math.max(r.shake.mag, isSoft ? 4 : 8);
       spawnSmashParticles(obs.x, obs.y, obs.type);
@@ -478,8 +474,6 @@ function updateBike(dt) {
       b.currentFlipRot = 0;
       r.runStats.jumps++;
       Sound.jump();
-      pushToast("BOING!", "gold", 700);
-      pushFloating("BOING!", b.x, b.y - 30, "#4ddc8c");
     }
     if (hz.type === "oil" && b.onGround) {
       b.oilTime = 1.0;
@@ -513,28 +507,22 @@ function updateBike(dt) {
       c.taken = true;
       if (c.type === "gem") {
         r.cashEarned += 50; r.score += 250; r.runStats.gems++;
-        pushFloating("+$50", c.x, c.y, "#6ee7ff"); Sound.gem();
+        Sound.gem();
       } else if (c.type === "bolt") {
         r.cashEarned += 5; r.score += 25; r.runStats.collectibles++;
-        pushFloating("+$5", c.x, c.y, "#ffc940"); Sound.pickup();
+        Sound.pickup();
       } else if (c.type === "star") {
         r.powerup = { type: "star", time: 5 };
         r.score += 50;
-        pushFloating("STAR!", c.x, c.y, "#ffe680");
-        pushToast("Invincibility 5s", "gold", 1100);
         Sound.perfect && Sound.perfect();
       } else if (c.type === "shield") {
         // Persistent — added to bike. If a shield is already active, refresh.
         b.hasShield = true;
         r.score += 30;
-        pushFloating("SHIELD!", c.x, c.y, "#6ee7ff");
-        pushToast("Shield ready (one free crash)", "green", 1200);
         Sound.gem && Sound.gem();
       } else if (c.type === "magnet") {
         r.powerup = { type: "magnet", time: 5 };
         r.score += 30;
-        pushFloating("MAGNET!", c.x, c.y, "#c2ff3a");
-        pushToast("Magnet 5s — coins fly to you", "green", 1100);
         Sound.gem && Sound.gem();
       }
     }
@@ -560,9 +548,8 @@ function handleLanding(slopeAngle) {
 
   if (angDiffDeg < CLEAN) {
     let bonus = 0;
-    let label = "Clean!";
     if (angDiffDeg < PERFECT) {
-      label = "Perfect Flow!"; bonus += 100;
+      bonus += 100;
       r.runStats.perfectLandings++;
       save.totals.perfectLandings++;
       b.landingFlash = { time: 0.48, max: 0.48, color: "#4ddc8c", label: "PERFECT" };
@@ -593,10 +580,7 @@ function handleLanding(slopeAngle) {
       r.comboTimer = 4;
       r.runStats.flips += absFlips;
       save.totals.flips += absFlips;
-      pushToast(`${absFlips}x ${flips > 0 ? "Front" : "Back"}flip! +${flipBonus} (x${r.combo})`, "gold", 1400);
       Sound.flip(Math.min(4, absFlips + 1));
-    } else {
-      pushToast(label, "green", 800);
     }
 
     // Air-trick bonuses (independent of flip count). Awarded if held >0.4s.
@@ -609,13 +593,11 @@ function handleLanding(slopeAngle) {
     }
     if (trickName) {
       bonus += trickBonus;
-      pushToast(`${trickName}! +${trickBonus}`, "gold", 1100);
     }
 
     if (r.combo > r.runStats.maxCombo) r.runStats.maxCombo = r.combo;
     r.score += bonus;
     r.cashEarned += Math.floor(bonus * 0.05);
-    pushFloating(`+${bonus}`, b.x, b.y - 30, "#ffb020");
     b.angle = slopeAngle;
     b.angVel = 0;
 
@@ -627,7 +609,6 @@ function handleLanding(slopeAngle) {
     // Sketchy save — don't crash, but punish: lose combo, no bonus,
     // big squash, plus a wobble that decays over the next ~1s so the
     // recovery reads visually.
-    pushToast("Save!", "gold", 700);
     r.combo = 1; r.comboTimer = 0;
     b.angle = slopeAngle;
     b.angVel = 0;
@@ -650,14 +631,11 @@ function crash(reason) {
   if (b.crashed) return;
   // Star = invincibility, walks through everything.
   if (r.powerup && r.powerup.type === "star" && r.powerup.time > 0) {
-    pushFloating("BLOCKED!", b.x, b.y - 30, "#ffe680");
     return;
   }
   // Shield absorbs one crash and is consumed.
   if (b.hasShield) {
     b.hasShield = false;
-    pushFloating("SHIELDED!", b.x, b.y - 30, "#6ee7ff");
-    pushToast("Shield broken", "gold", 800);
     Sound.boostHit && Sound.boostHit();
     if (r.shake) r.shake.mag = Math.max(r.shake.mag, 6);
     return;
@@ -675,7 +653,6 @@ function crash(reason) {
   r.runStats.crashes++;
   save.totals.crashes++;
   spawnCrashParticles();
-  pushToast(reason, "red", 1100);
   Sound.crash();
   if (r.shake) r.shake.mag = 14;
   // Wipeout: health depleted, end the run as failure.
@@ -723,7 +700,6 @@ function finishRun() {
   const newTime = Math.min(prev.time, r.time);
   const newMedal = medalForTime(lvl, newTime);
   if (newMedal && medalRank(newMedal) > medalRank(prev.medal)) {
-    pushToast(`${medalIcon(newMedal)} ${newMedal.toUpperCase()} medal!`, "gold", 1800);
     r.cashEarned += newMedal === "gold" ? 500 : newMedal === "silver" ? 300 : 150;
   }
   save.best[lvl.id] = {
@@ -7409,7 +7385,6 @@ function loop(now) {
       if (sec < G.runtime.countdownLastTick) {
         G.runtime.countdownLastTick = sec;
         if (sec === 0) {
-          pushToast("GO!", "gold", 700);
           Sound.boostHit && Sound.boostHit();
         } else {
           Sound.click && Sound.click();
@@ -7449,7 +7424,6 @@ function loop(now) {
     if (G.runtime.powerup && G.runtime.powerup.time > 0) {
       G.runtime.powerup.time = Math.max(0, G.runtime.powerup.time - dt);
       if (G.runtime.powerup.time === 0) {
-        pushToast(`${G.runtime.powerup.type[0].toUpperCase() + G.runtime.powerup.type.slice(1)} ended`, "red", 700);
         G.runtime.powerup = null;
       }
     }
