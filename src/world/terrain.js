@@ -165,21 +165,10 @@ export function buildTerrain(level) {
     heights[i] = (heights[i - 1] + heights[i] * 2 + heights[i + 1]) * 0.25;
   }
 
-  // Solid obstacles — rocks/logs crash you unless you're fast and level
-  // (smash bonus); tires are soft, slowing you with sparks. Placed after
-  // slope smoothing so they sit on top of the final ground line.
-  const obstacleCount = Math.floor(level.length / 380);
-  for (let n = 0; n < obstacleCount; n++) {
-    const x = 600 + rand() * (level.length - 1100);
-    const i = Math.floor(x / TERRAIN_DX);
-    const y = heights[i];
-    const r0 = rand();
-    let type, r;
-    if (r0 < 0.40)      { type = "rock"; r = 10 + rand() * 8; }
-    else if (r0 < 0.75) { type = "tire"; r = 12 + rand() * 4; }
-    else                { type = "log";  r = 11 + rand() * 6; }
-    obstacles.push({ x, y, type, r, hit: false });
-  }
+  // Obstacles (rocks/logs/tires) were removed — they collided too
+  // unpredictably with the new terrain shapes and read as glitchy.
+  // The empty array stays in the return shape so downstream consumers
+  // (collision loop, drawObstacles, drawTrailWarnings) still iterate.
 
   // Hazard strips — oil slides, mud bogs, fire pits, plus springs.
   // Widths tuned so the player has to either thread or jump.
