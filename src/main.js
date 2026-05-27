@@ -2718,22 +2718,65 @@ try {
 // renders to the main canvas. They share a flick-style input (drag + release
 // to launch) routed through canvas pointer events.
 
+//==========================================================
+// MINIGAME CONTRACT
+//
+// Every entry in MINIGAMES implements this shape. The dispatcher
+// below (startMinigame / dispatchMinigamePointer / game-over routing)
+// is fully generic — adding a new minigame means implementing the
+// contract, not touching the dispatcher.
+//
+//   Required (every minigame):
+//     name, desc, icon, color           — display metadata
+//     init(level?) -> runtime           — build initial runtime state
+//                                          (runtime must include `level` if
+//                                           the game uses levels)
+//     update(g, dt)                     — frame update; mutate g
+//     render(g)                         — frame draw; may write
+//                                          `_btnNextLevel|_btnRetry|_btnLevels`
+//                                          or `_btnPlayAgain|_btnMenu` regions
+//                                          for the dispatcher to hit-test
+//     payout(g) -> number               — cash reward on completion
+//
+//   Optional (level-based games — currently CanBash / FieldGoal / PartyPong):
+//     levels: Level[]                   — full catalog (ordered)
+//     levelById(id) -> Level | null     — lookup helper
+//     isLevelUnlocked(progress, id)     — gating predicate
+//     openLevels()                      — show the per-game level browser
+//     progressKey: string               — `save[progressKey]` holds per-level
+//                                          progress (stars/cleared)
+//
+//   Optional (input):
+//     handlePointer(g, kind, x, y)      — pointer events while playing
+//                                          (kind: "down"|"move"|"up")
+//
+//   Runtime mutated fields (read by dispatcher):
+//     id: string                        — set by startMinigame
+//     score: number
+//     finished: bool                    — when true, dispatcher routes clicks
+//                                          to game-over buttons
+//     finishHoldUntil?: number          — performance.now() ms; clicks ignored
+//                                          before this, to prevent the
+//                                          last-action click from instantly
+//                                          dismissing the overlay
+//     level?: Level                     — required if mg.levels is set
+//==========================================================
+
 function startMinigame(id, levelId) {
   const mg = MINIGAMES[id];
   if (!mg) return;
   Sound.ensure && Sound.ensure();
   Sound.startMusic && Sound.startMusic("game");
-  // Resolve the level for level-driven mini-games (currently only Can Bash).
-  let level = null;
-  if (id === "can_bash") {
-    level = (levelId && canLevelById(levelId)) || CAN_LEVELS[0];
-  } else if (id === "field_goal") {
-    level = (levelId && fgLevelById(levelId)) || FG_LEVELS[0];
-  } else if (id === "party_pong") {
-    level = (levelId && ppLevelById(levelId)) || PP_LEVELS[0];
-  }
+  // Generic level resolution — driven by the mg.levels metadata so each
+  // new level-based minigame plugs in without touching this function.
+  const level = mg.levels
+    ? ((levelId && mg.levelById && mg.levelById(levelId)) || mg.levels[0])
+    : null;
   G.minigameRuntime = mg.init(level);
   G.minigameRuntime.id = id;
+  // Cache the mg ref on the runtime — saves a MINIGAMES[id] lookup on every
+  // pointer event for the duration of the run.
+  G.minigameRuntime._mg = mg;
   G.state = STATE.MINIGAME;
   // Hide every overlay (and the touch UI). The canvas is the whole screen.
   for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels","pp-levels"]) {
@@ -2777,100 +2820,61 @@ function dispatchMinigamePointer(kind, e) {
   if (G.state !== STATE.MINIGAME || !G.minigameRuntime) return;
   e.preventDefault && e.preventDefault();
   const p = canvasPointerToWorld(e.clientX, e.clientY);
-  // If the round is over, route the click through the Game Over buttons.
-  if (G.minigameRuntime.finished) {
-    if (kind === "down" && (!G.minigameRuntime.finishHoldUntil ||
-        performance.now() > G.minigameRuntime.finishHoldUntil)) {
-      const inBtn = (b) => b && p.x >= b.x && p.x <= b.x + b.w
-                              && p.y >= b.y && p.y <= b.y + b.h;
-      const rt = G.minigameRuntime;
-      if (rt.id === "can_bash") {
-        if (inBtn(rt._btnNextLevel)) {
-          // Advance to the next unlocked level if it exists; otherwise
-          // fall back to retrying the current one.
-          const idx = CAN_LEVELS.findIndex(l => l.id === rt.level.id);
-          const next = (idx >= 0 && idx + 1 < CAN_LEVELS.length) ? CAN_LEVELS[idx + 1] : null;
-          const progress = save.canBashLevels || {};
-          if (next && isCanLevelUnlocked(progress, next.id)) {
-            G.minigameRuntime = null;
-            startMinigame("can_bash", next.id);
-          } else {
-            G.minigameRuntime = null;
-            openCanBashLevels();
-          }
-        } else if (inBtn(rt._btnRetry)) {
-          const lvlId = rt.level.id;
-          G.minigameRuntime = null;
-          startMinigame("can_bash", lvlId);
-        } else if (inBtn(rt._btnLevels)) {
-          G.minigameRuntime = null;
-          openCanBashLevels();
-        }
-        return;
+  const rt = G.minigameRuntime;
+  const mg = rt._mg || MINIGAMES[rt.id];
+  if (rt.finished) {
+    routeGameOverPointer(rt, mg, kind, p);
+    return;
+  }
+  if (mg && mg.handlePointer) mg.handlePointer(rt, kind, p.x, p.y);
+}
+
+// Generic Game Over click routing. Two flavors:
+//   - Level-based games (mg.levels set): Next Level / Retry / Levels.
+//   - Single-shot games:                  Play Again / Menu.
+// The minigame's render() writes the button rects onto the runtime
+// (_btnNextLevel, _btnRetry, _btnLevels, _btnPlayAgain, _btnMenu);
+// this function hit-tests them and dispatches the corresponding action.
+function routeGameOverPointer(rt, mg, kind, p) {
+  if (kind !== "down") return;
+  if (rt.finishHoldUntil && performance.now() < rt.finishHoldUntil) return;
+  const inBtn = (b) => b && p.x >= b.x && p.x <= b.x + b.w
+                          && p.y >= b.y && p.y <= b.y + b.h;
+  if (mg && mg.levels) {
+    if (inBtn(rt._btnNextLevel)) {
+      Sound.click && Sound.click();
+      const idx = mg.levels.findIndex(l => l.id === rt.level.id);
+      const next = (idx >= 0 && idx + 1 < mg.levels.length) ? mg.levels[idx + 1] : null;
+      const progress = (mg.progressKey && save[mg.progressKey]) || {};
+      const id = rt.id;
+      G.minigameRuntime = null;
+      if (next && mg.isLevelUnlocked && mg.isLevelUnlocked(progress, next.id)) {
+        startMinigame(id, next.id);
+      } else {
+        mg.openLevels && mg.openLevels();
       }
-      if (rt.id === "field_goal") {
-        if (inBtn(rt._btnNextLevel)) {
-          Sound.click && Sound.click();
-          const idx = FG_LEVELS.findIndex(l => l.id === rt.level.id);
-          const next = (idx >= 0 && idx + 1 < FG_LEVELS.length) ? FG_LEVELS[idx + 1] : null;
-          const progress = save.fieldGoalLevels || {};
-          if (next && isFgLevelUnlocked(progress, next.id)) {
-            G.minigameRuntime = null;
-            startMinigame("field_goal", next.id);
-          } else {
-            G.minigameRuntime = null;
-            openFieldGoalLevels();
-          }
-        } else if (inBtn(rt._btnRetry)) {
-          Sound.click && Sound.click();
-          const lvlId = rt.level.id;
-          G.minigameRuntime = null;
-          startMinigame("field_goal", lvlId);
-        } else if (inBtn(rt._btnLevels)) {
-          Sound.click && Sound.click();
-          G.minigameRuntime = null;
-          openFieldGoalLevels();
-        }
-        return;
-      }
-      if (rt.id === "party_pong") {
-        if (inBtn(rt._btnNextLevel)) {
-          Sound.click && Sound.click();
-          const idx = PP_LEVELS.findIndex(l => l.id === rt.level.id);
-          const next = (idx >= 0 && idx + 1 < PP_LEVELS.length) ? PP_LEVELS[idx + 1] : null;
-          const progress = save.partyPongLevels || {};
-          if (next && isPpLevelUnlocked(progress, next.id)) {
-            G.minigameRuntime = null;
-            startMinigame("party_pong", next.id);
-          } else {
-            G.minigameRuntime = null;
-            openPartyPongLevels();
-          }
-        } else if (inBtn(rt._btnRetry)) {
-          Sound.click && Sound.click();
-          const lvlId = rt.level.id;
-          G.minigameRuntime = null;
-          startMinigame("party_pong", lvlId);
-        } else if (inBtn(rt._btnLevels)) {
-          Sound.click && Sound.click();
-          G.minigameRuntime = null;
-          openPartyPongLevels();
-        }
-        return;
-      }
-      if (inBtn(rt._btnPlayAgain)) {
-        const id = rt.id;
-        settleMinigame();
-        G.minigameRuntime = null;
-        startMinigame(id);
-      } else if (inBtn(rt._btnMenu)) {
-        endMinigame();
-      }
+    } else if (inBtn(rt._btnRetry)) {
+      Sound.click && Sound.click();
+      const id = rt.id;
+      const lvlId = rt.level.id;
+      G.minigameRuntime = null;
+      startMinigame(id, lvlId);
+    } else if (inBtn(rt._btnLevels)) {
+      Sound.click && Sound.click();
+      G.minigameRuntime = null;
+      mg.openLevels && mg.openLevels();
     }
     return;
   }
-  const mg = MINIGAMES[G.minigameRuntime.id];
-  if (mg && mg.handlePointer) mg.handlePointer(G.minigameRuntime, kind, p.x, p.y);
+  // Non-level games — Duck Hunt / Hoops / QB Challenge.
+  if (inBtn(rt._btnPlayAgain)) {
+    const id = rt.id;
+    settleMinigame();
+    G.minigameRuntime = null;
+    startMinigame(id);
+  } else if (inBtn(rt._btnMenu)) {
+    endMinigame();
+  }
 }
 canvas.addEventListener("pointerdown", (e) => dispatchMinigamePointer("down", e));
 canvas.addEventListener("pointermove", (e) => dispatchMinigamePointer("move", e));
@@ -3037,6 +3041,12 @@ const FieldGoal = {
   desc: "Flick UP from the ball to kick. Curve with the angle. Mind the wind.",
   icon: "🏈",
   color: "#4ddc8c",
+  // Minigame interface — see contract above MINIGAMES.
+  levels: FG_LEVELS,
+  levelById: fgLevelById,
+  isLevelUnlocked: isFgLevelUnlocked,
+  openLevels: openFieldGoalLevels,
+  progressKey: "fieldGoalLevels",
   init(level) {
     const lvl = level || FG_LEVELS[0];
     // Surface one-time tutorials for any new condition or power-up the
@@ -4244,6 +4254,12 @@ const PartyPong = {
   desc: "Flick the ball. Sink the cups. Clear the rack.",
   icon: "🍺",
   color: "#7d5dff",
+  // Minigame interface — see contract above MINIGAMES.
+  levels: PP_LEVELS,
+  levelById: ppLevelById,
+  isLevelUnlocked: isPpLevelUnlocked,
+  openLevels: openPartyPongLevels,
+  progressKey: "partyPongLevels",
   init(level) {
     const lvl = level || PP_LEVELS[0];
     return {
@@ -4811,6 +4827,14 @@ const CanBash = {
   desc: "Flick UP at the can stack. Knock 'em all down. 3 throws.",
   icon: "🥎",
   color: "#ff5a3a",
+  // ---- Minigame interface: level metadata ----
+  // Drives the generic startMinigame + game-over dispatcher in main.js.
+  // See the Minigame contract comment above MINIGAMES for the full shape.
+  levels: CAN_LEVELS,
+  levelById: canLevelById,
+  isLevelUnlocked: isCanLevelUnlocked,
+  openLevels: openCanBashLevels,
+  progressKey: "canBashLevels",
   init(level) {
     // Default to the first level if launched without one (legacy direct-launch
     // path). The level catalog drives the formation and ball budget.
@@ -6945,6 +6969,20 @@ const MINIGAMES = {
   hoops: Hoops,
   qb_challenge: QBChallenge,
 };
+
+// Contract sanity check — runs once at module load. Warns in the console
+// if any minigame is missing a required field, so a typo in a new game
+// fails loudly during dev instead of silently breaking the dispatcher.
+for (const [id, mg] of Object.entries(MINIGAMES)) {
+  for (const req of ["name", "desc", "icon", "color", "init", "update", "render", "payout"]) {
+    if (typeof mg[req] === "undefined") {
+      console.warn(`[minigames] '${id}' is missing required field '${req}'`);
+    }
+  }
+  if (mg.levels && !(mg.levelById && mg.isLevelUnlocked && mg.openLevels && mg.progressKey)) {
+    console.warn(`[minigames] '${id}' declares levels but is missing one of: levelById, isLevelUnlocked, openLevels, progressKey`);
+  }
+}
 
 function drawMinigameFinishedOverlay(g) {
   ctx.fillStyle = "rgba(0,0,0,0.70)";
