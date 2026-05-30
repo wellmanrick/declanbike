@@ -129,6 +129,15 @@ function startRun(levelId) {
     countdown: 3.0,        // 3 → 2 → 1 → GO! before input is accepted
     countdownLastTick: 4,  // last whole second we played a beep for
     powerup: null,         // { type: "star"|"shield"|"magnet", time: 5 }
+    // Ghost-rider replay. recording[] captures the current run; ghost (if
+    // present from a previous best) is played back as a translucent
+    // silhouette so the player races their own time.
+    recording: [],
+    recordSampleT: 0,
+    ghost: (save.ghosts && save.ghosts[level.id]) ? save.ghosts[level.id] : null,
+    ghostIdx: 0,
+    // Per-frame medal-pace flash bookkeeping for the HUD pace bar.
+    paceFlashed: { gold: false, silver: false, bronze: false },
   };
   G.state = STATE.PLAY;
   showOnly("hud");
@@ -187,6 +196,19 @@ function updateBike(dt) {
     return;
   }
   if (b.finished) return;
+
+  // Ghost-recording sampler. ~10Hz. Numbers stored at low precision so
+  // the localStorage footprint stays under ~3KB per level.
+  r.recordSampleT += dt;
+  if (r.recordSampleT >= 0.1) {
+    r.recordSampleT = 0;
+    r.recording.push([
+      +r.time.toFixed(2),
+      +b.x.toFixed(1),
+      +b.y.toFixed(1),
+      +b.angle.toFixed(3),
+    ]);
+  }
 
   const inp = input();
   const stats = r.stats;
@@ -807,6 +829,11 @@ function finishRun() {
     distance: Math.max(prev.distance, distM),
     medal: newMedal && medalRank(newMedal) > medalRank(prev.medal) ? newMedal : prev.medal,
   };
+  // Save the run replay if this beat the previous best time. ~3KB/level.
+  if (r.time < prev.time && r.recording && r.recording.length > 4) {
+    save.ghosts = save.ghosts || {};
+    save.ghosts[lvl.id] = r.recording;
+  }
   // unlock next levels
   for (const L of LEVELS) {
     if (L.unlockAfter === lvl.id) save.unlockedLevels[L.id] = true;
@@ -934,6 +961,7 @@ function render() {
   drawTrailWarnings(r);
   drawLandingGuide(r._prediction);
 
+  drawGhost(r);
   drawBike(r.bike, r.stats);
   drawLandingFlash(r.bike);
   drawFloatingTexts();
@@ -2227,6 +2255,41 @@ function paintBike(g, opts) {
   }
 }
 
+// Best-run replay rendered as a translucent silhouette so players can
+// race their own time. Lerps between adjacent samples at r.time.
+function drawGhost(r) {
+  const ghost = r.ghost;
+  if (!ghost || ghost.length < 2) return;
+  while (r.ghostIdx < ghost.length - 1 && ghost[r.ghostIdx + 1][0] <= r.time) r.ghostIdx++;
+  const i = r.ghostIdx;
+  if (i >= ghost.length - 1) return;
+  const a = ghost[i], b = ghost[i + 1];
+  const span = Math.max(0.001, b[0] - a[0]);
+  const t = Math.min(1, Math.max(0, (r.time - a[0]) / span));
+  const gx = a[1] + (b[1] - a[1]) * t;
+  const gy = a[2] + (b[2] - a[2]) * t;
+  const ga = a[3] + (b[3] - a[3]) * t;
+
+  ctx.save();
+  ctx.globalAlpha = 0.32;
+  ctx.translate(gx, gy);
+  ctx.rotate(ga);
+  ctx.fillStyle = "#6ee7ff";
+  ctx.strokeStyle = "#6ee7ff";
+  ctx.lineWidth = 1.5;
+  // Frame
+  ctx.beginPath();
+  ctx.moveTo(-18, 0); ctx.lineTo(8, -10); ctx.lineTo(18, 0); ctx.lineTo(-8, 0);
+  ctx.closePath(); ctx.fill();
+  // Wheels (open circles)
+  ctx.beginPath(); ctx.arc(-18, 6, 9, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc( 18, 6, 9, 0, Math.PI * 2); ctx.stroke();
+  // Rider hint
+  ctx.fillRect(-3, -18, 6, 8);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
 function drawBike(b, stats) {
   // Aura around bike when star or shield is active.
   const r = G.runtime;
@@ -2357,6 +2420,28 @@ function updateHUD() {
   // always have a one-tap restart without opening the pause menu.
   const retryBadge = document.getElementById("retry-badge");
   if (retryBadge) retryBadge.classList.toggle("hidden", !(r.bike.crashed || r.bike.finished));
+
+  // Medal-pace bar: bike-progress fill + three medal-pace marks.
+  const lvl = r.level;
+  const paceBar = document.getElementById("pace-bar");
+  if (paceBar && lvl && lvl.medals) {
+    paceBar.classList.remove("hidden");
+    const progress = Math.min(100, Math.max(0, (r.bike.x / lvl.length) * 100));
+    document.getElementById("pace-fill").style.width = progress + "%";
+    for (const key of ["gold", "silver", "bronze"]) {
+      const mark = document.getElementById("pace-mark-" + key);
+      if (!mark) continue;
+      const pos = Math.min(100, (r.time / lvl.medals[key]) * 100);
+      mark.style.left = pos + "%";
+      if (!r.paceFlashed[key] && progress >= pos && pos > 1) {
+        r.paceFlashed[key] = true;
+        mark.classList.remove("flashed");
+        // Force reflow to restart the animation
+        void mark.offsetWidth;
+        mark.classList.add("flashed");
+      }
+    }
+  }
 
   // quest tracker — show 3 most-progressed unfinished
   const tracker = document.getElementById("quest-tracker");

@@ -486,6 +486,44 @@ kbd {
 
 /* Always-visible retry badge during crash/finish states. Sits above the
    touch-paddle band so it's reachable without hitting GAS/BRAKE by accident. */
+/* Medal-pace bar — thin horizontal strip at the top of the HUD with a
+   progress fill and three vertical marks at gold/silver/bronze pace. */
+.pace-bar {
+  position: absolute;
+  top: calc(34px + env(safe-area-inset-top));
+  left:  calc(12px + env(safe-area-inset-left));
+  right: calc(12px + env(safe-area-inset-right));
+  height: 5px;
+  background: rgba(11,13,18,0.55);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 3px;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3;
+}
+.pace-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 0%;
+  background: linear-gradient(90deg, #ffb020, #ff5a3a);
+  border-radius: 2px;
+  transition: width 120ms linear;
+}
+.pace-mark {
+  position: absolute; top: -3px; bottom: -3px;
+  width: 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  transition: left 120ms linear, box-shadow 280ms ease;
+}
+.pace-mark.gold   { background: #ffd76a; box-shadow: 0 0 4px rgba(255,215,106,0.6); }
+.pace-mark.silver { background: #d0d6e3; box-shadow: 0 0 4px rgba(208,214,227,0.6); }
+.pace-mark.bronze { background: #cd7f4b; box-shadow: 0 0 4px rgba(205,127,75,0.6); }
+.pace-mark.flashed { animation: pace-flash 600ms ease-out; }
+@keyframes pace-flash {
+  0%   { transform: translateX(-50%) scaleY(2.0); box-shadow: 0 0 14px currentColor; }
+  100% { transform: translateX(-50%) scaleY(1.0); }
+}
+
 .retry-badge {
   position: absolute; left: 50%;
   bottom: calc(28% + 80px + env(safe-area-inset-bottom));
