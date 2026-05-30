@@ -464,6 +464,20 @@ function updateBike(dt) {
   // hazard collision (oil, mud, fire, spring) — terrain-aligned strips.
   if (b.oilTime > 0) b.oilTime = Math.max(0, b.oilTime - dt);
   for (const hz of r.terrain.hazards || []) {
+    if (hz.type === "saw") {
+      if (b.crashed) continue;
+      const dx = b.x - hz.x, dy = b.y - hz.y;
+      const reach = hz.r + 16;
+      if (dx * dx + dy * dy < reach * reach) { hardCrash("Saw blade!"); return; }
+      continue;
+    }
+    if (hz.type === "crusher") {
+      if (b.crashed) continue;
+      if (hz.state !== "falling" && hz.state !== "holding") continue;
+      if (Math.abs(b.x - hz.x) < hz.w / 2 + 12 &&
+          Math.abs(b.y - hz.y) < hz.h / 2 + 14) { hardCrash("Crushed!"); return; }
+      continue;
+    }
     if (b.x < hz.x || b.x > hz.x + hz.w) continue;
     // Fire only crashes when the bike is actually on the ground over
     // the pit. Flying over the pit (b.onGround === false) is the whole
@@ -671,6 +685,78 @@ function crash(reason) {
     b.finished = true;
     b.crashTimer = 0.35;
     setTimeout(() => wipeoutRun(), 350);
+  }
+}
+
+// Brutal-obstacle crash. No bounce-back, no health refund — bike snaps
+// to the nearest checkpoint inside the existing respawn block at
+// updateBike() once crashTimer hits zero. Falls through to wipeoutRun
+// if the damage takes the rider below zero HP.
+function hardCrash(reason) {
+  const r = G.runtime;
+  const b = r.bike;
+  if (b.crashed) return;
+  if (r.powerup && r.powerup.type === "star" && r.powerup.time > 0) return;
+  if (b.hasShield) {
+    b.hasShield = false;
+    Sound.boostHit && Sound.boostHit();
+    if (r.shake) r.shake.mag = Math.max(r.shake.mag, 6);
+    return;
+  }
+  b.crashed = true;
+  b.crashTimer = 0.20;
+  b.vx = 0; b.vy = 0;
+  b.angVel = (Math.random() - 0.5) * 14;
+  b.health = Math.max(0, b.health - 25);
+  b.landingFlash = null;
+  b.flowTime = 0;
+  r.combo = 1;
+  r.comboTimer = 0;
+  r.runStats.crashes++;
+  save.totals.crashes++;
+  spawnCrashParticles();
+  Sound.crash();
+  vibe([60, 30, 60]);
+  if (r.shake) r.shake.mag = 16;
+  if (b.health <= 0 && !b.finished) {
+    b.finished = true;
+    b.crashTimer = 0.35;
+    setTimeout(() => wipeoutRun(), 350);
+  }
+}
+
+// Per-frame update for hard hazards: saw spin + crusher state machine.
+function updateHazards(dt) {
+  const r = G.runtime;
+  if (!r || !r.terrain || !r.terrain.hazards) return;
+  const b = r.bike;
+  for (const h of r.terrain.hazards) {
+    if (h.type === "saw") {
+      h.spin = (h.spin || 0) + dt * 7;
+    } else if (h.type === "crusher") {
+      h.t += dt;
+      if (h.state === "idle") {
+        if (b && !b.crashed && b.x > h.trigger && b.x < h.x + 80) {
+          h.state = "falling";
+          h.t = 0;
+        }
+      } else if (h.state === "falling") {
+        const f = Math.min(1, h.t / 0.40);
+        h.y = h.ceilingY + (h.groundY - h.ceilingY) * f;
+        if (f >= 1) {
+          h.state = "holding";
+          h.t = 0;
+          if (r.shake) r.shake.mag = Math.max(r.shake.mag, 8);
+        }
+      } else if (h.state === "holding") {
+        if (h.t > 0.20) { h.state = "returning"; h.t = 0; }
+      } else if (h.state === "returning") {
+        const f = Math.min(1, h.t / 0.70);
+        const eased = f * f;
+        h.y = h.groundY + (h.ceilingY - h.groundY) * eased;
+        if (f >= 1) { h.state = "idle"; h.t = 0; }
+      }
+    }
   }
 }
 
@@ -1340,6 +1426,84 @@ function drawHazards(terrain, camX) {
   if (!terrain.hazards) return;
   const t = performance.now() / 1000;
   for (const h of terrain.hazards) {
+    // Hard hazards have their own (center-based) cull and draw paths.
+    if (h.type === "saw") {
+      if (h.x + h.r < camX - 60 || h.x - h.r > camX + VW + 60) continue;
+      ctx.save();
+      ctx.translate(h.x, h.y);
+      ctx.rotate(h.spin || 0);
+      // Toothed disc
+      ctx.fillStyle = "#4a4a52";
+      ctx.beginPath(); ctx.arc(0, 0, h.r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#cfd2da";
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const a0 = (i / 8) * Math.PI * 2;
+        const a1 = a0 + 0.18;
+        const a2 = a0 + 0.36;
+        const r1 = h.r + 9;
+        ctx.moveTo(Math.cos(a0) * h.r, Math.sin(a0) * h.r);
+        ctx.lineTo(Math.cos(a1) * r1, Math.sin(a1) * r1);
+        ctx.lineTo(Math.cos(a2) * h.r, Math.sin(a2) * h.r);
+      }
+      ctx.fill();
+      // Hub
+      ctx.fillStyle = "#1a1d24";
+      ctx.beginPath(); ctx.arc(0, 0, h.r * 0.35, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#ff5a3a";
+      ctx.beginPath(); ctx.arc(0, 0, h.r * 0.18, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      // Warning glow halo (doesn't rotate)
+      ctx.strokeStyle = "rgba(255, 90, 58, " + (0.35 + 0.25 * Math.sin(t * 5)) + ")";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(h.x, h.y, h.r + 12, 0, Math.PI * 2); ctx.stroke();
+      continue;
+    }
+    if (h.type === "crusher") {
+      if (h.x + h.w / 2 < camX - 60 || h.x - h.w / 2 > camX + VW + 60) continue;
+      // Chain from cube top to ceiling line
+      ctx.strokeStyle = "#3a3f4a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(h.x, h.ceilingY - 40);
+      ctx.lineTo(h.x, h.y - h.h / 2);
+      ctx.stroke();
+      ctx.fillStyle = "#5a5f6a";
+      for (let cy = h.ceilingY - 40; cy < h.y - h.h / 2; cy += 8) {
+        ctx.beginPath(); ctx.arc(h.x, cy, 3, 0, Math.PI * 2); ctx.fill();
+      }
+      // Cube body
+      const armed = h.state === "idle";
+      ctx.fillStyle = armed ? "#2a2e3a" : "#3a2018";
+      ctx.fillRect(h.x - h.w / 2, h.y - h.h / 2, h.w, h.h);
+      ctx.strokeStyle = armed ? "#5a5f6a" : "#a04030";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(h.x - h.w / 2, h.y - h.h / 2, h.w, h.h);
+      // Rivets
+      ctx.fillStyle = armed ? "#7a8090" : "#c08070";
+      const rivets = [[-h.w / 2 + 8, -h.h / 2 + 8], [h.w / 2 - 8, -h.h / 2 + 8], [-h.w / 2 + 8, h.h / 2 - 8], [h.w / 2 - 8, h.h / 2 - 8]];
+      for (const [rx, ry] of rivets) {
+        ctx.beginPath(); ctx.arc(h.x + rx, h.y + ry, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      // Bottom spikes
+      ctx.fillStyle = "#cfd2da";
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const sx = h.x - h.w / 2 + 6 + i * ((h.w - 12) / 4);
+        ctx.moveTo(sx - 4, h.y + h.h / 2);
+        ctx.lineTo(sx, h.y + h.h / 2 + 8);
+        ctx.lineTo(sx + 4, h.y + h.h / 2);
+      }
+      ctx.fill();
+      // Trigger warning line when armed
+      if (armed) {
+        ctx.strokeStyle = "rgba(255, 90, 58, " + (0.20 + 0.20 * Math.sin(t * 6)) + ")";
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(h.trigger, h.ceilingY - 20); ctx.lineTo(h.trigger, h.groundY + 20); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      continue;
+    }
     if (h.x + h.w < camX - 60 || h.x > camX + VW + 60) continue;
     const groundLeft = terrainHeightAt(terrain, h.x);
     const groundRight = terrainHeightAt(terrain, h.x + h.w);
@@ -1642,8 +1806,10 @@ function drawTrailWarnings(r) {
     if (h.x < minX || h.x > maxX) continue;
     let color = "#ff5a3a", glyph = "!";
     if (h.type === "fire") { color = "#ff5a3a"; glyph = "🔥"; }
-    else if (h.type === "oil")  { color = "#6ee7ff"; glyph = "≈"; }
-    else if (h.type === "mud")  { color = "#a07050"; glyph = "≡"; }
+    else if (h.type === "oil")     { color = "#6ee7ff"; glyph = "≈"; }
+    else if (h.type === "mud")     { color = "#a07050"; glyph = "≡"; }
+    else if (h.type === "saw")     { color = "#ff5a3a"; glyph = "✶"; }
+    else if (h.type === "crusher") { color = "#ff5a3a"; glyph = "⬇"; }
     items.push({ x: h.x, color, glyph });
   }
   for (const o of r.terrain.obstacles || []) {
@@ -6993,6 +7159,7 @@ function loop(now) {
     } else {
       G.runtime.time += dt;
       updateBike(dt);
+      updateHazards(dt);
       // engine sound modulated by speed/throttle/boost
       const inp = input();
       const speed01 = clamp(Math.abs(G.runtime.bike.vx) / TOP_SPEED_PX(G.runtime.stats.topSpeed), 0, 1);

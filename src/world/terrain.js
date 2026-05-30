@@ -196,6 +196,49 @@ export function buildTerrain(level) {
     hazards.push({ x: cx, w: 45 + rand() * 30, type: "fire" });
   }
 
+  // Hard hazards — saws + crushers. Gated by level.hazardDensity so legacy
+  // trails stay friendly. Both lay down only on shallow terrain so they
+  // can't spawn on cliffs the rider can't avoid.
+  if (level.hazardDensity > 0) {
+    const slopeOK = (cx) => {
+      const ci = Math.floor(cx / TERRAIN_DX);
+      const a = heights[Math.max(0, ci - 2)];
+      const b = heights[Math.min(samples - 1, ci + 2)];
+      return Math.abs((b - a) / (4 * TERRAIN_DX)) < 0.6;
+    };
+    const sampleHeight = (cx) => heights[Math.max(0, Math.min(samples - 1, Math.floor(cx / TERRAIN_DX)))];
+
+    const sawCount = Math.floor(level.length / 1100 * level.hazardDensity);
+    let sawAttempts = 0;
+    let sawsPlaced = 0;
+    while (sawsPlaced < sawCount && sawAttempts < sawCount * 6) {
+      sawAttempts++;
+      const cx = 800 + rand() * (level.length - 1600);
+      if (!slopeOK(cx)) continue;
+      hazards.push({
+        x: cx, y: sampleHeight(cx) - 34, r: 38, type: "saw",
+        spin: rand() * Math.PI * 2,
+      });
+      sawsPlaced++;
+    }
+
+    const crusherCount = Math.floor(level.length / 1500 * level.hazardDensity);
+    let crusherAttempts = 0;
+    let crushersPlaced = 0;
+    while (crushersPlaced < crusherCount && crusherAttempts < crusherCount * 6) {
+      crusherAttempts++;
+      const cx = 1000 + rand() * (level.length - 1600);
+      if (!slopeOK(cx)) continue;
+      const groundY = sampleHeight(cx);
+      hazards.push({
+        x: cx, y: groundY - 210, w: 56, h: 56, type: "crusher",
+        ceilingY: groundY - 210, groundY: groundY - 28,
+        trigger: cx - 170, state: "idle", t: 0,
+      });
+      crushersPlaced++;
+    }
+  }
+
   return { heights, obstacles, collectibles, ramps, checkpoints, props, hazards };
 }
 
