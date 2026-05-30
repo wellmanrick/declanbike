@@ -140,6 +140,33 @@ function fireworkSnd() {
   blip(2200 + Math.random() * 400, 0.10, "triangle", 0.10, 0.05);
 }
 
+// Center-snap "hike!" — low thud (the snap landing in the QB's hands) +
+// a short voice-like chirp burst (the cadence call). Plays at snap.
+function hikeSnd() {
+  blip(95,  0.08, "sine",     0.30);
+  blip(160, 0.06, "triangle", 0.18, 0.03);
+  noise(0.05, 0.12, 700);
+  blip(360, 0.05, "square",   0.10, 0.06);
+}
+
+// Ref whistle — short sine sweep with a touch of noise breath. Played
+// on every dead-ball event (completion, incomplete, sack).
+function whistleSnd() {
+  sweep(1280, 1640, 0.22, "sine", 0.16);
+  noise(0.06, 0.04, 4500);
+}
+
+// Spiral whoosh — short pitched noise burst, evokes the ball cutting
+// air on a tight spiral. Fired once on release; the QB module pitches
+// the same sound up on bullets / down on lobs by tweaking the lpf and
+// sweep range based on power.
+function spiralWhooshSnd(power01) {
+  const p = Math.max(0, Math.min(1, power01 || 0.5));
+  const dur = 0.42 + p * 0.18;
+  noise(dur, 0.10 + p * 0.06, 1200 + p * 2200);
+  sweep(220 + p * 220, 640 + p * 480, dur * 0.9, "triangle", 0.05);
+}
+
 // ----- Background music ---------------------------------------------------
 let musicTimer = null;
 let musicMode = "menu";
@@ -234,5 +261,6 @@ export const Sound = {
   jump, pickup, gem, flip: flipSnd, land: landSnd, perfect: perfectSnd,
   crash: crashSnd, boostHit, click, toggleMute, isMuted,
   cheer: cheerSnd, groan: groanSnd, firework: fireworkSnd,
+  hike: hikeSnd, whistle: whistleSnd, spiralWhoosh: spiralWhooshSnd,
   startMusic, stopMusic,
 };
