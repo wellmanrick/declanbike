@@ -32,6 +32,7 @@ import { CAN_LEVELS, buildCans, starsFor, levelById as canLevelById, isLevelUnlo
 import { FG_LEVELS, FG_CONDITION_INFO, FG_POWERUP_INFO, starsFor as fgStarsFor, levelById as fgLevelById, isLevelUnlocked as isFgLevelUnlocked } from "./games/fieldGoal/levels.js";
 import { PP_LEVELS, buildCups as ppBuildCups, starsFor as ppStarsFor, levelById as ppLevelById, isLevelUnlocked as isPpLevelUnlocked } from "./games/partyPong/levels.js";
 import { DuckHunt } from "./games/duckHunt/index.js";
+import { BlockBash } from "./games/blockBash/index.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -6507,6 +6508,7 @@ const MINIGAMES = {
   duck_hunt: DuckHunt,
   hoops: Hoops,
   qb_challenge: QBChallenge,
+  block_bash: BlockBash,
 };
 
 // Contract sanity check — runs once at module load. Warns in the console
