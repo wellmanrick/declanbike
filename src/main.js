@@ -6796,6 +6796,10 @@ function loop(now) {
           drawFieldGoalFinishedOverlay(G.minigameRuntime);
         } else if (G.minigameRuntime.id === "party_pong") {
           drawPartyPongFinishedOverlay(G.minigameRuntime);
+        } else if (G.minigameRuntime._mg && G.minigameRuntime._mg.renderFinished) {
+          // Per-minigame opt-in. New module pattern delegates here so
+          // modular games (qbChallenge) own their game-over art.
+          G.minigameRuntime._mg.renderFinished(G.minigameRuntime);
         } else {
           drawMinigameFinishedOverlay(G.minigameRuntime);
         }

@@ -17,6 +17,7 @@
 
 import { ctx, W, H } from "../../engine/canvas.js";
 import { Sound } from "../../engine/audio.js";
+import { save } from "../../engine/save.js";
 import {
   fpSetCam, fpHorizonY, fpProject, fpProcessFlick, fpDrawAimArc,
 } from "../../engine/fpView.js";
@@ -291,6 +292,11 @@ export const QBChallenge = {
   },
 
   payout(g) { return Math.floor((g.score || 0) * 1.0); },
+
+  // Stadium-themed game-over panel — themed jumbotron + stat board +
+  // Play Again / Menu buttons. Dispatched from main.js after the
+  // generic 600ms finishHoldUntil window starts.
+  renderFinished(g) { drawQbFinishedOverlay(g); },
 };
 
 // ──────────────────────────────────────────────────────────────────────
@@ -880,7 +886,7 @@ function drawScoreboard(g) {
 }
 
 function drawPresnapCue(g) {
-  if (g.phase !== "presnap") return;
+  if (g.phase !== "presnap" || g.finished) return;
   ctx.save();
   const t = performance.now() / 1000;
   const a = 0.55 + 0.45 * Math.sin(t * 6);
@@ -889,6 +895,180 @@ function drawPresnapCue(g) {
   ctx.textAlign = "center";
   ctx.fillText("Tap to snap  •  flick to throw", W / 2, H * 0.95);
   ctx.textAlign = "start";
+  ctx.restore();
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Game-over panel — jumbotron-style FINAL header, stat board with the
+// player's round line + their lifetime best beneath it, cash earned,
+// and Play Again / Menu buttons. Staggered fade-in tied to the
+// generic finishHoldUntil clock so reveals feel intentional.
+// ──────────────────────────────────────────────────────────────────────
+function drawQbFinishedOverlay(g) {
+  const heldFor = Math.max(0, performance.now() - ((g.finishHoldUntil || 0) - 600));
+  // Backdrop — darker than the field but lets the stadium read through.
+  const bgA = Math.min(0.78, heldFor / 240 * 0.78);
+  ctx.fillStyle = `rgba(7, 9, 18, ${bgA})`;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+
+  // "FINAL" header in jumbotron amber, slides down on entry.
+  const titleA = Math.min(1, heldFor / 240);
+  const titleY = H * 0.16 - (1 - titleA) * 22;
+  ctx.fillStyle = `rgba(255, 176, 32, ${titleA})`;
+  ctx.font = "bold 30px ui-monospace, monospace";
+  ctx.fillText("FINAL", W / 2, titleY);
+
+  // Big score number underneath, jumbotron-style.
+  const scoreA = Math.min(1, Math.max(0, (heldFor - 120) / 240));
+  ctx.fillStyle = `rgba(255, 215, 106, ${scoreA})`;
+  ctx.font = "bold 84px ui-monospace, monospace";
+  ctx.fillText(String(g.score), W / 2, H * 0.30);
+
+  // Optional NEW BEST badge — checks the legacy minigameBest key too
+  // so the badge fires even if save.qbChallengeBest is still empty
+  // (first-ever finish on a fresh save).
+  const legacyBest = (save.minigameBest && save.minigameBest.qb_challenge) || 0;
+  const best = (save.qbChallengeBest && save.qbChallengeBest.bestScore) || 0;
+  const newBest = g.score > 0 && g.score >= Math.max(legacyBest, best);
+  if (newBest) {
+    const badgeA = Math.min(1, Math.max(0, (heldFor - 350) / 240));
+    const pulse = 1 + 0.08 * Math.sin(performance.now() / 220);
+    ctx.save();
+    ctx.translate(W / 2, H * 0.355);
+    ctx.scale(pulse, pulse);
+    ctx.fillStyle = `rgba(255, 215, 106, ${badgeA * 0.18})`;
+    ctx.beginPath();
+    const bw = 132, bh = 26;
+    if (ctx.roundRect) ctx.roundRect(-bw / 2, -bh / 2, bw, bh, 6);
+    else ctx.rect(-bw / 2, -bh / 2, bw, bh);
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255, 215, 106, ${badgeA})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = `rgba(255, 230, 128, ${badgeA})`;
+    ctx.font = "bold 13px ui-monospace, monospace";
+    ctx.fillText("NEW PERSONAL BEST", 0, 5);
+    ctx.restore();
+  }
+
+  // Stat board — six rows in two columns (round + lifetime), with a
+  // hairline divider down the middle. Reveals row-by-row.
+  const cardY = H * 0.42;
+  const cardH = 168;
+  const cardW = Math.min(330, W - 28);
+  const cardX = W / 2 - cardW / 2;
+  const cardA = Math.min(1, Math.max(0, (heldFor - 480) / 240));
+  ctx.save();
+  ctx.globalAlpha = cardA;
+  // Card background
+  ctx.fillStyle = "rgba(11, 13, 22, 0.85)";
+  ctx.strokeStyle = "rgba(255, 176, 32, 0.55)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(cardX, cardY, cardW, cardH, 10);
+  else ctx.rect(cardX, cardY, cardW, cardH);
+  ctx.fill(); ctx.stroke();
+  // Column headers
+  ctx.fillStyle = "rgba(190, 200, 220, 0.75)";
+  ctx.font = "bold 10px ui-monospace, monospace";
+  ctx.fillText("THIS ROUND",  cardX + cardW * 0.27, cardY + 18);
+  ctx.fillText("LIFETIME BEST", cardX + cardW * 0.73, cardY + 18);
+  // Divider
+  ctx.strokeStyle = "rgba(255, 176, 32, 0.20)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cardX + cardW / 2, cardY + 28);
+  ctx.lineTo(cardX + cardW / 2, cardY + cardH - 10);
+  ctx.stroke();
+  ctx.restore();
+
+  // Stat rows — each row puts the label dead-center with the round
+  // value on the left and the lifetime value on the right, all on one
+  // baseline so the eye can scan the columns cleanly.
+  const rows = [
+    { label: "COMPLETIONS",  round: `${g.completions}/${g.attempts}`, life: String((save.qbChallengeBest && save.qbChallengeBest.totalCompletions) || 0) },
+    { label: "LONGEST GAIN", round: `${g.longestGain}yd`,             life: `${(save.qbChallengeBest && save.qbChallengeBest.longestGain) || 0}yd` },
+    { label: "BEST STREAK",  round: `x${g.bestStreak}`,               life: `x${(save.qbChallengeBest && save.qbChallengeBest.bestStreak) || 0}` },
+    { label: "SACKS TAKEN",  round: String(g.sacks),                  life: String((save.qbChallengeBest && save.qbChallengeBest.totalSacks) || 0) },
+  ];
+  const rowGap = 26;
+  const rowY0 = cardY + 50;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowA = Math.min(1, Math.max(0, (heldFor - 600 - i * 110) / 220));
+    if (rowA <= 0) continue;
+    const y = rowY0 + i * rowGap;
+    // Round just set a new lifetime high? Highlight the round value in
+    // gold and keep the lifetime column muted so the eye lands on what
+    // changed.
+    const beatLifetime =
+      (r.label === "LONGEST GAIN" && g.longestGain > 0 && g.longestGain > ((save.qbChallengeBest && save.qbChallengeBest.longestGain) || 0)) ||
+      (r.label === "BEST STREAK"  && g.bestStreak > 0 && g.bestStreak > ((save.qbChallengeBest && save.qbChallengeBest.bestStreak) || 0));
+    // Round value (left column, centered)
+    ctx.fillStyle = beatLifetime
+      ? `rgba(255, 215, 106, ${rowA})`
+      : `rgba(255, 255, 255, ${rowA})`;
+    ctx.font = "bold 17px ui-monospace, monospace";
+    ctx.fillText(r.round, cardX + cardW * 0.22, y);
+    // Centered label
+    ctx.fillStyle = `rgba(190, 200, 220, ${rowA * 0.80})`;
+    ctx.font = "bold 10px ui-monospace, monospace";
+    ctx.fillText(r.label, W / 2, y - 1);
+    // Lifetime value (right column, muted)
+    ctx.fillStyle = `rgba(190, 200, 220, ${rowA})`;
+    ctx.font = "bold 17px ui-monospace, monospace";
+    ctx.fillText(r.life, cardX + cardW * 0.78, y);
+  }
+
+  // Cash earned — green, slides up.
+  const cash = QBChallenge.payout(g);
+  const cashA = Math.min(1, Math.max(0, (heldFor - 1100) / 240));
+  if (cashA > 0) {
+    ctx.fillStyle = `rgba(77, 220, 140, ${cashA})`;
+    ctx.font = "bold 26px ui-monospace, monospace";
+    ctx.fillText(`+$${cash}`, W / 2, cardY + cardH + 36 + (1 - cashA) * 8);
+  }
+
+  // Buttons. Same rects the dispatcher hit-tests against (_btnPlayAgain
+  // / _btnMenu), staggered fade-in for hierarchy.
+  const bw = Math.min(190, W * 0.42);
+  const bh = 56;
+  const gap = 16;
+  const cy = H * 0.84;
+  g._btnPlayAgain = { x: W / 2 - bw - gap / 2, y: cy, w: bw, h: bh };
+  g._btnMenu      = { x: W / 2 + gap / 2,      y: cy, w: bw, h: bh };
+  drawQbButton(g._btnPlayAgain, "Play Again ▶", "#ffb020", "#1a1206",
+               Math.min(1, Math.max(0, (heldFor - 1300) / 240)),
+               /*pulse*/ true);
+  drawQbButton(g._btnMenu, "Menu", "rgba(58, 70, 105, 0.95)", "#fff",
+               Math.min(1, Math.max(0, (heldFor - 1420) / 240)),
+               /*pulse*/ false);
+
+  ctx.textAlign = "start";
+}
+
+function drawQbButton(rect, label, fill, ink, alpha, pulse) {
+  if (alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  let drawFill = fill;
+  if (pulse) {
+    const p = 0.5 + 0.5 * Math.sin(performance.now() / 220);
+    const lift = Math.floor(20 * p);
+    // Hand-pulse the orange to a slightly warmer tone.
+    drawFill = `rgba(${255}, ${176 + lift}, ${32 + lift}, ${alpha})`;
+  }
+  ctx.fillStyle = drawFill;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(rect.x, rect.y + (1 - alpha) * 10, rect.w, rect.h, 12);
+  else ctx.rect(rect.x, rect.y + (1 - alpha) * 10, rect.w, rect.h);
+  ctx.fill();
+  ctx.fillStyle = ink;
+  ctx.font = "bold 18px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6 + (1 - alpha) * 10);
   ctx.restore();
 }
 
