@@ -15,7 +15,18 @@ export let W = canvas.width;
 export let H = canvas.height;
 export let DPR = window.devicePixelRatio || 1;
 
-export const WORLD_ZOOM = 1.55;
+// Aspect-adaptive base zoom. Landscape (~16:9) keeps the original 1.55;
+// tall portrait phones (~9:19.5) zoom out so the player sees more terrain
+// ahead. Floored at 0.95 so the bike never feels lost in the frame.
+export function baseZoomForAspect(w, h) {
+  if (!w || !h) return 1.55;
+  const a = w / h;
+  if (a >= 1.6) return 1.55;
+  if (a >= 1.0) return 1.55 - (1.6 - a) * 0.5;
+  return Math.max(0.95, 1.10 - (1.0 - a) * 0.30);
+}
+
+export let WORLD_ZOOM = baseZoomForAspect(W, H);
 export let VW = (W || 0) / WORLD_ZOOM;
 export let VH = (H || 0) / WORLD_ZOOM;
 
@@ -38,6 +49,7 @@ export function resizeCanvas() {
   canvas.style.width  = cw + "px";
   canvas.style.height = ch + "px";
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  WORLD_ZOOM = baseZoomForAspect(W, H);
   updateViewport();
   const app = document.getElementById("app");
   if (app) { app.style.width = cw + "px"; app.style.height = ch + "px"; }

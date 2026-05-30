@@ -12,6 +12,9 @@
 <meta name="theme-color" content="#0b0d12" />
 <title>Declan Bike — Excite Trails</title>
 <link rel="stylesheet" href="style.css?v=__BUILD__" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
 </head>
 <body>
 <div id="app">
@@ -28,6 +31,12 @@
       <div class="hud-pill" title="Cash">$<span id="hud-cash">0</span></div>
       <div class="hud-pill" title="Time"><span id="hud-time">0.0</span><span class="unit">s</span></div>
       <div class="hud-pill" title="Distance"><span id="hud-dist">0</span><span class="unit">m</span></div>
+    </div>
+    <div id="pace-bar" class="pace-bar hidden">
+      <div id="pace-fill" class="pace-fill"></div>
+      <div id="pace-mark-bronze" class="pace-mark bronze" title="Bronze pace"></div>
+      <div id="pace-mark-silver" class="pace-mark silver" title="Silver pace"></div>
+      <div id="pace-mark-gold"   class="pace-mark gold"   title="Gold pace"></div>
     </div>
     <div id="quest-tracker" class="quest-tracker"></div>
     <div id="toast-stack" class="toast-stack"></div>
