@@ -643,7 +643,7 @@ function crash(reason) {
     return;
   }
   b.crashed = true;
-  b.crashTimer = 1.4;
+  b.crashTimer = 0.30;
   b.vx *= -0.2;
   b.vy = -200;
   b.angVel = (Math.random() - 0.5) * 12;
@@ -660,8 +660,8 @@ function crash(reason) {
   // Wipeout: health depleted, end the run as failure.
   if (b.health <= 0 && !b.finished) {
     b.finished = true;
-    b.crashTimer = 2.0;
-    setTimeout(() => wipeoutRun(), 1100);
+    b.crashTimer = 0.35;
+    setTimeout(() => wipeoutRun(), 350);
   }
 }
 
@@ -2173,6 +2173,11 @@ function updateHUD() {
   document.getElementById("hud-cash").textContent = r.cashEarned;
   document.getElementById("hud-time").textContent = r.time.toFixed(1);
   document.getElementById("hud-dist").textContent = Math.floor(r.distance / 10);
+
+  // Retry badge: surface during crash / finished states so phone players
+  // always have a one-tap restart without opening the pause menu.
+  const retryBadge = document.getElementById("retry-badge");
+  if (retryBadge) retryBadge.classList.toggle("hidden", !(r.bike.crashed || r.bike.finished));
 
   // quest tracker — show 3 most-progressed unfinished
   const tracker = document.getElementById("quest-tracker");

@@ -31,6 +31,7 @@
     </div>
     <div id="quest-tracker" class="quest-tracker"></div>
     <div id="toast-stack" class="toast-stack"></div>
+    <button id="retry-badge" class="retry-badge hidden" data-action="retry" aria-label="Retry run">↺</button>
 
     <!-- Touch controls (shown on touch devices) — Mad Skills / Bike Race layout:
          two big paddle zones at the bottom plus jump + boost utility buttons. -->
@@ -43,6 +44,8 @@
       </button>
       <button class="tbtn jump"  data-key="ShiftLeft" aria-label="Jump">⤴</button>
       <button class="tbtn boost" data-key="Space"    aria-label="Boost">⚡</button>
+      <button class="tbtn lean lean-back" data-key="ArrowDown" aria-label="Lean back / wheelie / back-rotate">◴</button>
+      <button class="tbtn lean lean-fwd"  data-key="ArrowUp"   aria-label="Lean forward / stoppie / front-rotate">◷</button>
       <button class="tbtn pause-btn" data-key="Escape" aria-label="Pause">II</button>
       <button class="tbtn mute-btn"  id="mute-btn"    aria-label="Mute">♪</button>
     </div>
@@ -148,8 +151,10 @@
     </div>
     <p class="hint">
       On phone: hold the GAS paddle on the right, brake with the left, tap ⤴ to jump.
-      In the air, the paddles also flip the bike — hold GAS for a front flip, hold BRAKE
-      for a back flip. Land clean for combos and cash.
+      In the air, the paddles flip the bike — hold GAS for a front flip, BRAKE for a back
+      flip. Use the small ◷ / ◴ buttons next to your thumbs to lean forward or back —
+      hold GAS + ◴ on the ground for a wheelie, BRAKE + ◷ for a stoppie. Land clean for
+      combos and cash.
     </p>
     <button class="back-btn" data-action="back-menu">Back</button>
   </div>
