@@ -53,6 +53,14 @@ export const DEFAULT_SAVE = {
     totalMakes: 0,                //   lifetime cups sunk across all rounds
     rackClears: 0,                //   total racks cleared
   },
+  qbChallengeBest: {              // Lifetime QB Challenge records.
+    bestScore: 0,                 //   highest round score
+    longestGain: 0,               //   biggest single completion (yards)
+    bestStreak: 0,                //   longest consecutive-completion streak
+    totalCompletions: 0,          //   lifetime completions across all rounds
+    totalSacks: 0,                //   lifetime sacks taken (vanity stat)
+    completionPct: 0,             //   rolling lifetime completion %
+  },
 };
 
 function _load() {
@@ -79,6 +87,7 @@ function _load() {
       fieldGoalBest: Object.assign({}, DEFAULT_SAVE.fieldGoalBest, parsed.fieldGoalBest || {}),
       partyPongLevels: parsed.partyPongLevels || {},
       partyPongBest: Object.assign({}, DEFAULT_SAVE.partyPongBest, parsed.partyPongBest || {}),
+      qbChallengeBest: Object.assign({}, DEFAULT_SAVE.qbChallengeBest, parsed.qbChallengeBest || {}),
     });
   } catch (e) {
     console.warn("Save load failed", e);
