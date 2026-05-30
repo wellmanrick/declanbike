@@ -26,8 +26,16 @@ canvas#game {
 }
 .hidden { display: none !important; }
 
-/* HUD — slim icon-less strip */
-.hud { position: absolute; inset: 0; pointer-events: none; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+/* HUD — slim icon-less strip. Padding respects iPhone notch / Android cutout. */
+.hud {
+  position: absolute; inset: 0; pointer-events: none;
+  padding:
+    calc(8px  + env(safe-area-inset-top))
+    calc(12px + env(safe-area-inset-right))
+    calc(8px  + env(safe-area-inset-bottom))
+    calc(12px + env(safe-area-inset-left));
+  display: flex; flex-direction: column; gap: 6px;
+}
 .hud-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .hud-pill {
   background: rgba(11, 13, 18, 0.55);
@@ -362,7 +370,7 @@ kbd {
 .tpad {
   pointer-events: auto;
   position: absolute;
-  bottom: 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom));
   width: 38%;
   height: 28%;
   border-radius: 16px;
@@ -382,8 +390,8 @@ kbd {
 }
 .tpad .tpad-arrow { font-size: 30px; line-height: 1; opacity: 0.85; }
 .tpad .tpad-label { font-size: 16px; opacity: 0.75; }
-.tpad-left  { left: 14px; }
-.tpad-right { right: 14px; }
+.tpad-left  { left:  calc(14px + env(safe-area-inset-left)); }
+.tpad-right { right: calc(14px + env(safe-area-inset-right)); }
 .tpad.held, .tpad:active {
   background: linear-gradient(180deg, rgba(255,176,32,0.55), rgba(255,90,58,0.55));
   border-color: var(--accent);
@@ -421,14 +429,18 @@ kbd {
 /* Jump and boost sit right on top of their paddle corners with a bit of
    overlap, so the same thumb that holds the paddle can flick up to tap. */
 .tbtn.jump {
-  position: absolute; left: 14px; bottom: calc(28% + 6px);
+  position: absolute;
+  left: calc(14px + env(safe-area-inset-left));
+  bottom: calc(28% + 6px + env(safe-area-inset-bottom));
   width: 60px; height: 60px; font-size: 26px;
   background: rgba(255, 176, 32, 0.32); border-color: rgba(255, 176, 32, 0.65); color: var(--accent);
   opacity: 0.92;
 }
 .tbtn.jump:active, .tbtn.jump.held { background: rgba(255, 176, 32, 0.9); color: #1a1206; transform: scale(0.92); opacity: 1; }
 .tbtn.boost {
-  position: absolute; right: 14px; bottom: calc(28% + 6px);
+  position: absolute;
+  right: calc(14px + env(safe-area-inset-right));
+  bottom: calc(28% + 6px + env(safe-area-inset-bottom));
   width: 60px; height: 60px; font-size: 24px;
   background: rgba(110, 231, 255, 0.30); border-color: rgba(110, 231, 255, 0.62); color: var(--boost);
   opacity: 0.92;
@@ -439,28 +451,33 @@ kbd {
    so the same thumb that holds GAS/BRAKE can flick to a lean for wheelies,
    stoppies, supermans, and tucks. */
 .tbtn.lean {
-  position: absolute; bottom: calc(28% + 6px);
+  position: absolute;
+  bottom: calc(28% + 6px + env(safe-area-inset-bottom));
   width: 56px; height: 56px; font-size: 22px;
   opacity: 0.92;
 }
 .tbtn.lean.lean-back {
-  left: calc(14px + 60px + 12px);
+  left: calc(14px + 60px + 12px + env(safe-area-inset-left));
   background: rgba(255, 90, 112, 0.28); border-color: rgba(255, 90, 112, 0.62); color: var(--bad);
 }
 .tbtn.lean.lean-fwd {
-  right: calc(14px + 60px + 12px);
+  right: calc(14px + 60px + 12px + env(safe-area-inset-right));
   background: rgba(110, 231, 255, 0.20); border-color: rgba(110, 231, 255, 0.50); color: var(--boost);
 }
 .tbtn.lean.held, .tbtn.lean:active { transform: scale(0.90); opacity: 1; }
 .tbtn.lean.lean-back.held, .tbtn.lean.lean-back:active { background: rgba(255, 90, 112, 0.85); color: #1a0608; }
 .tbtn.lean.lean-fwd.held,  .tbtn.lean.lean-fwd:active  { background: rgba(110, 231, 255, 0.85); color: #001a26; }
 .tbtn.pause-btn {
-  position: absolute; top: 14px; right: 16px;
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top));
+  right: calc(16px + env(safe-area-inset-right));
   width: 44px; height: 44px; font-size: 14px; letter-spacing: 0.1em;
   border-radius: 10px;
 }
 .tbtn.mute-btn {
-  position: absolute; top: 14px; right: 70px;
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top));
+  right: calc(70px + env(safe-area-inset-right));
   width: 44px; height: 44px; font-size: 18px;
   border-radius: 10px;
 }
@@ -470,7 +487,8 @@ kbd {
 /* Always-visible retry badge during crash/finish states. Sits above the
    touch-paddle band so it's reachable without hitting GAS/BRAKE by accident. */
 .retry-badge {
-  position: absolute; left: 50%; bottom: calc(28% + 80px);
+  position: absolute; left: 50%;
+  bottom: calc(28% + 80px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   width: 60px; height: 60px;
   border-radius: 50%;

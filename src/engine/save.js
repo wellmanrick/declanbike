@@ -5,6 +5,8 @@ const SAVE_KEY = "declanbike.save.v1";
 export const DEFAULT_SAVE = {
   cash: 250,
   best: {},                       // levelId -> { time, score, distance, completed, medal }
+  prefs: { haptics: true },       // user preferences (mobile haptics, etc.)
+  ghosts: {},                     // levelId -> [[t, x, y, angle], ...] best-run replay
   ownedParts: {                   // partId -> true for owned
     engine_stock: true, tire_stock: true, suspension_stock: true,
     frame_stock: true, paint_red: true,
@@ -63,6 +65,8 @@ function _load() {
       equipped: Object.assign({}, DEFAULT_SAVE.equipped, parsed.equipped || {}),
       totals: Object.assign({}, DEFAULT_SAVE.totals, parsed.totals || {}),
       best: parsed.best || {},
+      prefs: Object.assign({}, DEFAULT_SAVE.prefs, parsed.prefs || {}),
+      ghosts: parsed.ghosts || {},
       quests: parsed.quests || {},
       unlockedLevels: Object.assign({}, DEFAULT_SAVE.unlockedLevels, parsed.unlockedLevels || {}),
       minigameBest: parsed.minigameBest || {},

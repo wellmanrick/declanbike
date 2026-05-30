@@ -39,6 +39,13 @@ import {
   _setTerrainHeightFn,
 } from "./engine/juice.js";
 
+// Tiny mobile-haptic helper. No-op on iOS Safari (no Vibration API) and
+// silenced when the player has turned haptics off in their profile.
+function vibe(pattern) {
+  if (!save.prefs || save.prefs.haptics === false) return;
+  if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(pattern);
+}
+
 // Wire the late-bound terrain helper into juice.js so spawnLandingDust
 // can sample the ground at the bike's position.
 _setTerrainHeightFn(terrainHeightAt);
@@ -285,7 +292,7 @@ function updateBike(dt) {
       thrust += 700;
       b.boost = Math.max(0, b.boost - 35 * dt);
       spawnExhaustParticles(true);
-      if (!b.boostingPrev) Sound.boostHit();
+      if (!b.boostingPrev) { Sound.boostHit(); vibe(5); }
     } else {
       b.boost = Math.min(stats.boostCap, b.boost + stats.boostRegen * dt);
     }
@@ -561,6 +568,7 @@ function handleLanding(slopeAngle) {
       b.boost = Math.min(r.stats.boostCap, b.boost + r.stats.boostCap * 0.30);
       r.runStats.flowBoosts++;
       Sound.perfect();
+      vibe(10);
       if (r.shake) r.shake.mag = Math.max(r.shake.mag, 5);
     } else {
       bonus += 30;
@@ -656,6 +664,7 @@ function crash(reason) {
   save.totals.crashes++;
   spawnCrashParticles();
   Sound.crash();
+  vibe(60);
   if (r.shake) r.shake.mag = 14;
   // Wipeout: health depleted, end the run as failure.
   if (b.health <= 0 && !b.finished) {
@@ -703,6 +712,7 @@ function finishRun() {
   const newMedal = medalForTime(lvl, newTime);
   if (newMedal && medalRank(newMedal) > medalRank(prev.medal)) {
     r.cashEarned += newMedal === "gold" ? 500 : newMedal === "silver" ? 300 : 150;
+    vibe([60, 40, 120, 40, 200]);
   }
   save.best[lvl.id] = {
     completed: true,
@@ -774,7 +784,10 @@ function render() {
   const requiredVH = Math.max(420, altitude + 280);
   const altZoom = H / requiredVH;
   const speedZoom = WORLD_ZOOM - speed01 * 0.22;
-  const zoomTarget = clamp(Math.min(altZoom, speedZoom), 1.0, WORLD_ZOOM);
+  // Lower bound scales with WORLD_ZOOM so portrait phones (BASE_ZOOM ≈ 0.95)
+  // still get a coherent zoom-out window for big jumps.
+  const zoomFloor = WORLD_ZOOM * 0.65;
+  const zoomTarget = clamp(Math.min(altZoom, speedZoom), zoomFloor, WORLD_ZOOM);
   if (r.cam.zoom == null) r.cam.zoom = WORLD_ZOOM;
   r.cam.zoom = lerp(r.cam.zoom, zoomTarget, 0.07);
   // updateViewport() mutates VW/VH inside canvas.js — we can't reassign
