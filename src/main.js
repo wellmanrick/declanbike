@@ -7326,6 +7326,14 @@ showOnly("menu");
 setupTouchControls();
 refreshQuestStates();
 requestAnimationFrame(loop);
+// Register the service worker for offline / installable PWA. Only runs
+// over https (or localhost) per browser policy. Failures are silent —
+// the game still works without a SW.
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  });
+}
 window.__diag && window.__diag("[boot] init complete ✓");
 // Auto-dismiss the diagnostic banner after a short delay so it doesn't
 // clutter the menu once everything is healthy. Tap the banner to keep it.

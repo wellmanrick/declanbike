@@ -67,6 +67,9 @@ jobs:
         run: |
           BUILD_ID="${GITHUB_SHA::8}-$(date -u +%s)"
           sed -i "s/__BUILD__/${BUILD_ID}/g" index.html
+          # Service worker cache version must bump on every deploy so
+          # clients see the new appshell after activation.
+          [ -f sw.js ] && sed -i "s/__BUILD__/${BUILD_ID}/g" sw.js
           echo "Stamped build: ${BUILD_ID}"
           grep -E '\?v=' index.html || true
       - uses: actions/configure-pages@v5
