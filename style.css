@@ -223,6 +223,81 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 }
 .pp-bests strong { color: #b39bff; font-size: 16px; letter-spacing: 0; }
 
+/* Baseball mode-select overlay. Vertically-stacked chip groups; the
+   .active chip lights up in baseball gold. Mirrors the chip pattern
+   used elsewhere but with its own palette so the screen feels like
+   its own moment, not just a forking screen. */
+.bb-record-line {
+  color: var(--ink-dim);
+  letter-spacing: 0.12em;
+  font-size: 12px;
+  text-transform: uppercase;
+  margin: -4px 0 14px;
+}
+.bb-section {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-bottom: 16px;
+  width: min(420px, 92vw);
+}
+.bb-label {
+  color: var(--ink-dim);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+}
+.bb-chip-row {
+  display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+}
+.bb-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 10px 14px;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  background: linear-gradient(180deg, #2a3350, #1a2138);
+  border: 1px solid rgba(248, 213, 106, 0.15);
+  border-radius: 8px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 80ms ease, background 120ms ease, border-color 120ms ease;
+}
+.bb-chip:hover {
+  border-color: rgba(248, 213, 106, 0.45);
+  transform: translateY(-1px);
+}
+.bb-chip.active {
+  background: linear-gradient(180deg, #f8d56a, #c79a25);
+  border-color: rgba(0, 0, 0, 0.25);
+  color: #1a1206;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px rgba(248, 213, 106, 0.45), 0 4px 10px rgba(0,0,0,0.35);
+}
+.bb-hint {
+  text-align: center;
+  color: var(--ink-dim);
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: 0.02em;
+  max-width: 380px;
+}
+.bb-hint strong { color: #f8d56a; }
+.bb-buttons {
+  display: flex; flex-direction: column; gap: 10px; align-items: center;
+  margin-top: 8px;
+}
+.bb-start {
+  background: linear-gradient(180deg, #f8d56a, #c79a25);
+  color: #1a1206;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-color: rgba(0,0,0,0.25);
+  min-width: 200px;
+}
+.bb-start:hover {
+  background: linear-gradient(180deg, #ffe28a, #d4a52e);
+}
+
 /* Garage */
 .garage-grid {
   display: grid; grid-template-columns: 540px 1fr; gap: 24px;

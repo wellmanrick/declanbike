@@ -70,6 +70,7 @@
       <button data-action="play">Ride</button>
       <button data-action="garage">Garage</button>
       <button data-action="quests">Mini-Games</button>
+      <button data-action="baseball">Baseball</button>
       <button data-action="how">How to Play</button>
       <button data-action="reset">Reset Save</button>
     </div>
@@ -142,6 +143,38 @@
     <h2>Party Pong — Levels</h2>
     <div id="pp-level-grid" class="level-grid"></div>
     <button class="back-btn" data-action="pp-back">Back</button>
+  </div>
+
+  <!-- Baseball Mode Select — reached from the main menu. Mode + innings
+       chips toggle .active; the Start button reads the active chips and
+       boots Baseball.init() with the chosen config. -->
+  <div id="baseball-menu" class="overlay hidden">
+    <h2>Baseball</h2>
+    <div class="bb-record-line" id="bb-record">W 0  •  L 0  •  HR 0</div>
+    <div class="bb-section">
+      <div class="bb-label">MODE</div>
+      <div class="bb-chip-row">
+        <button class="bb-chip" data-bb-group="mode" data-bb-value="cpu">vs CPU</button>
+        <button class="bb-chip" data-bb-group="mode" data-bb-value="pvp">Pass &amp; Play</button>
+      </div>
+    </div>
+    <div class="bb-section">
+      <div class="bb-label">INNINGS</div>
+      <div class="bb-chip-row">
+        <button class="bb-chip" data-bb-group="innings" data-bb-value="3">3</button>
+        <button class="bb-chip" data-bb-group="innings" data-bb-value="5">5</button>
+        <button class="bb-chip" data-bb-group="innings" data-bb-value="9">9</button>
+      </div>
+    </div>
+    <div class="bb-section bb-hint">
+      First-person pitching, batting, and fielding. <strong>vs CPU</strong> sends
+      you up to bat for the home team; <strong>Pass &amp; Play</strong> swaps the
+      device between players each half-inning.
+    </div>
+    <div class="bb-buttons">
+      <button class="bb-start" data-action="baseball-start">Play Ball ▶</button>
+      <button class="back-btn" data-action="baseball-back">Back</button>
+    </div>
   </div>
 
   <!-- How to Play -->
