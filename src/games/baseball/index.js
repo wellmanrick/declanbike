@@ -70,6 +70,13 @@ const SWING_AIM_TOLERANCE_M = 0.45;
 // breathe between pitches.
 const CPU_PITCH_DELAY = 0.55;
 
+// Pass-device hold for PVP mode. Long enough for the device to
+// physically change hands between players, short enough not to be
+// annoying. Same overlay (shorter hold) gates CPU-mode half ends so
+// the player sees the inning marker change before play resumes.
+const PASS_HOLD_PVP = 3.0;
+const PASS_HOLD_CPU = 1.6;
+
 // Who's at the plate vs on the mound? In CPU mode the player is on
 // the HOME team — they pitch in the top half and bat in the bottom
 // half. In PVP mode both sides are human; we still return a role for
@@ -180,8 +187,21 @@ export const Baseball = {
   },
 
   payout(g) {
-    // Phase 5 turns this into a meaningful number based on win + margin.
-    return 0;
+    // Cash rewards favor winning + scoring + power.
+    //   base:     10 per run scored by the player team (home in CPU, both in PVP)
+    //   win:      +25 in CPU mode if the player won
+    //   margin:   +5 per run-margin (capped at +25)
+    //   power:    +10 per HR
+    //   minimum:  1 — never insult the player with $0
+    const playerRuns = g.mode === "pvp"
+      ? (g.runs.home + g.runs.away)
+      : g.runs.home;
+    let cash = playerRuns * 10;
+    if (g.mode === "cpu" && g.runs.home > g.runs.away) {
+      cash += 25 + Math.min(25, (g.runs.home - g.runs.away) * 5);
+    }
+    cash += g.stats.homeRuns * 10;
+    return Math.max(1, Math.floor(cash));
   },
 
   // ──────────────────────────────────────────────────────────────────
@@ -203,6 +223,11 @@ export const Baseball = {
   // player when player bats).
   // ──────────────────────────────────────────────────────────────────
   update(g, dt) {
+    // Game over — the dispatcher draws the finished overlay; the game
+    // state freezes. Without this, the at-bat state machine would loop
+    // back to a new batter behind the overlay and the scoreboard would
+    // keep changing.
+    if (g.finished) return;
     g.time += dt;
     g.phaseT += dt;
     if (g.swingAnimT > 0) g.swingAnimT = Math.max(0, g.swingAnimT - dt);
@@ -262,22 +287,17 @@ export const Baseball = {
       }
       case "resolve": {
         if (g.phaseT >= g.outcomeHoldT) {
-          // Phase 5 will transition to HALF_END / GAME_END here. Phase
-          // 3 keeps Phase 2's behavior: cycle outs at 3, then in CPU
-          // mode flip the role between pitching and batting so the
-          // player sees both sides over the course of a session.
-          if (g.outs >= 3) {
-            g.outs = 0;
-            g.bases = { first: null, second: null, third: null };
-            g.stats.halvesPlayed += 1;
-            // Flip half (top/bottom) and re-derive the role. Phase 5
-            // will also handle inning advancement + the pass-device
-            // overlay in PVP mode.
-            g.half = g.half === "top" ? "bottom" : "top";
-            g.role = roleFor(g.mode, g.half);
-          }
-          startNewBatter(g);
+          if (g.outs >= 3) endHalfInning(g);
+          else if (g._endsAtBat === false) nextPitchSameBatter(g);
+          else startNewBatter(g);
         }
+        break;
+      }
+      case "half-end": {
+        // Pass-device interlude (PVP) or short transition (CPU). After
+        // PASS_HOLD seconds, we flip the half / inning / role and
+        // start a new batter (or end the game if we're done).
+        if (g.phaseT >= g.halfEndHoldT) advanceAfterHalfEnd(g);
         break;
       }
     }
@@ -288,6 +308,9 @@ export const Baseball = {
   // shared between roles.
   // ──────────────────────────────────────────────────────────────────
   render(g) {
+    // During the half-end interlude we draw the previous view as a
+    // backdrop and overlay the pass-device card on top — feels more
+    // grounded than going to a blank screen.
     if (g.phase === "field") {
       drawFieldView(g);
     } else if (g.role === "batting") {
@@ -300,6 +323,7 @@ export const Baseball = {
     }
     drawOutcomeBanner(g);
     drawHudStrip(g);
+    if (g.phase === "half-end") drawHalfEndOverlay(g);
   },
 
   renderFinished(g) {
@@ -377,10 +401,12 @@ function handlePointerBatting(g, kind, x, y) {
   }
 }
 
-// CPU pitcher tick — when the player is batting, the CPU picks a pitch
-// + aim and fires after a short delay between at-bats so the player
-// can read the situation.
+// CPU pitcher tick — in CPU mode only. When the player is batting and
+// the CPU is pitching, the CPU picks + fires a pitch after a short
+// delay between at-bats. In PVP mode the human pitcher uses the
+// pitcher controls so this is a no-op (presnap waits for input).
 function tickBatterPresnap(g) {
+  if (g.mode === "pvp") return;
   if (g.cpuPitchAt == null) {
     g.cpuPitchAt = performance.now() + CPU_PITCH_DELAY * 1000;
     return;
@@ -452,12 +478,13 @@ function resolveBatterSwing(g) {
   resolveAtBatPhase2(g);
 }
 
-// Re-project ball into batter view. We can't import from draw.js
-// without a circular dep risk, so we compute locally using the same
-// formula as projectFromBatter().
+// Re-project ball into batter view for the swing aim calc. MUST stay
+// in sync with projectFromBatter() in draw.js — both use the same
+// camera-Z and eye-height so the player's tap is compared against the
+// SAME screen position the visual renderer drew the ball at.
 const _BATTER_FOCAL = 600;
 const _BATTER_CAM_H = 1.65;
-const _BATTER_CAM_Z_LOCAL = PLATE_Z + 0.6;
+const _BATTER_CAM_Z_LOCAL = PLATE_Z + 4.0;     // matches BATTER_CAM_Z in draw.js
 function ballScreenInBatterView(b) {
   const zz = Math.max(0.5, _BATTER_CAM_Z_LOCAL - b.z);
   return {
@@ -618,8 +645,10 @@ function finalizeFieldPhase(g) {
   g.runner = null;
   g.hitPlan = null;
   resetFielders(g.fielders);
+  // Contact always ends the at-bat (next pitch is a new plate appearance).
   setResolve(g, label, sub, outcomeColor(outcome.kind),
-    outcome.kind === "home-run" ? RESOLVE_HOLD_BIG : RESOLVE_HOLD_CONTACT);
+    outcome.kind === "home-run" ? RESOLVE_HOLD_BIG : RESOLVE_HOLD_CONTACT,
+    /* endsAtBat */ true);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -628,6 +657,14 @@ function finalizeFieldPhase(g) {
 
 function startNewBatter(g) {
   g.count = { balls: 0, strikes: 0 };
+  nextPitchSameBatter(g);
+}
+
+// Reset only the per-pitch state — count is PRESERVED so an at-bat
+// can stretch across multiple pitches (the normal case). Called when
+// the previous pitch resolved to a non-terminating outcome (ball,
+// non-final strike, foul).
+function nextPitchSameBatter(g) {
   g.phase = "presnap";
   g.phaseT = 0;
   g.armedPitch = null;
@@ -638,6 +675,110 @@ function startNewBatter(g) {
   g.batterTakeDeadline = null;
   g.cpuPitchAt = null;
   g.outcomeText = ""; g.outcomeSub = ""; g.outcomeColor = "#fff";
+  g._endsAtBat = undefined;
+  // PVP — flip control back to the pitcher for the next pitch.
+  if (g.mode === "pvp") g.role = "pitching";
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// INNING STRUCTURE
+// ──────────────────────────────────────────────────────────────────────
+function endHalfInning(g) {
+  // Common bookkeeping for any half ending.
+  g.outs = 0;
+  g.bases = { first: null, second: null, third: null };
+  g.stats.halvesPlayed += 1;
+  // Check the game-end conditions BEFORE advancing the inning so
+  // walk-offs (home leading after the top of the final inning OR
+  // home scoring the lead run in the bottom) trigger correctly.
+  const halfDone = checkGameEnd(g);
+  if (halfDone) { finishGame(g); return; }
+  // Otherwise: pass-device overlay or short interlude.
+  g.phase = "half-end";
+  g.phaseT = 0;
+  g.halfEndHoldT = (g.mode === "pvp") ? PASS_HOLD_PVP : PASS_HOLD_CPU;
+  // Phase 5 pre-computes the NEXT half + inning + role so the overlay
+  // can name the inning that's about to start ("Top of 2" etc).
+  const nextHalf = g.half === "top" ? "bottom" : "top";
+  const nextInning = g.half === "top" ? g.inning : g.inning + 1;
+  g._nextHalf = nextHalf;
+  g._nextInning = nextInning;
+  g._nextRole = roleFor(g.mode, nextHalf);
+}
+
+function advanceAfterHalfEnd(g) {
+  g.half = g._nextHalf;
+  g.inning = g._nextInning;
+  g.role = g._nextRole;
+  g._nextHalf = null; g._nextInning = null; g._nextRole = null;
+  startNewBatter(g);
+}
+
+// Game end checks at the END of a half-inning (post outs-cap, pre
+// inning advance).
+function checkGameEnd(g) {
+  // Top half just ended? Game continues unless we've played a full
+  // regulation game AND home is leading (no bottom needed).
+  if (g.half === "top") {
+    if (g.inning >= g.innings && g.runs.home > g.runs.away) {
+      return true;  // home wins, no bottom half needed
+    }
+    return false;
+  }
+  // Bottom half just ended.
+  if (g.inning >= g.innings) {
+    // Game is over unless we're tied — then extra innings.
+    if (g.runs.home !== g.runs.away) return true;
+    return false;
+  }
+  // Walk-off: bottom half of an inning >= regulation with home leading
+  // mid-inning isn't possible here (we only call endHalfInning at 3
+  // outs), so we don't need a separate walk-off check.
+  return false;
+}
+
+function finishGame(g) {
+  g.finished = true;
+  g.finishHoldUntil = performance.now() + 600;
+  persistBaseballResults(g);
+  // Debug hook for the smoke tests — set a window-global when the
+  // game ends so the test can reliably detect it without trying to
+  // read pixels from a partially-rendered overlay. Only fires if the
+  // URL contains ?bbdebug — production users never see this.
+  if (typeof window !== "undefined" && window.location && /bbdebug/.test(window.location.search)) {
+    window.__bbFinished = {
+      runs: { home: g.runs.home, away: g.runs.away },
+      inning: g.inning, half: g.half,
+      stats: Object.assign({}, g.stats),
+      mode: g.mode,
+    };
+  }
+}
+
+// Save lifetime stats. Mirrors the QB Challenge / Field Goal patterns.
+function persistBaseballResults(g) {
+  const b = save.baseballBest = save.baseballBest || {};
+  const playerWon = g.runs.home > g.runs.away;
+  const playerLost = g.runs.home < g.runs.away;
+  if (g.mode === "cpu") {
+    // Win/loss only tracks CPU games (PVP doesn't have a "player team"
+    // in a recordable sense).
+    if (playerWon) {
+      b.wins = (b.wins || 0) + 1;
+      const margin = g.runs.home - g.runs.away;
+      if (margin > (b.biggestWinMargin || 0)) b.biggestWinMargin = margin;
+    } else if (playerLost) {
+      b.losses = (b.losses || 0) + 1;
+    }
+  }
+  const maxScore = Math.max(g.runs.home, g.runs.away);
+  if (maxScore > (b.bestScore || 0)) b.bestScore = maxScore;
+  b.hits = (b.hits || 0) + g.stats.hits;
+  b.homeRuns = (b.homeRuns || 0) + g.stats.homeRuns;
+  b.strikeoutsThrown = (b.strikeoutsThrown || 0) + g.stats.strikeoutsThrown;
+  b.strikeoutsTaken = (b.strikeoutsTaken || 0) + g.stats.strikeoutsTaken;
+  b.inningsPlayed = (b.inningsPlayed || 0) + g.stats.halvesPlayed;
+  persistSave();
 }
 
 function firePitch(g) {
@@ -647,6 +788,14 @@ function firePitch(g) {
   g.phaseT = 0;
   g.pendingSwing = null;
   Sound.whistle && Sound.whistle();   // placeholder pitch "whoosh" — Phase 6 swaps
+  // PVP mode: the pitcher just fired; flip control to the batter for
+  // the incoming swing. (In CPU mode the role stays as-is — the CPU
+  // batter resolves itself in the update loop.) We remember the
+  // pitching role so we can flip back for the NEXT pitch.
+  if (g.mode === "pvp") {
+    g._pvpPitcherRole = g.role;       // remember (always "pitching" in current impl)
+    g.role = "batting";
+  }
 }
 
 // Resolve a Phase-2 at-bat outcome from the CPU swing decision + the
@@ -690,32 +839,46 @@ function resolveAtBatPhase2(g) {
   const status = applyPitchToCount(g.count, outcome);
   if (status === "strikeout") {
     g.outs += 1;
-    // Stat goes to whoever DELIVERED the result. When the player is
-    // batting, a K is a strikeoutTaken; when the player is pitching,
-    // it's a strikeoutThrown.
     if (g.role === "batting") g.stats.strikeoutsTaken += 1;
     else                      g.stats.strikeoutsThrown += 1;
     setResolve(g, "STRIKEOUT", `${g.outs} ${g.outs === 1 ? "out" : "outs"}`,
-      outcomeColor("strikeout"), RESOLVE_HOLD_BIG);
+      outcomeColor("strikeout"), RESOLVE_HOLD_BIG, /* endsAtBat */ true);
     Sound.groan && Sound.groan();
     g.lastOutcomeKind = "strikeout";
   } else if (status === "walk") {
-    advanceRunners(g, 0);    // walk = forced advance only
-    setResolve(g, "WALK", "Runner on base", outcomeColor("walk"), RESOLVE_HOLD_CONTACT);
+    const walkRuns = advanceRunners(g, 0);
+    let walkSub = "Runner on base";
+    if (walkRuns > 0) {
+      const team = g.half === "top" ? "away" : "home";
+      g.runs[team] += walkRuns;
+      g.score = g.runs.home;
+      walkSub = `Bases loaded! +${walkRuns} run`;
+      Sound.cheer && Sound.cheer(false);
+    }
+    setResolve(g, "WALK", walkSub, outcomeColor("walk"),
+      RESOLVE_HOLD_CONTACT, /* endsAtBat */ true);
     g.lastOutcomeKind = "walk";
   } else {
-    setResolve(g, label, sub, color, RESOLVE_HOLD_DEFAULT);
+    // Non-terminating pitch outcome — ball, called/swinging-strike with
+    // <3, or foul. Count was already advanced; the at-bat continues.
+    setResolve(g, label, sub, color,
+      RESOLVE_HOLD_DEFAULT, /* endsAtBat */ false);
     g.lastOutcomeKind = outcome;
   }
 }
 
-function setResolve(g, label, sub, color, hold) {
+function setResolve(g, label, sub, color, hold, endsAtBat) {
   g.outcomeText = label;
   g.outcomeSub = sub;
   g.outcomeColor = color;
   g.outcomeHoldT = hold;
   g.phase = "resolve";
   g.phaseT = 0;
+  // endsAtBat distinguishes "this pitch finished the plate appearance"
+  // (walk / strikeout / contact) from "pitch outcome doesn't end the
+  // at-bat" (ball / strike / foul with <2 strikes). Default = true so
+  // older callers don't accidentally cycle the at-bat forever.
+  g._endsAtBat = (endsAtBat !== false);
 }
 
 // Pointer → pitch-chip hit-test.
@@ -763,7 +926,7 @@ function drawHudStrip(g) {
   const cells = [
     { label: "AWAY", value: String(g.runs.away) },
     { label: "HOME", value: String(g.runs.home) },
-    { label: "INN",  value: `${g.inning}${g.half === "top" ? "▲" : "▼"}` },
+    { label: "INN",  value: `${g.half === "top" ? "T" : "B"}${g.inning}` },
     { label: "OUTS", value: outsGlyph(g.outs) },
     { label: "B-S",  value: `${g.count.balls}-${g.count.strikes}` },
     { label: "BASES",value: basesGlyph(g.bases) },
@@ -798,35 +961,213 @@ function basesGlyph(bases) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Game-end overlay — phase 5 wires the real stats. Phase 2 reuses the
-// stub from Phase 1.
+// HALF-END overlay — pass-device card in PVP, short interlude in CPU.
+// Shows the inning that's about to start so the player knows what's
+// coming when control resumes.
+// ──────────────────────────────────────────────────────────────────────
+function drawHalfEndOverlay(g) {
+  const total = g.halfEndHoldT || 1.6;
+  const t = Math.min(1, g.phaseT / total);
+  // Fade-in / fade-out envelope.
+  const a = t < 0.15 ? (t / 0.15)
+          : t > 0.85 ? Math.max(0, (1 - t) / 0.15)
+          : 1;
+  if (a <= 0) return;
+  ctx.save();
+  ctx.fillStyle = `rgba(7, 9, 18, ${0.78 * a})`;
+  ctx.fillRect(0, 0, W, H);
+  // Card
+  const cardW = Math.min(330, W - 28);
+  const cardH = 200;
+  const cardX = W / 2 - cardW / 2;
+  const cardY = H * 0.36;
+  ctx.fillStyle = `rgba(11, 13, 22, ${0.92 * a})`;
+  ctx.strokeStyle = `rgba(248, 213, 106, ${0.55 * a})`;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(cardX, cardY, cardW, cardH, 12);
+  else ctx.rect(cardX, cardY, cardW, cardH);
+  ctx.fill(); ctx.stroke();
+  ctx.textAlign = "center";
+  // Header — PVP "pass device" vs CPU "next half"
+  ctx.fillStyle = `rgba(248, 213, 106, ${a})`;
+  ctx.font = "bold 22px ui-monospace, monospace";
+  ctx.fillText(g.mode === "pvp" ? "PASS DEVICE" : "NEXT HALF", W / 2, cardY + 38);
+  // Inning marker
+  const nextHalf = g._nextHalf || g.half;
+  const nextInning = g._nextInning || g.inning;
+  ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
+  ctx.font = "bold 30px ui-monospace, monospace";
+  ctx.fillText(`${nextHalf === "top" ? "TOP" : "BOT"} ${nextInning}`, W / 2, cardY + 84);
+  // Score
+  ctx.fillStyle = `rgba(207, 214, 227, ${0.92 * a})`;
+  ctx.font = "bold 14px ui-monospace, monospace";
+  ctx.fillText(`AWAY ${g.runs.away}   ·   HOME ${g.runs.home}`, W / 2, cardY + 116);
+  // Who's up next (PVP-specific)
+  if (g.mode === "pvp") {
+    ctx.fillStyle = `rgba(190, 200, 220, ${0.85 * a})`;
+    ctx.font = "bold 12px ui-monospace, monospace";
+    const upText = nextHalf === "top"
+      ? "Player 1 bats  ·  Player 2 pitches"
+      : "Player 2 bats  ·  Player 1 pitches";
+    ctx.fillText(upText, W / 2, cardY + 144);
+  } else {
+    ctx.fillStyle = `rgba(190, 200, 220, ${0.85 * a})`;
+    ctx.font = "bold 12px ui-monospace, monospace";
+    const youAre = g._nextRole === "batting" ? "You bat" : "You pitch";
+    ctx.fillText(youAre, W / 2, cardY + 144);
+  }
+  // Countdown ticks
+  const ticksTotal = 3;
+  const ticksElapsed = Math.floor(t * ticksTotal);
+  for (let i = 0; i < ticksTotal; i++) {
+    const tx = W / 2 - 30 + i * 30;
+    const ty = cardY + 174;
+    ctx.fillStyle = (i < ticksElapsed)
+      ? `rgba(248, 213, 106, ${a})`
+      : `rgba(248, 213, 106, ${0.18 * a})`;
+    ctx.beginPath();
+    ctx.arc(tx, ty, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// GAME-END panel — final score, stat card with this-game / lifetime
+// rows, NEW BEST badges, Play Again / Menu buttons. Mirrors the QB
+// Challenge finale's layout.
 // ──────────────────────────────────────────────────────────────────────
 function drawBaseballFinishedOverlay(g) {
   const heldFor = Math.max(0, performance.now() - ((g.finishHoldUntil || 0) - 600));
-  const bgA = Math.min(0.78, heldFor / 240 * 0.78);
+  // Backdrop
+  const bgA = Math.min(0.82, heldFor / 240 * 0.82);
   ctx.fillStyle = `rgba(7, 9, 18, ${bgA})`;
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
+
+  // FINAL header
   const titleA = Math.min(1, heldFor / 240);
   const titleEase = ease(titleA, "easeOutBack");
-  const titleY = H * 0.18 - (1 - titleEase) * 22;
+  const titleY = H * 0.12 - (1 - titleEase) * 22;
   ctx.fillStyle = `rgba(248, 213, 106, ${titleA})`;
-  ctx.font = "bold 30px ui-monospace, monospace";
+  ctx.font = "bold 28px ui-monospace, monospace";
   ctx.fillText("FINAL", W / 2, titleY);
-  const scoreA = Math.min(1, Math.max(0, (heldFor - 120) / 240));
+
+  // Winner / loser sub-headline (CPU mode only).
+  if (g.mode === "cpu") {
+    const playerWon = g.runs.home > g.runs.away;
+    const tied = g.runs.home === g.runs.away;
+    const subText = tied ? "TIE GAME" : playerWon ? "VICTORY" : "DEFEAT";
+    const subColor = tied ? "#cfd6e3" : playerWon ? "#4ddc8c" : "#ff5470";
+    ctx.fillStyle = `rgba(${hexRgb(subColor)}, ${titleA})`;
+    ctx.font = "bold 16px ui-monospace, monospace";
+    ctx.fillText(subText, W / 2, titleY + 26);
+  }
+
+  // Big score line
+  const scoreA = Math.min(1, Math.max(0, (heldFor - 160) / 240));
   ctx.fillStyle = `rgba(255, 230, 138, ${scoreA})`;
-  ctx.font = "bold 64px ui-monospace, monospace";
-  ctx.fillText(`${g.runs.away}  -  ${g.runs.home}`, W / 2, H * 0.32);
+  ctx.font = "bold 72px ui-monospace, monospace";
+  ctx.fillText(`${g.runs.away}  -  ${g.runs.home}`, W / 2, H * 0.27);
   ctx.fillStyle = `rgba(190, 200, 220, ${scoreA})`;
   ctx.font = "bold 12px ui-monospace, monospace";
-  ctx.fillText("AWAY            HOME", W / 2, H * 0.36);
+  ctx.fillText("AWAY                 HOME", W / 2, H * 0.30);
+
+  // NEW BEST badge — checks ALL of bestScore / biggestWinMargin / etc.
+  const b = save.baseballBest || {};
+  const winMargin = g.runs.home - g.runs.away;
+  const newBestScore = Math.max(g.runs.home, g.runs.away) >= (b.bestScore || 0);
+  const newWinMargin = g.mode === "cpu" && winMargin > 0 && winMargin >= (b.biggestWinMargin || 0);
+  const showBadge = newBestScore || newWinMargin;
+  if (showBadge) {
+    const badgeA = Math.min(1, Math.max(0, (heldFor - 400) / 240));
+    const pulse = 1 + 0.06 * Math.sin(performance.now() / 220);
+    ctx.save();
+    ctx.translate(W / 2, H * 0.345);
+    ctx.scale(pulse, pulse);
+    const bw = 150, bh = 26;
+    ctx.fillStyle = `rgba(248, 213, 106, ${badgeA * 0.18})`;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-bw / 2, -bh / 2, bw, bh, 6);
+    else ctx.rect(-bw / 2, -bh / 2, bw, bh);
+    ctx.fill();
+    ctx.strokeStyle = `rgba(248, 213, 106, ${badgeA})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = `rgba(255, 230, 138, ${badgeA})`;
+    ctx.font = "bold 12px ui-monospace, monospace";
+    ctx.fillText("NEW PERSONAL BEST", 0, 4);
+    ctx.restore();
+  }
+
+  // Stat card
+  const cardY = H * 0.42;
+  const cardH = 168;
+  const cardW = Math.min(330, W - 28);
+  const cardX = W / 2 - cardW / 2;
+  const cardA = Math.min(1, Math.max(0, (heldFor - 500) / 240));
+  ctx.save();
+  ctx.globalAlpha = cardA;
+  ctx.fillStyle = "rgba(11, 13, 22, 0.85)";
+  ctx.strokeStyle = "rgba(248, 213, 106, 0.55)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(cardX, cardY, cardW, cardH, 10);
+  else ctx.rect(cardX, cardY, cardW, cardH);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(190, 200, 220, 0.75)";
+  ctx.font = "bold 10px ui-monospace, monospace";
+  ctx.fillText("THIS GAME",   cardX + cardW * 0.27, cardY + 18);
+  ctx.fillText("LIFETIME",    cardX + cardW * 0.73, cardY + 18);
+  ctx.strokeStyle = "rgba(248, 213, 106, 0.20)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cardX + cardW / 2, cardY + 28);
+  ctx.lineTo(cardX + cardW / 2, cardY + cardH - 10);
+  ctx.stroke();
+  ctx.restore();
+
+  // Stat rows
+  const lt = save.baseballBest || {};
+  const rows = [
+    { label: "HITS",       round: String(g.stats.hits),             life: String(lt.hits || 0) },
+    { label: "HOME RUNS",  round: String(g.stats.homeRuns),         life: String(lt.homeRuns || 0) },
+    { label: "Ks (THROWN)",round: String(g.stats.strikeoutsThrown), life: String(lt.strikeoutsThrown || 0) },
+    { label: g.mode === "cpu" ? "RECORD" : "INN PLAYED",
+      round: g.mode === "cpu" ? `${(lt.wins || 0)}-${(lt.losses || 0)}` : String(g.stats.halvesPlayed),
+      life:  g.mode === "cpu" ? `Best win +${lt.biggestWinMargin || 0}` : String(lt.inningsPlayed || 0) },
+  ];
+  const rowGap = 26;
+  const rowY0 = cardY + 50;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowA = ease(
+      Math.min(1, Math.max(0, (heldFor - 620 - i * 110) / 220)),
+      "easeInOutQuad"
+    );
+    if (rowA <= 0) continue;
+    const y = rowY0 + i * rowGap;
+    ctx.fillStyle = `rgba(255, 255, 255, ${rowA})`;
+    ctx.font = "bold 17px ui-monospace, monospace";
+    ctx.fillText(r.round, cardX + cardW * 0.22, y);
+    ctx.fillStyle = `rgba(190, 200, 220, ${rowA * 0.80})`;
+    ctx.font = "bold 10px ui-monospace, monospace";
+    ctx.fillText(r.label, W / 2, y - 1);
+    ctx.fillStyle = `rgba(190, 200, 220, ${rowA})`;
+    ctx.font = "bold 17px ui-monospace, monospace";
+    ctx.fillText(r.life, cardX + cardW * 0.78, y);
+  }
+
+  // Buttons
   const bw = Math.min(190, W * 0.42);
   const bh = 56;
   const gap = 16;
-  const cy = H * 0.70;
+  const cy = H * 0.78;
   g._btnPlayAgain = { x: W / 2 - bw - gap / 2, y: cy, w: bw, h: bh };
   g._btnMenu      = { x: W / 2 + gap / 2,      y: cy, w: bw, h: bh };
-  const btnA = Math.min(1, Math.max(0, (heldFor - 400) / 240));
+  const btnA = Math.min(1, Math.max(0, (heldFor - 1080) / 240));
   for (const [btn, label, fill] of [
     [g._btnPlayAgain, "Play Again ▶", "#f8d56a"],
     [g._btnMenu,      "Menu",          "#2a3350"],
@@ -843,4 +1184,13 @@ function drawBaseballFinishedOverlay(g) {
     ctx.globalAlpha = 1;
   }
   ctx.textAlign = "start";
+}
+
+// Hex -> "r,g,b" for use in rgba() strings.
+function hexRgb(hex) {
+  const m = hex.replace("#", "");
+  const r = parseInt(m.slice(0, 2), 16);
+  const gg = parseInt(m.slice(2, 4), 16);
+  const bb = parseInt(m.slice(4, 6), 16);
+  return `${r}, ${gg}, ${bb}`;
 }

@@ -521,10 +521,13 @@ function drawSwingReticle(g) {
 }
 
 // Cue prompt for the batter — guides the player on what to do.
+// CPU mode: no "send the pitch" prompt — the CPU pitches automatically.
+// PVP mode: presnap is the OTHER human's turn (handled by their pitcher
+// view); the batter prompt only fires during the pitch.
 export function drawBatterPrompt(g) {
   let msg = "";
-  if (g.phase === "presnap")     msg = "Tap to send the pitch";
-  else if (g.phase === "pitch")  msg = "Tap to swing  ·  drag to aim";
+  if (g.phase === "presnap" && g.mode === "cpu") msg = "Pitcher is winding up...";
+  else if (g.phase === "pitch") msg = "Tap to swing  ·  drag to aim";
   if (!msg) return;
   ctx.save();
   ctx.fillStyle = "rgba(11, 13, 22, 0.65)";
