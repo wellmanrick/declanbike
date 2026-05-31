@@ -390,20 +390,52 @@ function drawBatterFoulLines() {
   }
 }
 
-// Pitcher silhouette — shifts between WINDUP and RELEASE poses based
-// on whether a ball is currently in flight. Mirrors the catcher figure
-// from the pitcher view but bigger (pitcher is closer to the camera-
-// at-plate frame's edge of the visible distance).
+// Pitcher silhouette — drives a 3-phase windup → release → follow-
+// through animation off the ball's age:
+//   ball.age <= 0          : presnap. Idle sway + occasional shoulder
+//                            roll. Cosmetic only.
+//   0 < ball.age <= 0.20s  : release phase. Arm extends forward,
+//                            torso leans into the pitch, head tilts.
+//   ball.age > 0.20s       : follow-through. Arm decelerates toward
+//                            rest; lean recovers. The pitch is already
+//                            in flight downrange.
 function drawPitcherFigure(g) {
   const z = 0.0;
-  // Body sway when not pitching — sells the "windup".
-  const sway = (g.ball ? 0 : Math.sin(performance.now() / 500) * 0.04);
-  const head = projectFromBatter(sway, 1.85, z);
-  const shoulderL = projectFromBatter(-0.45 + sway, 1.55, z);
-  const shoulderR = projectFromBatter( 0.45 + sway, 1.55, z);
-  const hip  = projectFromBatter(sway, 1.00, z);
+  const ball = g.ball;
+  // Phase progress. windT runs 0 → 1 across the release + follow-
+  // through window; preIdle is the gentle sway when no ball.
+  const RELEASE_T = 0.20;
+  const FOLLOW_T  = 0.30;
+  let windT = 0, preIdle = 0;
+  if (ball && ball.age != null) {
+    const a = ball.age;
+    if (a <= RELEASE_T) {
+      windT = ease(a / RELEASE_T, "easeOutCubic");   // 0→1 over release
+    } else {
+      // Decay from 1 → 0 over follow-through. easeInOutQuad smooths
+      // both into and out of the rest pose.
+      const decay = Math.min(1, (a - RELEASE_T) / FOLLOW_T);
+      windT = 1 - ease(decay, "easeInOutQuad");
+    }
+  } else {
+    preIdle = Math.sin(performance.now() / 500) * 0.04;
+  }
+  // Body translations driven by windT. lean: forward bob; shoulderPush:
+  // throwing-side shoulder lurches toward the camera (positive x is
+  // pitcher's right = batter's left, but our render mirrors x so this
+  // reads as "leaning into the throw").
+  const lean         = windT * 0.18;
+  const shoulderPush = windT * 0.25;
+  const headTilt     = windT * 0.06;
+  const sway = preIdle;
+
+  const head      = projectFromBatter(sway + headTilt, 1.85 - lean * 0.10, z);
+  const shoulderL = projectFromBatter(-0.45 + sway - shoulderPush * 0.4, 1.55 - lean * 0.05, z);
+  const shoulderR = projectFromBatter( 0.45 + sway + shoulderPush * 0.6, 1.55 - lean * 0.05, z);
+  const hip       = projectFromBatter(sway, 1.00, z);
   const r = Math.max(5, 18 * head.scale);
-  // Body
+
+  // Body silhouette
   ctx.fillStyle = "#243454";
   ctx.beginPath();
   ctx.moveTo(shoulderL.sx, shoulderL.sy);
@@ -412,6 +444,23 @@ function drawPitcherFigure(g) {
   ctx.lineTo(hip.sx - r * 1.4, hip.sy);
   ctx.closePath();
   ctx.fill();
+  // Throwing arm — only visible during the release+follow-through.
+  // Drawn as a short stroke from the throwing shoulder to a forward
+  // hand position (toward the batter / out of the screen). The arm
+  // extends with windT and retracts as the pitch settles.
+  if (windT > 0.02) {
+    const handX = (0.45 + sway + shoulderPush * 0.6) + windT * 0.50;
+    const handY = 1.55 - lean * 0.05 + windT * 0.25;
+    const hand  = projectFromBatter(handX, handY, z - 0.30);
+    ctx.strokeStyle = "#1c2540";
+    ctx.lineWidth = Math.max(2, r * 0.55);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(shoulderR.sx, shoulderR.sy);
+    ctx.lineTo(hand.sx, hand.sy);
+    ctx.stroke();
+    ctx.lineCap = "butt";
+  }
   // Head / cap
   ctx.fillStyle = "#1c2540";
   ctx.beginPath();
@@ -470,19 +519,35 @@ function drawBatterBall(ball) {
 // Bat icon at the bottom-right corner of the screen — small, semi-
 // transparent, sells the "first-person batter" feeling without taking
 // up real estate.
+//
+// Animation: at swing fire, swingAnimT is set to BAT_SWING_DUR (the
+// total animation length). It ticks down per frame in update(). We
+// map remainingT → 0..1 progress (1 = just-swung, 0 = settled) and
+// run the rotation through easeOutCubic so the bat WHIPS through
+// contact and gently settles back to the rest pose.
 function drawBatterBat(g) {
+  const BAT_SWING_DUR = 0.40;
   const cx = W - 70;
   const cy = H - 70;
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.rotate(-Math.PI / 4);
-  // Brief swing animation when the player swings — `swingAnimT` is
-  // counted up by the at-bat state machine and reset between swings.
+  // Rest pose — bat held back over the shoulder, ~-45°. Animation
+  // pose sweeps forward to ~+50° (the swing-through arc) and back.
+  const restAngle = -Math.PI / 4;
+  let angle = restAngle;
   const swingT = g.swingAnimT || 0;
-  if (swingT > 0 && swingT < 0.25) {
-    const k = swingT / 0.25;
-    ctx.rotate(-k * Math.PI * 0.7);
+  if (swingT > 0) {
+    // progress = 1 at the moment of swing, 0 once settled.
+    const progress = Math.min(1, swingT / BAT_SWING_DUR);
+    // Easing: easeOutCubic gives a fast initial whip + smooth settle.
+    const eased = ease(progress, "easeOutCubic");
+    // swept = how far the bat has rotated from rest TOWARD the
+    // follow-through extreme. progress=1 means full follow-through;
+    // we want it to settle back to rest at progress=0.
+    const followThroughAngle = Math.PI * 0.55;   // ~100° past rest
+    angle = restAngle + eased * followThroughAngle;
   }
+  ctx.rotate(angle);
   // Bat handle
   ctx.fillStyle = "#8a6a3a";
   ctx.fillRect(-6, -8, 12, 60);
@@ -803,25 +868,34 @@ function drawRunner(runner) {
 export function drawOutcomeBanner(g) {
   if (!g.outcomeText || g.phase !== "resolve") return;
   const elapsed = g.phaseT;
-  // Fade in, hold, fade out — uses a 0.15 / hold / 0.25 envelope.
   const total = g.outcomeHoldT || 1.4;
-  const a = elapsed < 0.15 ? (elapsed / 0.15)
-          : elapsed > total - 0.25 ? Math.max(0, (total - elapsed) / 0.25)
-          : 1;
+  // Alpha: easeOutQuint fade-in (snaps in fast then settles), linear
+  // fade-out at the tail.
+  const aIn  = elapsed < 0.18 ? ease(elapsed / 0.18, "easeOutQuint") : 1;
+  const aOut = elapsed > total - 0.30 ? Math.max(0, (total - elapsed) / 0.30) : 1;
+  const a = Math.min(aIn, aOut);
   if (a <= 0) return;
+  // Scale: easeOutBack briefly overshoots ~5% so the text "lands"
+  // instead of just appearing. Clamped to 0..1 first so the overshoot
+  // doesn't compound into the fade-in.
+  const scale = (elapsed < 0.30)
+    ? ease(Math.min(1, elapsed / 0.30), "easeOutBack")
+    : 1;
   ctx.save();
   ctx.textAlign = "center";
   ctx.globalAlpha = a;
+  ctx.translate(W / 2, H * 0.42);
+  ctx.scale(scale, scale);
   // Drop shadow behind the headline for readability over the field.
   ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
   ctx.font = "bold 56px ui-monospace, monospace";
-  ctx.fillText(g.outcomeText, W / 2 + 3, H * 0.42 + 3);
+  ctx.fillText(g.outcomeText, 3, 3);
   ctx.fillStyle = g.outcomeColor || "#fff";
-  ctx.fillText(g.outcomeText, W / 2, H * 0.42);
+  ctx.fillText(g.outcomeText, 0, 0);
   if (g.outcomeSub) {
     ctx.font = "bold 18px ui-monospace, monospace";
     ctx.fillStyle = "rgba(207, 214, 227, 0.92)";
-    ctx.fillText(g.outcomeSub, W / 2, H * 0.42 + 38);
+    ctx.fillText(g.outcomeSub, 0, 38);
   }
   ctx.restore();
   ctx.textAlign = "start";
