@@ -38,6 +38,7 @@ import { applyPitchToCount, classifyPhase2Contact, advanceRunners } from "./rule
 import { cpuBatterDecision, cpuPitcherChoice } from "./cpu.js";
 import {
   drawPitcherView, drawPitchChips, drawPitcherPrompt, drawOutcomeBanner,
+  drawBatterView, drawBatterPrompt,
 } from "./draw.js";
 
 const DEFAULTS = { mode: "cpu", innings: 3 };
@@ -50,6 +51,35 @@ const RESOLVE_HOLD_BIG     = 1.80;     // HRs / strikeouts / inning end
 // the CPU batter's call. Long enough that the swing decision FEELS
 // like it's happening at contact, not in the resolve banner.
 const SWING_DECIDE_T = 0.05;
+
+// Player batting — how long before/after the ball arrives at the plate
+// is the swing considered "in time"? Wider window = easier game.
+const SWING_TIMING_TOLERANCE = 0.18;   // seconds either side of plate-time
+// How far off (in meters at the plate plane) can the swing be from the
+// ball's actual location and still count as contact?
+const SWING_AIM_TOLERANCE_M = 0.45;
+
+// CPU pitcher pacing — how long after the previous resolve before the
+// CPU automatically fires its next pitch. Gives the player a beat to
+// breathe between pitches.
+const CPU_PITCH_DELAY = 0.55;
+
+// Who's at the plate vs on the mound? In CPU mode the player is on
+// the HOME team — they pitch in the top half and bat in the bottom
+// half. In PVP mode both sides are human; we still return a role for
+// the "active" view (Phase 5 wraps this with a pass-device interlude
+// so both sides aren't visible at once).
+function roleFor(mode, half) {
+  if (mode === "pvp") {
+    // Player 1 = AWAY, Player 2 = HOME. Top half → away batting (P1 bats,
+    // P2 pitches); bottom half → home batting (P2 bats, P1 pitches).
+    // We render the side that's currently up to bat — the same player
+    // who pitched last half is now batting.
+    return half === "top" ? "pitching" : "batting";
+  }
+  // CPU mode — player is HOME (pitches in top, bats in bottom).
+  return half === "top" ? "pitching" : "batting";
+}
 
 // Outcome -> sub-text helper. Phase 5 will move the stat tracking
 // into a proper logger.
@@ -86,9 +116,12 @@ export const Baseball = {
       mode, innings,
       time: 0,
       // ── Game-wide state (Phase 5 populates fully) ──
-      // Phase 2: the player is always pitching. Phase 3 adds the
-      // batter side and alternates based on inning + mode.
-      role: "pitching",
+      // The "player" team is HOME (bats in the bottom half, pitches in
+      // the top half). With mode=cpu, the role flips based on which
+      // half it is. With mode=pvp, both halves are played by humans,
+      // and a "PASS DEVICE" overlay (Phase 5) lets the device change
+      // hands between halves. Phase 3 only fully wires CPU mode.
+      role: roleFor(mode, "top"),
       score: 0,                      // legacy dispatcher field (flat)
       runs: { home: 0, away: 0 },
       inning: 1, half: "top",
@@ -113,8 +146,15 @@ export const Baseball = {
       dragStart: null, dragNow: null,
       // ── Hit-by-pitch HUD: ephemeral toast strip showing last result ──
       lastOutcomeKind: null,
+      // ── Player-batter swing telemetry ──
+      swingFiredAt: null,            // wall-time when the player tapped to swing
+      swingScreenPos: null,          // {x,y} of the swing tap
+      swingAnimT: 0,                 // 0..0.25 — drives the bat-icon swoosh
+      // ── CPU pitcher pacing ──
+      cpuPitchAt: null,              // performance.now() ms when CPU fires next
     };
   },
+
 
   onPlayAgain(prev) {
     return Baseball.init({ mode: prev.mode, innings: prev.innings });
@@ -126,103 +166,85 @@ export const Baseball = {
   },
 
   // ──────────────────────────────────────────────────────────────────
-  // INPUT
+  // INPUT — dispatches by role.
+  //   pitching: chip-tap + drag-aim + release-to-pitch (Phase 2 behavior)
+  //   batting:  tap-anywhere to swing at the in-flight pitch. The tap
+  //             X/Y is the swing target — close to ball's plate (x,y)
+  //             at swing time = quality contact.
   // ──────────────────────────────────────────────────────────────────
   handlePointer(g, kind, x, y) {
     if (g.finished) return;
-    // Drag tracking — used for the aim crosshair regardless of phase.
-    if (kind === "down") {
-      // Pitch chip hit-test takes priority over starting a drag.
-      if (g.phase === "presnap" || g.phase === "aim") {
-        const hit = chipHit(g, x, y);
-        if (hit) {
-          g.armedPitch = pitchById(hit.pitchId);
-          Sound.click && Sound.click();
-          // Pre-fill aim to a sensible default (top of zone, center)
-          // so a quick tap+release without much drag still launches a
-          // meaningful pitch.
-          g.aimX = 0;
-          g.aimY = (PLATE_TOP + PLATE_BOTTOM) / 2;
-          return;
-        }
-      }
-      g.dragStart = { x, y, t: performance.now() };
-      g.dragNow = { x, y };
-      // Begin aim phase only if a pitch is armed.
-      if (g.armedPitch && g.phase === "presnap") {
-        g.phase = "aim";
-        g.phaseT = 0;
-      }
-    } else if (kind === "move") {
-      if (!g.dragStart) return;
-      g.dragNow = { x, y };
-      if (g.phase === "aim") {
-        // Translate the drag delta to a plate-plane aim point. The
-        // crosshair starts at zone center; the drag biases it within
-        // a generous aim window. We allow the aim to drift OUTSIDE
-        // the strike zone so the player can intentionally throw balls.
-        const aim = dragToAim(g);
-        g.aimX = aim.x;
-        g.aimY = aim.y;
-      }
-    } else if (kind === "up") {
-      if (g.phase === "aim" && g.armedPitch) {
-        // Final-aim sample before release.
-        const aim = dragToAim(g);
-        g.aimX = aim.x;
-        g.aimY = aim.y;
-        firePitch(g);
-      }
-      g.dragStart = null;
-      g.dragNow = null;
-    }
+    if (g.role === "pitching") handlePointerPitching(g, kind, x, y);
+    else if (g.role === "batting") handlePointerBatting(g, kind, x, y);
   },
 
   // ──────────────────────────────────────────────────────────────────
-  // UPDATE — per-frame tick
+  // UPDATE — per-frame tick. Branches by phase; some phases also branch
+  // by role (e.g. the pitch's swing source — CPU when player pitches,
+  // player when player bats).
   // ──────────────────────────────────────────────────────────────────
   update(g, dt) {
     g.time += dt;
     g.phaseT += dt;
+    if (g.swingAnimT > 0) g.swingAnimT = Math.max(0, g.swingAnimT - dt);
 
     switch (g.phase) {
       case "presnap":
       case "aim":
-        // Idle — wait for input.
+        // Pitcher role idles waiting for the player to pick a pitch.
+        // Batting role auto-pitches via the CPU after a short delay
+        // so the player isn't left wondering what to do.
+        if (g.role === "batting") tickBatterPresnap(g);
         break;
       case "pitch": {
-        // Integrate the ball. When it reaches the plate, generate a
-        // CPU batter decision; resolve happens a tick later so the
-        // ball is visibly AT the plate when the outcome locks in.
         if (g.ball) {
           stepPitch(g.ball, dt);
-          if (g.ball.landedAtPlate && !g.pendingSwing) {
-            g.pendingSwing = cpuBatterDecision(g.ball, g.count);
-            g.swingDecidedAt = g.phaseT;
-          }
-          // Tiny pause after the swing decision before we transition,
-          // so the ball renders at the plate for a beat.
-          if (g.pendingSwing && (g.phaseT - g.swingDecidedAt) >= SWING_DECIDE_T) {
-            resolveAtBatPhase2(g);
+          if (g.role === "pitching") {
+            // CPU batter resolves the at-bat once the ball hits the plate.
+            if (g.ball.landedAtPlate && !g.pendingSwing) {
+              g.pendingSwing = cpuBatterDecision(g.ball, g.count);
+              g.swingDecidedAt = g.phaseT;
+            }
+            if (g.pendingSwing && (g.phaseT - g.swingDecidedAt) >= SWING_DECIDE_T) {
+              resolveAtBatPhase2(g);
+            }
+          } else {
+            // Player batting — wait for them to either swing (handled
+            // by handlePointerBatting -> resolveBatterSwing) or for the
+            // pitch to pass without a swing.
+            if (g.ball.landedAtPlate && !g.pendingSwing) {
+              // Ball has crossed the plate. Give the batter a short
+              // window AFTER the plate to still tap — that's their late
+              // swing. If we don't see one within SWING_TIMING_TOLERANCE
+              // of plate-time, register a take.
+              g.batterTakeDeadline = g.phaseT + SWING_TIMING_TOLERANCE;
+            }
+            if (g.batterTakeDeadline != null && g.phaseT >= g.batterTakeDeadline && !g.pendingSwing) {
+              // Pitch passed; the batter didn't swing.
+              g.pendingSwing = "take";
+              resolveAtBatPhase2(g);
+            }
           }
         } else {
-          // Defensive — shouldn't be in pitch with no ball; revert.
           g.phase = "presnap"; g.phaseT = 0;
         }
         break;
       }
       case "resolve": {
         if (g.phaseT >= g.outcomeHoldT) {
-          // Phase 5 transitions to HALF_END / GAME_END here. Phase 2
-          // just loops a new batter, capped at 3 outs (and we cycle
-          // outs back to 0 without switching sides yet so the placeholder
-          // half-inning marker isn't misleading).
+          // Phase 5 will transition to HALF_END / GAME_END here. Phase
+          // 3 keeps Phase 2's behavior: cycle outs at 3, then in CPU
+          // mode flip the role between pitching and batting so the
+          // player sees both sides over the course of a session.
           if (g.outs >= 3) {
-            // Phase 5 will switch sides. For Phase 2 we just reset outs
-            // and bases so the count cycle keeps the demo interesting.
             g.outs = 0;
             g.bases = { first: null, second: null, third: null };
             g.stats.halvesPlayed += 1;
+            // Flip half (top/bottom) and re-derive the role. Phase 5
+            // will also handle inning advancement + the pass-device
+            // overlay in PVP mode.
+            g.half = g.half === "top" ? "bottom" : "top";
+            g.role = roleFor(g.mode, g.half);
           }
           startNewBatter(g);
         }
@@ -232,12 +254,18 @@ export const Baseball = {
   },
 
   // ──────────────────────────────────────────────────────────────────
-  // RENDER
+  // RENDER — branches on role. The HUD strip + outcome banner are
+  // shared between roles.
   // ──────────────────────────────────────────────────────────────────
   render(g) {
-    drawPitcherView(g);
-    drawPitchChips(g, PITCH_TYPES);
-    drawPitcherPrompt(g);
+    if (g.role === "batting") {
+      drawBatterView(g);
+      drawBatterPrompt(g);
+    } else {
+      drawPitcherView(g);
+      drawPitchChips(g, PITCH_TYPES);
+      drawPitcherPrompt(g);
+    }
     drawOutcomeBanner(g);
     drawHudStrip(g);
   },
@@ -246,6 +274,165 @@ export const Baseball = {
     drawBaseballFinishedOverlay(g);
   },
 };
+
+// ──────────────────────────────────────────────────────────────────────
+// PITCHER-ROLE INPUT — chip-tap + drag-aim + release-to-pitch.
+// ──────────────────────────────────────────────────────────────────────
+function handlePointerPitching(g, kind, x, y) {
+  if (kind === "down") {
+    // Chip hit-test takes priority over starting a drag.
+    if (g.phase === "presnap" || g.phase === "aim") {
+      const hit = chipHit(g, x, y);
+      if (hit) {
+        g.armedPitch = pitchById(hit.pitchId);
+        Sound.click && Sound.click();
+        g.aimX = 0;
+        g.aimY = (PLATE_TOP + PLATE_BOTTOM) / 2;
+        return;
+      }
+    }
+    g.dragStart = { x, y, t: performance.now() };
+    g.dragNow = { x, y };
+    if (g.armedPitch && g.phase === "presnap") {
+      g.phase = "aim";
+      g.phaseT = 0;
+    }
+  } else if (kind === "move") {
+    if (!g.dragStart) return;
+    g.dragNow = { x, y };
+    if (g.phase === "aim") {
+      const aim = dragToAim(g);
+      g.aimX = aim.x;
+      g.aimY = aim.y;
+    }
+  } else if (kind === "up") {
+    if (g.phase === "aim" && g.armedPitch) {
+      const aim = dragToAim(g);
+      g.aimX = aim.x;
+      g.aimY = aim.y;
+      firePitch(g);
+    }
+    g.dragStart = null;
+    g.dragNow = null;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// BATTER-ROLE INPUT — tap-anywhere to swing. The tap (x, y) becomes
+// the swing-target screen point; we compare it against the ball's
+// projected screen position at swing time to get an "aim error".
+// ──────────────────────────────────────────────────────────────────────
+function handlePointerBatting(g, kind, x, y) {
+  // Drag tracking — purely for the swing reticle render.
+  if (kind === "down") {
+    g.dragStart = { x, y, t: performance.now() };
+    g.dragNow = { x, y };
+    // The swing fires on the DOWN edge — committing to a swing at
+    // the moment you tap feels right (tap = "go!"). Subsequent drag
+    // tweaks the reticle but doesn't change the outcome.
+    if (g.phase === "pitch" && !g.pendingSwing) {
+      g.swingFiredAt = g.phaseT;
+      g.swingScreenPos = { x, y };
+      g.pendingSwing = "player-swing";
+      g.swingAnimT = 0.25;
+      resolveBatterSwing(g);
+    }
+  } else if (kind === "move") {
+    if (g.dragStart) g.dragNow = { x, y };
+  } else if (kind === "up") {
+    g.dragStart = null;
+    g.dragNow = null;
+  }
+}
+
+// CPU pitcher tick — when the player is batting, the CPU picks a pitch
+// + aim and fires after a short delay between at-bats so the player
+// can read the situation.
+function tickBatterPresnap(g) {
+  if (g.cpuPitchAt == null) {
+    g.cpuPitchAt = performance.now() + CPU_PITCH_DELAY * 1000;
+    return;
+  }
+  if (performance.now() >= g.cpuPitchAt) {
+    const choice = cpuPitcherChoice(g.count);
+    g.armedPitch = choice.pitch;
+    g.aimX = choice.aimX;
+    g.aimY = choice.aimY;
+    firePitch(g);
+    g.cpuPitchAt = null;
+  }
+}
+
+// Convert the player's swing tap to a world-space aim point at the
+// plate plane, then compare it to where the ball was when the swing
+// fired. Compute timing error + spatial error → contact quality →
+// outcome bucket.
+function resolveBatterSwing(g) {
+  const b = g.ball;
+  if (!b) return;
+  // Where would the ball be at swing time? Two cases:
+  //  - Swing fired BEFORE the ball reached the plate — we want where the
+  //    ball was at swing time (we have b.x/y/z = current).
+  //  - Swing fired AFTER the ball reached the plate — same idea, b is
+  //    still in motion past the plate (we don't stop integrating it).
+  // Either way, the ball's current position IS where it was at the
+  // swing time, to within one frame. Good enough.
+  // Project ball position into screen coords using batter projection.
+  // We import that helper from draw.js.
+  const ballScreen = ballScreenInBatterView(b);
+  const dx = (g.swingScreenPos.x - ballScreen.sx);
+  const dy = (g.swingScreenPos.y - ballScreen.sy);
+  const screenDist = Math.hypot(dx, dy);
+  // Convert screen distance to a 0..1 aim quality. 80px on a 390-wide
+  // screen is roughly the ball's projected radius near the plate, so
+  // <80px = direct hit, 80..240 = grazing, >240 = whiff.
+  const aimQ = Math.max(0, 1 - screenDist / 200);
+
+  // Timing — when did the ball cross the plate vs when we swung?
+  // ball.age at landedAtPlate is the answer; otherwise we can predict
+  // based on remaining z / vz.
+  let plateAge;
+  if (b.landedAtPlate) {
+    plateAge = b.age;     // ball.age was frozen at landedAtPlate moment
+  } else {
+    plateAge = b.age + (PLATE_Z - b.z) / b.vz;
+  }
+  // g.swingFiredAt is g.phaseT at swing; b.age corresponds to g.phaseT
+  // because both started at firePitch. So:
+  const timingErr = Math.abs(g.swingFiredAt - plateAge);
+  const timeQ = Math.max(0, 1 - timingErr / SWING_TIMING_TOLERANCE);
+
+  // Combined contact quality. Both axes matter — a perfectly-timed
+  // swing in the wrong location still misses, and vice versa.
+  const contactQ = aimQ * 0.5 + timeQ * 0.5;
+
+  // Bucket the quality into the same outcome strings the CPU branch
+  // produces so we can reuse the resolveAtBatPhase2 logic.
+  let outcome;
+  if (contactQ < 0.05)      outcome = "swing-miss";
+  else if (contactQ < 0.30) outcome = "swing-foul";
+  else if (contactQ < 0.55) outcome = "swing-weak";
+  else if (contactQ < 0.85) outcome = "swing-solid";
+  else                      outcome = "swing-barrel";
+  g.pendingSwing = outcome;
+  // Stat — for player-batting strikeouts taken
+  if (outcome === "swing-miss") g._lastSwingWasMiss = true;
+  resolveAtBatPhase2(g);
+}
+
+// Re-project ball into batter view. We can't import from draw.js
+// without a circular dep risk, so we compute locally using the same
+// formula as projectFromBatter().
+const _BATTER_FOCAL = 600;
+const _BATTER_CAM_H = 1.65;
+const _BATTER_CAM_Z_LOCAL = PLATE_Z + 0.6;
+function ballScreenInBatterView(b) {
+  const zz = Math.max(0.5, _BATTER_CAM_Z_LOCAL - b.z);
+  return {
+    sx: W / 2 + (-b.x) * _BATTER_FOCAL / zz,
+    sy: H * 0.55 + (_BATTER_CAM_H - b.y) * _BATTER_FOCAL / zz,
+  };
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // At-bat helpers
@@ -258,6 +445,10 @@ function startNewBatter(g) {
   g.armedPitch = null;
   g.ball = null;
   g.pendingSwing = null;
+  g.swingFiredAt = null;
+  g.swingScreenPos = null;
+  g.batterTakeDeadline = null;
+  g.cpuPitchAt = null;
   g.outcomeText = ""; g.outcomeSub = ""; g.outcomeColor = "#fff";
 }
 
@@ -307,12 +498,25 @@ function resolveAtBatPhase2(g) {
       sub = result.label;
     } else {
       const runs = advanceRunners(g, result.bases);
-      g.stats.hits += 1;
-      if (result.kind === "home-run") g.stats.homeRuns += 1;
+      // Stats credit the PLAYER team only — these surface on the
+      // lifetime-best save record on the game-end panel.
+      const playerHit = (g.role === "batting");
+      if (playerHit) {
+        g.stats.hits += 1;
+        if (result.kind === "home-run") g.stats.homeRuns += 1;
+      }
       label = result.label;
       color = outcomeColor(result.kind);
       if (runs > 0) {
-        g.runs.home += runs;
+        // The team batting this half-inning scores. Top = AWAY batting,
+        // bottom = HOME batting.
+        const team = g.half === "top" ? "away" : "home";
+        g.runs[team] += runs;
+        // Mirror into the legacy flat `score` field so the dispatcher's
+        // settleMinigame / payout reads remain safe — keep it as the
+        // PLAYER team's run total (home) so the cash payout reflects
+        // how the player's side did.
+        g.score = g.runs.home;
         sub = `+${runs} run${runs === 1 ? "" : "s"}`;
         Sound.cheer && Sound.cheer(result.kind === "home-run");
       } else {
@@ -330,7 +534,11 @@ function resolveAtBatPhase2(g) {
   const status = applyPitchToCount(g.count, outcome);
   if (status === "strikeout") {
     g.outs += 1;
-    g.stats.strikeoutsThrown += 1;
+    // Stat goes to whoever DELIVERED the result. When the player is
+    // batting, a K is a strikeoutTaken; when the player is pitching,
+    // it's a strikeoutThrown.
+    if (g.role === "batting") g.stats.strikeoutsTaken += 1;
+    else                      g.stats.strikeoutsThrown += 1;
     setResolve(g, "STRIKEOUT", `${g.outs} ${g.outs === 1 ? "out" : "outs"}`,
       outcomeColor("strikeout"), RESOLVE_HOLD_BIG);
     Sound.groan && Sound.groan();

@@ -15,6 +15,34 @@ import {
   PLATE_Z, PLATE_TOP, PLATE_BOTTOM, PLATE_HALF_W, BALL_R, BALL_RELEASE_Y,
 } from "./pitches.js";
 
+// Camera Z used for the BATTER view. We sit the camera just behind
+// home plate looking back toward the mound. The world-frame coordinates
+// stay the same as the pitcher view (pitcher at z=0, plate at z=18.4)
+// so the physics doesn't need to know about the camera flip — only
+// rendering does. projectFromBatter() handles the perspective inversion.
+import {
+  FP_FOCAL, FP_CAMERA_H,
+} from "../../engine/fpView.js";
+// 4m behind the plate is roughly the "broadcast slot camera" distance
+// real ballgames use — it gives the strike zone a comfortable on-screen
+// size and the pitcher silhouette enough distance that the ball's
+// approach feels real instead of jumping in your face.
+export const BATTER_CAM_Z = PLATE_Z + 4.0;
+const BATTER_EYE_H = 1.65;                         // ~5'5" eye-height
+
+// Custom projection for the batter view. Looks back at the mound (so
+// world +z = away from camera becomes "behind" us; world -z + cam offset
+// is the new "forward"). x is mirrored because the batter is facing the
+// pitcher (their left-hand side is +x in the pitcher frame).
+export function projectFromBatter(x, y, z) {
+  const zz = Math.max(0.5, BATTER_CAM_Z - z);
+  return {
+    sx: W / 2 + (-x) * FP_FOCAL / zz,
+    sy: fpHorizonY() + (BATTER_EYE_H - y) * FP_FOCAL / zz,
+    scale: FP_FOCAL / zz / 60,
+  };
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // PITCHER VIEW
 // ──────────────────────────────────────────────────────────────────────
@@ -157,21 +185,40 @@ function drawBallTrail(ball) {
 
 function drawBall(ball) {
   const p = fpProject(ball.x, ball.y, ball.z);
-  const r = Math.max(2, BALL_R * 1200 * p.scale);
-  // White ball with red stitching hint — render as a circle with a
-  // small arc to imply seams.
+  const r = ballScreenRadius(ball.z);
   ctx.fillStyle = ball.pitch.colorPrimary;
   ctx.beginPath();
   ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
   ctx.fill();
-  // Seam arc
-  if (r > 3) {
-    ctx.strokeStyle = "rgba(220, 50, 50, 0.85)";
-    ctx.lineWidth = Math.max(0.8, r * 0.18);
-    ctx.beginPath();
-    ctx.arc(p.sx, p.sy, r * 0.7, -Math.PI * 0.35, Math.PI * 0.35);
-    ctx.stroke();
-  }
+  drawBallSeam(p.sx, p.sy, r);
+}
+
+// Real-world ball-to-screen radius, capped + floored so the ball
+// stays visible at the far end and doesn't become a window-filling
+// blob at the near end. Camera-Z agnostic: callers pass the world z
+// of the ball; we know the camera positions from the projection
+// constants.
+function ballScreenRadius(worldZ) {
+  // Pitcher view: camera at z=0, ball travels 0..18m → dist 0.5..18m.
+  // Batter view: camera at BATTER_CAM_Z, dist BATTER_CAM_Z..(BATTER_CAM_Z-PLATE_Z).
+  // We can compute either view's distance off the same ball.z because
+  // we know which composer is active by which call site this is — but
+  // for simplicity, use the SHORTER of the two distances. The pitcher
+  // view caller will always see the larger distance; the batter caller
+  // will see the smaller. Both look natural.
+  const distPitcher = Math.max(0.5, worldZ);
+  const distBatter  = Math.max(0.5, BATTER_CAM_Z - worldZ);
+  const dist = Math.min(distPitcher, distBatter);
+  return Math.max(2.5, Math.min(28, BALL_R * FP_FOCAL / dist));
+}
+
+function drawBallSeam(cx, cy, r) {
+  if (r <= 3) return;
+  ctx.strokeStyle = "rgba(220, 50, 50, 0.85)";
+  ctx.lineWidth = Math.max(0.8, r * 0.18);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.7, -Math.PI * 0.35, Math.PI * 0.35);
+  ctx.stroke();
 }
 
 // Aim crosshair — follows the player's drag while picking the pitch's
@@ -254,6 +301,237 @@ export function drawPitcherPrompt(g) {
   const tw = ctx.measureText(msg).width + 24;
   const tx = W / 2 - tw / 2;
   const ty = H - 56 - 24 - 30;
+  if (ctx.roundRect) {
+    ctx.beginPath(); ctx.roundRect(tx, ty, tw, 24, 12); ctx.fill();
+  } else {
+    ctx.fillRect(tx, ty, tw, 24);
+  }
+  ctx.fillStyle = "#f8d56a";
+  ctx.textAlign = "center";
+  ctx.fillText(msg, W / 2, ty + 16);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// BATTER VIEW — camera behind home plate, looking toward the mound.
+// The pitcher's silhouette is at world z=0; the ball comes from that
+// far end and grows as it approaches the camera.
+// ──────────────────────────────────────────────────────────────────────
+export function drawBatterView(g) {
+  drawBatterSky();
+  drawBatterField();
+  drawBatterFoulLines();
+  drawPitcherFigure(g);
+  // Strike-zone box anchored above home plate. From the batter's
+  // perspective this projects much larger than the pitcher's view of
+  // the same box — gives the batter a real target to read pitches off.
+  drawBatterStrikeZone();
+  if (g.ball) drawBatterBallTrail(g.ball);
+  if (g.ball) drawBatterBall(g.ball);
+  // Bat icon at the bottom corner — pictographic, indicates which side
+  // the player is "batting from" (right-handed by default).
+  drawBatterBat(g);
+  // Swing reticle — appears when the player is mid-drag, anchored at
+  // their drag origin. Shows where the swing will arrive.
+  drawSwingReticle(g);
+}
+
+function drawBatterSky() {
+  // Slightly warmer than the pitcher view — implies "facing the sun
+  // setting over the outfield".
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#0e1726");
+  sky.addColorStop(0.55, "#23314d");
+  sky.addColorStop(1, "#3d6a48");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawBatterField() {
+  const horizon = fpHorizonY();
+  ctx.fillStyle = "#3d6a48";
+  ctx.fillRect(0, horizon, W, H - horizon);
+  // Lateral perspective lines using batter projection.
+  ctx.strokeStyle = "rgba(255,255,255,0.07)";
+  for (let z = 1; z <= 18; z += 1.5) {
+    const left  = projectFromBatter(-25, 0, z);
+    const right = projectFromBatter( 25, 0, z);
+    ctx.lineWidth = Math.max(0.6, 2 * left.scale);
+    ctx.beginPath();
+    ctx.moveTo(left.sx, left.sy); ctx.lineTo(right.sx, right.sy);
+    ctx.stroke();
+  }
+  // Pitcher's mound — small brown disc in the middle of the frame.
+  const mound = projectFromBatter(0, 0, 0);
+  const moundTop = projectFromBatter(0, 0.25, 0);
+  const r = Math.max(8, 90 * mound.scale);
+  ctx.fillStyle = "#8a6a3a";
+  ctx.beginPath();
+  ctx.ellipse(mound.sx, mound.sy, r, r * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Rubber on the mound
+  ctx.fillStyle = "#dcdcdc";
+  ctx.fillRect(moundTop.sx - r * 0.45, moundTop.sy - 2, r * 0.9, 3);
+}
+
+function drawBatterFoulLines() {
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.50)";
+  ctx.lineWidth = 2;
+  // Lines go from just behind home plate out into the outfield. From
+  // the batter's view, the foul lines diverge to the corners.
+  for (const x of [-28, 28]) {
+    const a = projectFromBatter(0, 0, PLATE_Z - 0.10);   // near, at the plate
+    const b = projectFromBatter(x, 0, -50);              // way behind the pitcher
+    ctx.beginPath();
+    ctx.moveTo(a.sx, a.sy);
+    ctx.lineTo(b.sx, b.sy);
+    ctx.stroke();
+  }
+}
+
+// Pitcher silhouette — shifts between WINDUP and RELEASE poses based
+// on whether a ball is currently in flight. Mirrors the catcher figure
+// from the pitcher view but bigger (pitcher is closer to the camera-
+// at-plate frame's edge of the visible distance).
+function drawPitcherFigure(g) {
+  const z = 0.0;
+  // Body sway when not pitching — sells the "windup".
+  const sway = (g.ball ? 0 : Math.sin(performance.now() / 500) * 0.04);
+  const head = projectFromBatter(sway, 1.85, z);
+  const shoulderL = projectFromBatter(-0.45 + sway, 1.55, z);
+  const shoulderR = projectFromBatter( 0.45 + sway, 1.55, z);
+  const hip  = projectFromBatter(sway, 1.00, z);
+  const r = Math.max(5, 18 * head.scale);
+  // Body
+  ctx.fillStyle = "#243454";
+  ctx.beginPath();
+  ctx.moveTo(shoulderL.sx, shoulderL.sy);
+  ctx.lineTo(shoulderR.sx, shoulderR.sy);
+  ctx.lineTo(hip.sx + r * 1.4, hip.sy);
+  ctx.lineTo(hip.sx - r * 1.4, hip.sy);
+  ctx.closePath();
+  ctx.fill();
+  // Head / cap
+  ctx.fillStyle = "#1c2540";
+  ctx.beginPath();
+  ctx.arc(head.sx, head.sy, r, 0, Math.PI * 2);
+  ctx.fill();
+  // Cap brim
+  ctx.fillStyle = "#0e1726";
+  ctx.fillRect(head.sx - r, head.sy - r * 0.2, r * 2, r * 0.25);
+}
+
+function drawBatterStrikeZone() {
+  // Same world-coords as the pitcher view's zone, but projected from
+  // the batter side so it appears MUCH larger and easier to read.
+  const corners = [
+    projectFromBatter(-PLATE_HALF_W, PLATE_BOTTOM, PLATE_Z),
+    projectFromBatter( PLATE_HALF_W, PLATE_BOTTOM, PLATE_Z),
+    projectFromBatter( PLATE_HALF_W, PLATE_TOP,    PLATE_Z),
+    projectFromBatter(-PLATE_HALF_W, PLATE_TOP,    PLATE_Z),
+  ];
+  const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 400);
+  ctx.strokeStyle = `rgba(255, 235, 130, ${0.4 * pulse + 0.2})`;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(corners[0].sx, corners[0].sy);
+  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i].sx, corners[i].sy);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.fillStyle = `rgba(255, 235, 130, ${0.04 * pulse})`;
+  ctx.fill();
+}
+
+function drawBatterBallTrail(ball) {
+  if (!ball.trail || ball.trail.length < 2) return;
+  ctx.strokeStyle = ball.pitch.colorTrail;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < ball.trail.length; i++) {
+    const t = ball.trail[i];
+    const p = projectFromBatter(t.x, t.y, t.z);
+    if (i === 0) ctx.moveTo(p.sx, p.sy);
+    else ctx.lineTo(p.sx, p.sy);
+  }
+  ctx.stroke();
+}
+
+function drawBatterBall(ball) {
+  const p = projectFromBatter(ball.x, ball.y, ball.z);
+  const r = ballScreenRadius(ball.z);
+  ctx.fillStyle = ball.pitch.colorPrimary;
+  ctx.beginPath();
+  ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
+  ctx.fill();
+  drawBallSeam(p.sx, p.sy, r);
+}
+
+// Bat icon at the bottom-right corner of the screen — small, semi-
+// transparent, sells the "first-person batter" feeling without taking
+// up real estate.
+function drawBatterBat(g) {
+  const cx = W - 70;
+  const cy = H - 70;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(-Math.PI / 4);
+  // Brief swing animation when the player swings — `swingAnimT` is
+  // counted up by the at-bat state machine and reset between swings.
+  const swingT = g.swingAnimT || 0;
+  if (swingT > 0 && swingT < 0.25) {
+    const k = swingT / 0.25;
+    ctx.rotate(-k * Math.PI * 0.7);
+  }
+  // Bat handle
+  ctx.fillStyle = "#8a6a3a";
+  ctx.fillRect(-6, -8, 12, 60);
+  // Barrel
+  ctx.fillStyle = "#c8a060";
+  ctx.fillRect(-9, 50, 18, 50);
+  // Knob
+  ctx.fillStyle = "#5a4628";
+  ctx.beginPath();
+  ctx.arc(0, -8, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// Swing reticle — appears on screen during a drag. Centered on the
+// drag origin, indicates the swing's target zone.
+function drawSwingReticle(g) {
+  if (!g.dragStart || !g.dragNow) return;
+  if (g.phase !== "pitch") return;     // Only meaningful when a pitch is incoming.
+  const cx = g.dragNow.x;
+  const cy = g.dragNow.y;
+  // Crosshair
+  ctx.strokeStyle = "rgba(255, 235, 130, 0.85)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 22, 0, Math.PI * 2);
+  ctx.moveTo(cx - 26, cy); ctx.lineTo(cx - 17, cy);
+  ctx.moveTo(cx + 17, cy); ctx.lineTo(cx + 26, cy);
+  ctx.moveTo(cx, cy - 26); ctx.lineTo(cx, cy - 17);
+  ctx.moveTo(cx, cy + 17); ctx.lineTo(cx, cy + 26);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(248, 213, 106, 0.6)";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Cue prompt for the batter — guides the player on what to do.
+export function drawBatterPrompt(g) {
+  let msg = "";
+  if (g.phase === "presnap")     msg = "Tap to send the pitch";
+  else if (g.phase === "pitch")  msg = "Tap to swing  ·  drag to aim";
+  if (!msg) return;
+  ctx.save();
+  ctx.fillStyle = "rgba(11, 13, 22, 0.65)";
+  ctx.font = "bold 13px ui-monospace, monospace";
+  const tw = ctx.measureText(msg).width + 24;
+  const tx = W / 2 - tw / 2;
+  const ty = H - 80;
   if (ctx.roundRect) {
     ctx.beginPath(); ctx.roundRect(tx, ty, tw, 24, 12); ctx.fill();
   } else {
