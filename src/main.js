@@ -39,6 +39,7 @@ import { PP_LEVELS, buildCups as ppBuildCups, starsFor as ppStarsFor, levelById 
 import { DuckHunt } from "./games/duckHunt/index.js";
 import { BlockBash } from "./games/blockBash/index.js";
 import { QBChallenge } from "./games/qbChallenge/index.js";
+import { Baseball } from "./games/baseball/index.js";
 import {
   pushToast, pushFloating,
   spawnExhaustParticles, spawnSmashParticles, spawnLandingDust, spawnCrashParticles,
@@ -2485,7 +2486,7 @@ function updateHUD() {
 // MENU / UI WIRING
 //==========================================================
 function showOnly(id) {
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels","fg-levels","pp-levels"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels","fg-levels","pp-levels","baseball-menu"]) {
     const el = document.getElementById(overlay);
     if (!el) continue;
     if (overlay === id) el.classList.remove("hidden");
@@ -2856,6 +2857,60 @@ function openPartyPongLevels() {
   showOnly("pp-levels");
 }
 
+// Baseball mode-select overlay. Tracks the currently-selected mode and
+// innings on the DOM (data-* attributes on the chip rows) so we don't
+// need a global piece of state for them. The Start button reads them
+// back out via startBaseballFromMenu().
+function openBaseballMenu() {
+  const overlay = document.getElementById("baseball-menu");
+  if (!overlay) return;
+  // One-time chip click binding. Each chip carries data-bb-group +
+  // data-bb-value; clicking one toggles the active state within its
+  // group and a click sound plays.
+  overlay.querySelectorAll("[data-bb-group]").forEach((chip) => {
+    if (chip.__bbBound) return;
+    chip.__bbBound = true;
+    chip.addEventListener("click", function () {
+      Sound.click && Sound.click();
+      setBaseballMenuSelection(chip.dataset.bbGroup, chip.dataset.bbValue);
+    });
+  });
+  // Restore the player's last-used settings.
+  const prefs = (save.baseballPrefs && save.baseballPrefs.mode) ? save.baseballPrefs : { mode: "cpu", innings: 3 };
+  setBaseballMenuSelection("mode", prefs.mode);
+  setBaseballMenuSelection("innings", String(prefs.innings));
+  // Update the lifetime stats strip so the player can see their record.
+  const stats = save.baseballBest || {};
+  const recordEl = document.getElementById("bb-record");
+  if (recordEl) {
+    recordEl.textContent = `W ${stats.wins || 0}  •  L ${stats.losses || 0}  •  HR ${stats.homeRuns || 0}`;
+  }
+  G.state = STATE.BASEBALL_MENU;
+  showOnly("baseball-menu");
+}
+
+function setBaseballMenuSelection(group, value) {
+  const buttons = document.querySelectorAll(`#baseball-menu [data-bb-group="${group}"]`);
+  buttons.forEach((b) => {
+    if (b.dataset.bbValue === value) b.classList.add("active");
+    else b.classList.remove("active");
+  });
+}
+
+function readBaseballMenuSelection(group, fallback) {
+  const active = document.querySelector(`#baseball-menu [data-bb-group="${group}"].active`);
+  return active ? active.dataset.bbValue : fallback;
+}
+
+function startBaseballFromMenu() {
+  const mode = readBaseballMenuSelection("mode", "cpu");
+  const innings = parseInt(readBaseballMenuSelection("innings", "3"), 10);
+  // Persist so the next visit defaults to the same selection.
+  save.baseballPrefs = { mode, innings };
+  persistSave();
+  startBaseball(mode, innings);
+}
+
 function buildPartyPongLevelGrid() {
   const grid = document.getElementById("pp-level-grid");
   grid.innerHTML = "";
@@ -2960,6 +3015,9 @@ function bindMenuActions() {
       case "cb-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
       case "fg-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
       case "pp-back": G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); break;
+      case "baseball": openBaseballMenu(); break;
+      case "baseball-start": startBaseballFromMenu(); break;
+      case "baseball-back": G.state = STATE.MENU; showOnly("menu"); break;
       case "resume": G.state = STATE.PLAY; showOnly("hud"); break;
       case "retry":
         if (G.runtime) startRun(G.runtime.level.id);
@@ -3072,7 +3130,24 @@ function startMinigame(id, levelId) {
   G.minigameRuntime._mg = mg;
   G.state = STATE.MINIGAME;
   // Hide every overlay (and the touch UI). The canvas is the whole screen.
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels","pp-levels"]) {
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels","pp-levels","baseball-menu"]) {
+    const el = document.getElementById(overlay);
+    if (el) el.classList.add("hidden");
+  }
+}
+
+// Baseball lives on the main menu, not the Mini-Games hub, and takes
+// a richer config than a levelId (mode + innings). Instead of bending
+// startMinigame's level resolution, we boot it directly with the
+// chosen config — same MINIGAMES dispatch beyond this point.
+function startBaseball(mode, innings) {
+  Sound.ensure && Sound.ensure();
+  Sound.startMusic && Sound.startMusic("game");
+  G.minigameRuntime = Baseball.init({ mode, innings });
+  G.minigameRuntime.id = "baseball";
+  G.minigameRuntime._mg = Baseball;
+  G.state = STATE.MINIGAME;
+  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels","pp-levels","baseball-menu"]) {
     const el = document.getElementById(overlay);
     if (el) el.classList.add("hidden");
   }
@@ -3095,11 +3170,19 @@ function settleMinigame() {
 
 function endMinigame() {
   if (!G.minigameRuntime) return;
+  const mg = MINIGAMES[G.minigameRuntime.id];
   settleMinigame();
   G.minigameRuntime = null;
-  G.state = STATE.QUESTS;
-  buildQuests();
-  showOnly("quests");
+  // Mini-games default to the hub. A game can opt out (e.g. Baseball
+  // lives on the main menu) by setting mg.menuTarget = "menu".
+  if (mg && mg.menuTarget === "menu") {
+    G.state = STATE.MENU;
+    showOnly("menu");
+  } else {
+    G.state = STATE.QUESTS;
+    buildQuests();
+    showOnly("quests");
+  }
 }
 
 function canvasPointerToWorld(clientX, clientY) {
@@ -3159,12 +3242,24 @@ function routeGameOverPointer(rt, mg, kind, p) {
     }
     return;
   }
-  // Non-level games — Duck Hunt / Hoops / QB Challenge.
+  // Non-level games — Duck Hunt / Hoops / QB Challenge / Baseball.
   if (inBtn(rt._btnPlayAgain)) {
     const id = rt.id;
     settleMinigame();
-    G.minigameRuntime = null;
-    startMinigame(id);
+    // Game-specific replay hook — Baseball uses this to preserve the
+    // mode + innings the player chose at the start of the game. Falls
+    // back to the generic startMinigame(id) path for games that don't
+    // need anything beyond the level/no-level distinction.
+    if (mg && mg.onPlayAgain) {
+      Sound.click && Sound.click();
+      const next = mg.onPlayAgain(rt);
+      G.minigameRuntime = next;
+      G.minigameRuntime.id = id;
+      G.minigameRuntime._mg = mg;
+    } else {
+      G.minigameRuntime = null;
+      startMinigame(id);
+    }
   } else if (inBtn(rt._btnMenu)) {
     endMinigame();
   }
@@ -6376,6 +6471,13 @@ const MINIGAMES = {
   hoops: Hoops,
   qb_challenge: QBChallenge,
   block_bash: BlockBash,
+  // Baseball lives in the registry so the canvas pointer dispatch + the
+  // finished-overlay routing both light up automatically — but it isn't
+  // exposed in the Mini-Games hub. It's reached from the main menu via
+  // a dedicated mode-select overlay (#baseball-menu) and the startBaseball
+  // helper, which bypasses startMinigame's level resolution to pass the
+  // chosen mode + innings straight into Baseball.init().
+  baseball: Baseball,
 };
 
 // Contract sanity check — runs once at module load. Warns in the console
@@ -6769,16 +6871,21 @@ function loop(now) {
     else if (G.state === STATE.PAUSE) { G.state = STATE.PLAY; showOnly("hud"); Sound.startEngine(); }
     else if (G.state === STATE.MINIGAME) {
       // Forfeit current mini-game. Level-driven games return to their own
-      // level select; the others return to the mini-game hub.
+      // level select; baseball returns to its own mode picker; the rest
+      // return to the mini-game hub.
       const rtId = G.minigameRuntime && G.minigameRuntime.id;
       G.minigameRuntime = null;
       if (rtId === "can_bash") { G.state = STATE.CB_LEVELS; openCanBashLevels(); }
       else if (rtId === "field_goal") { G.state = STATE.FG_LEVELS; openFieldGoalLevels(); }
       else if (rtId === "party_pong") { G.state = STATE.PP_LEVELS; openPartyPongLevels(); }
+      else if (rtId === "baseball") { openBaseballMenu(); }
       else { G.state = STATE.QUESTS; buildQuests(); showOnly("quests"); }
     }
     else if (G.state === STATE.CB_LEVELS || G.state === STATE.FG_LEVELS || G.state === STATE.PP_LEVELS) {
       G.state = STATE.QUESTS; buildQuests(); showOnly("quests");
+    }
+    else if (G.state === STATE.BASEBALL_MENU) {
+      G.state = STATE.MENU; showOnly("menu");
     }
     else if (G.state === STATE.LEVELS || G.state === STATE.GARAGE || G.state === STATE.QUESTS || G.state === STATE.HOW || G.state === STATE.RESULT) {
       G.runtime = null; G.state = STATE.MENU; showOnly("menu"); Sound.stopEngine();

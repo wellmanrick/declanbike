@@ -15,6 +15,7 @@ export const STATE = Object.freeze({
   CB_LEVELS: "cb-levels", // Can Bash level select
   FG_LEVELS: "fg-levels", // Field Goal level select
   PP_LEVELS: "pp-levels", // Party Pong level select
+  BASEBALL_MENU: "baseball-menu", // Baseball mode + innings select
 });
 
 export const G = {

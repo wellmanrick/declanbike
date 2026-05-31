@@ -61,6 +61,23 @@ export const DEFAULT_SAVE = {
     totalSacks: 0,                //   lifetime sacks taken (vanity stat)
     completionPct: 0,             //   rolling lifetime completion %
   },
+  baseballBest: {                 // Lifetime Baseball records.
+    wins: 0,                      //   games won (vs CPU only; pass-and-play
+                                  //   doesn't move this number)
+    losses: 0,                    //   games lost vs CPU
+    bestScore: 0,                 //   most runs in a single game (either side)
+    biggestWinMargin: 0,          //   widest victory margin vs CPU
+    hits: 0,                      //   lifetime hits taken by the player team
+    homeRuns: 0,                  //   lifetime home runs hit
+    strikeoutsThrown: 0,          //   lifetime Ks recorded while pitching
+    strikeoutsTaken: 0,           //   lifetime Ks suffered while batting
+    inningsPlayed: 0,             //   lifetime half-innings completed
+  },
+  baseballPrefs: {                // Last-used baseball settings, restored on
+                                  // the mode-select screen.
+    mode: "cpu",                  //   "cpu" | "pvp"
+    innings: 3,                   //   3 | 5 | 9
+  },
 };
 
 function _load() {
@@ -88,6 +105,8 @@ function _load() {
       partyPongLevels: parsed.partyPongLevels || {},
       partyPongBest: Object.assign({}, DEFAULT_SAVE.partyPongBest, parsed.partyPongBest || {}),
       qbChallengeBest: Object.assign({}, DEFAULT_SAVE.qbChallengeBest, parsed.qbChallengeBest || {}),
+      baseballBest: Object.assign({}, DEFAULT_SAVE.baseballBest, parsed.baseballBest || {}),
+      baseballPrefs: Object.assign({}, DEFAULT_SAVE.baseballPrefs, parsed.baseballPrefs || {}),
     });
   } catch (e) {
     console.warn("Save load failed", e);
