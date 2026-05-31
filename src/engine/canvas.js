@@ -62,6 +62,29 @@ resizeCanvas();
 // Common math helpers shared by everyone.
 export function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 export function lerp(a, b, t) { return a + (b - a) * t; }
+
+// Tween curves. Takes a 0..1 progress value, returns a 0..1 curve value.
+// Use to make a linear countdown FEEL like a release — applied at the
+// site that converts time/max into a render parameter (radius, alpha,
+// scale). Pure, deterministic, no allocation. `easeOutBack` can briefly
+// exceed 1; safe for radius/scale, clamp before using as alpha.
+export function ease(t, fn) {
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  switch (fn) {
+    case "linear":       return t;
+    case "smoothstep":   return t * t * (3 - 2 * t);
+    case "easeOutCubic": return 1 - Math.pow(1 - t, 3);
+    case "easeOutQuad":  return 1 - (1 - t) * (1 - t);
+    case "easeOutQuint": return 1 - Math.pow(1 - t, 5);
+    case "easeOutBack":  return 1 + 2.70158 * Math.pow(t - 1, 3) + 1.70158 * Math.pow(t - 1, 2);
+    case "easeOutElastic": {
+      const c4 = (2 * Math.PI) / 3;
+      return t === 0 ? 0 : t === 1 ? 1 : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+    }
+    case "easeInOutQuad": return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    default:             return t * t * (3 - 2 * t); // smoothstep default
+  }
+}
 export function wrapAngle(a) {
   while (a > Math.PI)  a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
