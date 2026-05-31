@@ -143,3 +143,98 @@ export function isStrike(plateX, plateY) {
       && plateY >= PLATE_BOTTOM
       && plateY <= PLATE_TOP;
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// HIT BALL — physics after contact. Produces a trajectory the fielder
+// AI + the renderer both walk through. Sampled at ~30hz so fielders
+// can plan ahead without having to integrate themselves.
+// ──────────────────────────────────────────────────────────────────────
+const HIT_DT = 1 / 30;
+const HIT_MAX_T = 8.0;
+const HIT_AIR_DRAG = 0.06;       // light drag; tuned so HRs are possible
+
+// Build a hit-ball record + pre-computed trajectory. exitVelMps is the
+// speed off the bat, launchAngle is degrees above horizontal,
+// sprayAngle is degrees relative to dead center field (+ = pull side
+// for a right-handed batter = toward 3B/LF). Stored on the runtime
+// during the "field" phase.
+export function buildHitBall(exitVelMps, launchAngle, sprayAngle) {
+  const launchRad = launchAngle * Math.PI / 180;
+  const sprayRad  = sprayAngle * Math.PI / 180;
+  const v = exitVelMps;
+  // Translate spray into x/z components of the horizontal velocity.
+  const vh = v * Math.cos(launchRad);
+  const vx = vh * Math.sin(sprayRad);
+  const vz = vh * Math.cos(sprayRad);
+  const vy = v * Math.sin(launchRad);
+  const ball = {
+    // Start at home plate, contact height ~1m.
+    x: 0, y: 1.0, z: 0,
+    vx, vy, vz,
+    age: 0,
+    landed: false,
+    trail: [],
+    trajectory: [],
+  };
+  // Pre-compute the trajectory so fielder AI doesn't have to redo this
+  // every frame. Each sample is {x, y, z, t}; we stop when the ball
+  // hits the ground or leaves the field.
+  let bx = ball.x, by = ball.y, bz = ball.z;
+  let bvx = ball.vx, bvy = ball.vy, bvz = ball.vz;
+  let bt = 0;
+  ball.trajectory.push({ x: bx, y: by, z: bz, t: 0 });
+  while (bt < HIT_MAX_T) {
+    // Air drag — opposes motion. dv = -drag * v * dt.
+    const speed = Math.hypot(bvx, bvy, bvz);
+    const dragScale = 1 - HIT_AIR_DRAG * speed * HIT_DT * 0.0015;
+    bvx *= dragScale; bvy *= dragScale; bvz *= dragScale;
+    bvy -= 9.81 * HIT_DT;
+    bx += bvx * HIT_DT;
+    by += bvy * HIT_DT;
+    bz += bvz * HIT_DT;
+    bt += HIT_DT;
+    if (by <= 0) {
+      // Bounce / rolls — for fielder planning we cap at the landing
+      // point. Phase 4 doesn't simulate the bounce; the fielder picks
+      // up the ball where it landed.
+      by = 0;
+      ball.trajectory.push({ x: bx, y: by, z: bz, t: bt });
+      break;
+    }
+    ball.trajectory.push({ x: bx, y: by, z: bz, t: bt });
+    // Past the foul wall? Cap the trajectory.
+    if (Math.hypot(bx, bz) > 130 || bz < -5) break;
+  }
+  return ball;
+}
+
+// Step a hit ball forward in time for the renderer. Mirrors the
+// integrator used to build the trajectory so the rendered ball matches
+// the AI plan exactly. Returns true when the ball lands.
+export function stepHitBall(ball, dt) {
+  if (ball.landed) return true;
+  ball.age += dt;
+  // Find the trajectory sample we're at right now by age.
+  const traj = ball.trajectory;
+  let lo = 0, hi = traj.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (traj[mid].t < ball.age) lo = mid; else hi = mid;
+  }
+  const a = traj[lo], b = traj[hi];
+  const span = b.t - a.t || 1;
+  const tt = Math.min(1, Math.max(0, (ball.age - a.t) / span));
+  ball.x = a.x + (b.x - a.x) * tt;
+  ball.y = a.y + (b.y - a.y) * tt;
+  ball.z = a.z + (b.z - a.z) * tt;
+  // Trail sample
+  if (ball.trail.length === 0 || (ball.age - ball.trail[ball.trail.length - 1].t) > 0.04) {
+    ball.trail.push({ x: ball.x, y: ball.y, z: ball.z, t: ball.age });
+    if (ball.trail.length > 30) ball.trail.shift();
+  }
+  if (ball.age >= traj[traj.length - 1].t) {
+    ball.landed = true;
+    return true;
+  }
+  return false;
+}

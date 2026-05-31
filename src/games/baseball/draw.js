@@ -544,6 +544,255 @@ export function drawBatterPrompt(g) {
   ctx.restore();
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// FIELD VIEW — wide angle showing the diamond + outfielders. Used
+// during the "field" phase after contact so the player can watch the
+// ball fly and see fielders react.
+// ──────────────────────────────────────────────────────────────────────
+// Camera sits well behind home plate at height — broadcast "CF view"
+// rotated 180° (it's "behind home looking out" rather than "behind CF
+// looking in"). This gives a clear view of the whole diamond.
+export const FIELD_CAM_Z = -12;        // 12m behind home plate
+const FIELD_EYE_H = 8.0;                // high enough to see all 9 fielders
+
+function projectFromField(x, y, z) {
+  const zz = Math.max(0.5, z - FIELD_CAM_Z);
+  return {
+    sx: W / 2 + (-x) * FP_FOCAL / zz,
+    sy: fpHorizonY() + (FIELD_EYE_H - y) * FP_FOCAL / zz,
+    scale: FP_FOCAL / zz / 60,
+  };
+}
+
+export function drawFieldView(g) {
+  drawFieldSky();
+  drawFieldGround();
+  drawFieldDiamond();
+  drawFieldHomeRunWall();
+  drawFieldFoulLines();
+  drawAllFielders(g);
+  // Ball trajectory (faint) + ball
+  if (g.hitBall) {
+    drawHitBallTrail(g.hitBall);
+    drawHitBall(g.hitBall);
+  }
+  // Batter-runner — small figure jogging up the first-base line.
+  if (g.runner) drawRunner(g.runner);
+}
+
+function drawFieldSky() {
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#0d1a2a");
+  sky.addColorStop(0.5, "#1d3858");
+  sky.addColorStop(1, "#3d6a48");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawFieldGround() {
+  const horizon = fpHorizonY();
+  ctx.fillStyle = "#3d6a48";
+  ctx.fillRect(0, horizon, W, H - horizon);
+  // Lateral grass stripes for parallax.
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  for (let z = 0; z <= 120; z += 6) {
+    const left  = projectFromField(-60, 0, z);
+    const right = projectFromField( 60, 0, z);
+    ctx.lineWidth = Math.max(0.5, 1.4 * left.scale);
+    ctx.beginPath();
+    ctx.moveTo(left.sx, left.sy); ctx.lineTo(right.sx, right.sy);
+    ctx.stroke();
+  }
+}
+
+// Draw the infield dirt diamond + bases.
+function drawFieldDiamond() {
+  // Infield dirt — rough trapezoidal area around the diamond. We
+  // approximate as a polygon over the bases.
+  const home = projectFromField(0, 0, 0);
+  const first = projectFromField(9.0, 0, 9.0);     // ~27ft along the first-base line
+  const second = projectFromField(0, 0, 18.0);
+  const third = projectFromField(-9.0, 0, 9.0);
+  // The infield is closer to "round" than the diamond — include a few
+  // points along the arc.
+  ctx.fillStyle = "#a87d3e";
+  ctx.beginPath();
+  const arcSamples = [];
+  for (let i = -90; i <= 90; i += 15) {
+    const a = i * Math.PI / 180;
+    const r = 25;
+    const px = Math.sin(a) * r;
+    const pz = Math.cos(a) * r + 5;
+    arcSamples.push(projectFromField(px, 0, pz));
+  }
+  // Build poly: home -> arc samples -> back to home
+  ctx.moveTo(home.sx, home.sy);
+  for (const p of arcSamples) ctx.lineTo(p.sx, p.sy);
+  ctx.closePath();
+  ctx.fill();
+  // Bases — small white squares at the four corners.
+  for (const base of [
+    { x: 9.0, z: 9.0 },        // 1B
+    { x: 0, z: 18.0 },         // 2B
+    { x: -9.0, z: 9.0 },       // 3B
+    { x: 0, z: 0 },            // home plate
+  ]) {
+    const p = projectFromField(base.x, 0.05, base.z);
+    const r = Math.max(3, 18 * p.scale);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(p.sx - r / 2, p.sy - r / 2, r, r);
+  }
+  // Pitcher's mound — small disc in the middle of the infield.
+  const mound = projectFromField(0, 0, 18.4);
+  const moundTop = projectFromField(0, 0.25, 18.4);
+  const r = Math.max(4, 120 * mound.scale);
+  ctx.fillStyle = "#8a6a3a";
+  ctx.beginPath();
+  ctx.ellipse(mound.sx, mound.sy, r, r * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#dcdcdc";
+  ctx.fillRect(moundTop.sx - r * 0.45, moundTop.sy - 2, r * 0.9, 3);
+}
+
+function drawFieldHomeRunWall() {
+  // Outfield wall — a thin arc at radius HR_WALL_R. We approximate
+  // with a polyline across the fair territory.
+  ctx.strokeStyle = "#3a3a4a";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  let first = true;
+  for (let ang = -45; ang <= 45; ang += 5) {
+    const a = ang * Math.PI / 180;
+    const wx = Math.sin(a) * 110;
+    const wz = Math.cos(a) * 110;
+    const p = projectFromField(wx, 1.5, wz);
+    if (first) { ctx.moveTo(p.sx, p.sy); first = false; }
+    else ctx.lineTo(p.sx, p.sy);
+  }
+  ctx.stroke();
+  // Sub-wall — the "padded" portion, slightly thinner.
+  ctx.strokeStyle = "#5a5a6a";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  first = true;
+  for (let ang = -45; ang <= 45; ang += 5) {
+    const a = ang * Math.PI / 180;
+    const wx = Math.sin(a) * 110;
+    const wz = Math.cos(a) * 110;
+    const p = projectFromField(wx, 0.6, wz);
+    if (first) { ctx.moveTo(p.sx, p.sy); first = false; }
+    else ctx.lineTo(p.sx, p.sy);
+  }
+  ctx.stroke();
+}
+
+function drawFieldFoulLines() {
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.lineWidth = 2.5;
+  for (const xz of [{ x: 78, z: 78 }, { x: -78, z: 78 }]) {
+    const home = projectFromField(0, 0, 0);
+    const out  = projectFromField(xz.x, 0, xz.z);
+    ctx.beginPath();
+    ctx.moveTo(home.sx, home.sy); ctx.lineTo(out.sx, out.sy);
+    ctx.stroke();
+  }
+}
+
+function drawAllFielders(g) {
+  if (!g.fielders) return;
+  // Render fielders back-to-front so closer ones occlude further ones.
+  const sorted = g.fielders.slice().sort((a, b) => b.z - a.z);
+  for (const f of sorted) drawOneFielder(f);
+}
+
+function drawOneFielder(f) {
+  const p = projectFromField(f.x, 1.0, f.z);
+  const head = projectFromField(f.x, 1.85, f.z);
+  const r = Math.max(2, 16 * p.scale);
+  // Body — same dark navy as the pitcher/catcher silhouettes.
+  ctx.fillStyle = "#243454";
+  ctx.beginPath();
+  ctx.moveTo(p.sx - r * 0.9, p.sy);
+  ctx.lineTo(p.sx + r * 0.9, p.sy);
+  ctx.lineTo(p.sx + r * 0.55, head.sy + r * 0.5);
+  ctx.lineTo(p.sx - r * 0.55, head.sy + r * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  // Head
+  ctx.fillStyle = "#1c2540";
+  ctx.beginPath();
+  ctx.arc(head.sx, head.sy, r * 0.7, 0, Math.PI * 2);
+  ctx.fill();
+  // Glove — tiny brown patch
+  ctx.fillStyle = "#7a4a1c";
+  ctx.beginPath();
+  ctx.arc(p.sx + r * 0.7, p.sy - r * 0.3, r * 0.35, 0, Math.PI * 2);
+  ctx.fill();
+  // Position label — only readable up close, fades out at distance
+  const labelA = Math.max(0, Math.min(1, p.scale * 1.5));
+  if (labelA > 0.1) {
+    ctx.save();
+    ctx.fillStyle = `rgba(255, 235, 130, ${labelA})`;
+    ctx.font = "bold 10px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(f.id, p.sx, head.sy - r * 0.9);
+    ctx.textAlign = "start";
+    ctx.restore();
+  }
+}
+
+function drawHitBallTrail(ball) {
+  if (!ball.trail || ball.trail.length < 2) return;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < ball.trail.length; i++) {
+    const t = ball.trail[i];
+    const p = projectFromField(t.x, t.y, t.z);
+    if (i === 0) ctx.moveTo(p.sx, p.sy);
+    else ctx.lineTo(p.sx, p.sy);
+  }
+  ctx.stroke();
+}
+
+function drawHitBall(ball) {
+  const p = projectFromField(ball.x, ball.y, ball.z);
+  // Distance from camera = z - FIELD_CAM_Z. Scale ball with distance,
+  // capped reasonably.
+  const dist = Math.max(0.5, ball.z - FIELD_CAM_Z);
+  const r = Math.max(2.5, Math.min(14, BALL_R * FP_FOCAL / dist));
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
+  ctx.fill();
+  if (r > 3) {
+    ctx.strokeStyle = "rgba(220, 50, 50, 0.85)";
+    ctx.lineWidth = Math.max(0.8, r * 0.18);
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, r * 0.7, -Math.PI * 0.35, Math.PI * 0.35);
+    ctx.stroke();
+  }
+}
+
+function drawRunner(runner) {
+  const p = projectFromField(runner.x, 1.0, runner.z);
+  const head = projectFromField(runner.x, 1.85, runner.z);
+  const r = Math.max(2, 14 * p.scale);
+  // Body — bright red so the runner pops against the navy fielders.
+  ctx.fillStyle = "#d04848";
+  ctx.beginPath();
+  ctx.moveTo(p.sx - r * 0.9, p.sy);
+  ctx.lineTo(p.sx + r * 0.9, p.sy);
+  ctx.lineTo(p.sx + r * 0.55, head.sy + r * 0.5);
+  ctx.lineTo(p.sx - r * 0.55, head.sy + r * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#a02828";
+  ctx.beginPath();
+  ctx.arc(head.sx, head.sy, r * 0.7, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 // Outcome banner — large center text that fades in/out during the
 // resolve phase. resolvedAt is when the resolve phase started; the
 // banner fades in over 0.15s and holds for the duration set on the

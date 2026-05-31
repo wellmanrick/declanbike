@@ -32,13 +32,19 @@ import { Sound } from "../../engine/audio.js";
 import { save, persistSave } from "../../engine/save.js";
 import {
   PITCH_TYPES, pitchById, buildPitch, stepPitch, isStrike,
+  buildHitBall, stepHitBall,
   PLATE_Z, PLATE_TOP, PLATE_BOTTOM, PLATE_HALF_W, BALL_RELEASE_Y,
 } from "./pitches.js";
 import { applyPitchToCount, classifyPhase2Contact, advanceRunners } from "./rules.js";
 import { cpuBatterDecision, cpuPitcherChoice } from "./cpu.js";
 import {
+  buildFielders, resetFielders, chooseFielder, classifyHit,
+  FIELDER_RUN_SPEED, BATTER_RUN_SPEED, BASE_PATH_DIST, batterArrivalAtBase,
+} from "./fielders.js";
+import {
   drawPitcherView, drawPitchChips, drawPitcherPrompt, drawOutcomeBanner,
   drawBatterView, drawBatterPrompt,
+  drawFieldView,
 } from "./draw.js";
 
 const DEFAULTS = { mode: "cpu", innings: 3 };
@@ -152,6 +158,19 @@ export const Baseball = {
       swingAnimT: 0,                 // 0..0.25 — drives the bat-icon swoosh
       // ── CPU pitcher pacing ──
       cpuPitchAt: null,              // performance.now() ms when CPU fires next
+      // ── Hit physics (Phase 4) ──
+      // Active when phase === "field". hitBall is the ball-in-flight
+      // off the bat; fielders are the 9 defenders + their nav state;
+      // runner is the batter-runner heading toward 1B; hitPlan is the
+      // pre-resolved chooseFielder result so update() doesn't repeat
+      // the search every frame.
+      hitBall: null,
+      fielders: buildFielders(),
+      runner: null,
+      hitPlan: null,
+      hitOutcome: null,              // {kind, bases, label}
+      fieldPhaseStart: 0,            // performance.now() when "field" started
+      fieldHoldT: 0,                 // total duration of the field phase
     };
   },
 
@@ -230,6 +249,17 @@ export const Baseball = {
         }
         break;
       }
+      case "field": {
+        // Animate the hit-ball + fielders + runner until the play
+        // resolves. fieldHoldT was set at startFieldPhase based on the
+        // longest of (ball flight + fielder pickup + throw) and
+        // (batter sprint to the relevant base).
+        tickFieldPhase(g, dt);
+        if (g.phaseT >= g.fieldHoldT) {
+          finalizeFieldPhase(g);
+        }
+        break;
+      }
       case "resolve": {
         if (g.phaseT >= g.outcomeHoldT) {
           // Phase 5 will transition to HALF_END / GAME_END here. Phase
@@ -258,7 +288,9 @@ export const Baseball = {
   // shared between roles.
   // ──────────────────────────────────────────────────────────────────
   render(g) {
-    if (g.role === "batting") {
+    if (g.phase === "field") {
+      drawFieldView(g);
+    } else if (g.role === "batting") {
       drawBatterView(g);
       drawBatterPrompt(g);
     } else {
@@ -435,6 +467,162 @@ function ballScreenInBatterView(b) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// FIELD PHASE — contact happens, the ball is in the air, fielders run,
+// the batter sprints. The outcome (out / single / double / triple / HR)
+// is pre-resolved by classifyHit() once we have the trajectory + the
+// fielder plan, then we just animate until the play "looks done".
+// ──────────────────────────────────────────────────────────────────────
+function startFieldPhase(g, qualityBucket) {
+  resetFielders(g.fielders);
+  // Exit velocity is a function of contact quality. Weak contact is
+  // soft; barreled balls leave the bat at ~50 m/s (≈110mph).
+  const evMps = qualityBucket === "barrel" ? 42 + Math.random() * 10
+              : qualityBucket === "solid"  ? 32 + Math.random() * 8
+              : 20 + Math.random() * 10;
+  // Launch angle — barreled balls drive at the sweet spot (15..35°);
+  // weak grounders are mostly negative or low launch.
+  const launchAng = qualityBucket === "barrel" ? 15 + Math.random() * 25
+                  : qualityBucket === "solid"  ? 5  + Math.random() * 28
+                  : -10 + Math.random() * 20;
+  // Spray angle — uniform across fair territory with a slight pull
+  // bias. The ball's plateX from the pitch also nudges spray (inside
+  // pitches pull more), but for Phase 4 we keep it random.
+  const sprayAng = (Math.random() - 0.5) * 70;
+
+  const hb = buildHitBall(evMps, launchAng, sprayAng);
+  g.hitBall = hb;
+
+  // Decide which fielder plays this ball.
+  const plan = chooseFielder(g.fielders, hb.trajectory);
+  g.hitPlan = plan;
+
+  // Pre-classify the outcome. We need the batter's projected arrival
+  // at 1B (for a hit) — assume sprint speed all the way.
+  const batterTo1B = batterArrivalAtBase(1);
+  const outcome = classifyHit(plan, hb.trajectory, batterTo1B);
+  g.hitOutcome = outcome;
+
+  // The phase plays for the longer of (full ball trajectory + small
+  // post-catch beat) and (batter sprint to wherever they're going).
+  const trajEnd = hb.trajectory[hb.trajectory.length - 1].t;
+  const sprintEnd = batterArrivalAtBase(Math.max(1, outcome.bases || 1));
+  const baseHold = outcome.kind === "home-run" ? 3.5 : 2.6;
+  g.fieldHoldT = Math.max(trajEnd + 0.8, sprintEnd + 0.2, baseHold);
+
+  // Animate the batter-runner. Path: home (0,0) → 1B (9, 9) → 2B (0, 18)
+  // → 3B (-9, 9) → home. We sample along the path by total distance
+  // traveled = BATTER_RUN_SPEED * elapsedTime.
+  g.runner = {
+    x: 0, z: 0,
+    bases: outcome.bases,
+    pathT: 0,
+  };
+
+  // Set up the fielder chase. The chosen fielder gets a target at the
+  // interception point; others hold their positions for Phase 4.
+  if (plan) {
+    plan.fielder.state = "chasing";
+    plan.fielder.targetX = plan.interceptX;
+    plan.fielder.targetZ = plan.interceptZ;
+  }
+
+  // Phase transition.
+  g.phase = "field";
+  g.phaseT = 0;
+  g.fieldPhaseStart = performance.now();
+  // Bat crack sound — placeholder uses boostHit for the percussive
+  // attack. Phase 6 will swap a real bat-on-ball sample in.
+  Sound.boostHit && Sound.boostHit();
+}
+
+function tickFieldPhase(g, dt) {
+  // Ball motion
+  if (g.hitBall) stepHitBall(g.hitBall, dt);
+  // Fielder motion — move toward target at run speed.
+  if (g.fielders) {
+    for (const f of g.fielders) {
+      if (f.state !== "chasing") continue;
+      const dx = f.targetX - f.x;
+      const dz = f.targetZ - f.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.1) { f.x = f.targetX; f.z = f.targetZ; f.state = "fielding"; continue; }
+      const step = FIELDER_RUN_SPEED * dt;
+      const t = Math.min(1, step / dist);
+      f.x += dx * t;
+      f.z += dz * t;
+    }
+  }
+  // Runner motion along the basepath.
+  if (g.runner) {
+    g.runner.pathT += dt;
+    const distTraveled = g.runner.pathT * BATTER_RUN_SPEED;
+    const pos = runnerPathPos(distTraveled, g.runner.bases);
+    g.runner.x = pos.x;
+    g.runner.z = pos.z;
+  }
+}
+
+// Walk the basepath. Total distance = bases * 27.4m. Returns the
+// world (x, z) of the runner.
+function runnerPathPos(distTraveled, totalBases) {
+  // Path waypoints — home (0,0), 1B (9, 9), 2B (0, 18), 3B (-9, 9),
+  // home (0, 0). Each leg is BASE_PATH_DIST meters.
+  const waypoints = [
+    { x: 0, z: 0 },
+    { x: 9.0, z: 9.0 },
+    { x: 0, z: 18.0 },
+    { x: -9.0, z: 9.0 },
+    { x: 0, z: 0 },
+  ];
+  const maxDist = totalBases * BASE_PATH_DIST;
+  const d = Math.min(distTraveled, maxDist);
+  let remaining = d;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    if (remaining <= BASE_PATH_DIST) {
+      const a = waypoints[i], b = waypoints[i + 1];
+      const t = remaining / BASE_PATH_DIST;
+      return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
+    }
+    remaining -= BASE_PATH_DIST;
+  }
+  return waypoints[totalBases] || waypoints[waypoints.length - 1];
+}
+
+function finalizeFieldPhase(g) {
+  const outcome = g.hitOutcome || { kind: "out", bases: 0, label: "Out" };
+  const label = outcome.label || (outcome.kind === "out" ? "OUT" : outcome.kind.toUpperCase());
+  let sub = "";
+  if (outcome.kind === "out") {
+    g.outs += 1;
+    sub = `${g.outs} out${g.outs === 1 ? "" : "s"}`;
+  } else {
+    const runs = advanceRunners(g, outcome.bases);
+    const playerHit = (g.role === "batting");
+    if (playerHit) {
+      g.stats.hits += 1;
+      if (outcome.kind === "home-run") g.stats.homeRuns += 1;
+    }
+    if (runs > 0) {
+      const team = g.half === "top" ? "away" : "home";
+      g.runs[team] += runs;
+      g.score = g.runs.home;
+      sub = `+${runs} run${runs === 1 ? "" : "s"}`;
+      Sound.cheer && Sound.cheer(outcome.kind === "home-run");
+    } else {
+      sub = "Runner on base";
+    }
+  }
+  g.lastOutcomeKind = outcome.kind;
+  // Clear hit state
+  g.hitBall = null;
+  g.runner = null;
+  g.hitPlan = null;
+  resetFielders(g.fielders);
+  setResolve(g, label, sub, outcomeColor(outcome.kind),
+    outcome.kind === "home-run" ? RESOLVE_HOLD_BIG : RESOLVE_HOLD_CONTACT);
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // At-bat helpers
 // ──────────────────────────────────────────────────────────────────────
 
@@ -485,48 +673,16 @@ function resolveAtBatPhase2(g) {
     label = "FOUL BALL";
     color = outcomeColor("foul");
   } else {
-    // Contact — Phase 2 resolves to a hit-type roll. Phase 4 replaces
-    // this with the real ball-off-bat + fielder simulation.
+    // Contact — transition to the FIELD phase. The hit ball is built
+    // from the swing quality bucket + a bit of randomness for the
+    // launch / spray angles. The fielder simulation then runs in the
+    // "field" phase, with the outcome (out / single / double / HR)
+    // computed from where the ball lands and which fielder gets there
+    // first.
     const bucket = swing === "swing-weak" ? "weak"
                   : swing === "swing-solid" ? "solid"
                   : "barrel";
-    const result = classifyPhase2Contact(bucket);
-    if (result.kind === "out") {
-      g.outs += 1;
-      label = "OUT";
-      color = outcomeColor("out");
-      sub = result.label;
-    } else {
-      const runs = advanceRunners(g, result.bases);
-      // Stats credit the PLAYER team only — these surface on the
-      // lifetime-best save record on the game-end panel.
-      const playerHit = (g.role === "batting");
-      if (playerHit) {
-        g.stats.hits += 1;
-        if (result.kind === "home-run") g.stats.homeRuns += 1;
-      }
-      label = result.label;
-      color = outcomeColor(result.kind);
-      if (runs > 0) {
-        // The team batting this half-inning scores. Top = AWAY batting,
-        // bottom = HOME batting.
-        const team = g.half === "top" ? "away" : "home";
-        g.runs[team] += runs;
-        // Mirror into the legacy flat `score` field so the dispatcher's
-        // settleMinigame / payout reads remain safe — keep it as the
-        // PLAYER team's run total (home) so the cash payout reflects
-        // how the player's side did.
-        g.score = g.runs.home;
-        sub = `+${runs} run${runs === 1 ? "" : "s"}`;
-        Sound.cheer && Sound.cheer(result.kind === "home-run");
-      } else {
-        sub = "Runner on base";
-      }
-    }
-    // Skip count handling — contact ends the atbat.
-    g.lastOutcomeKind = result.kind;
-    setResolve(g, label, sub, color,
-      result.kind === "home-run" ? RESOLVE_HOLD_BIG : RESOLVE_HOLD_CONTACT);
+    startFieldPhase(g, bucket);
     return;
   }
 
