@@ -390,7 +390,7 @@ function handlePointerBatting(g, kind, x, y) {
       g.swingFiredAt = g.phaseT;
       g.swingScreenPos = { x, y };
       g.pendingSwing = "player-swing";
-      g.swingAnimT = 0.25;
+      g.swingAnimT = 0.40;     // matches BAT_SWING_DUR in draw.js
       resolveBatterSwing(g);
     }
   } else if (kind === "move") {
@@ -547,10 +547,24 @@ function startFieldPhase(g, qualityBucket) {
 
   // Set up the fielder chase. The chosen fielder gets a target at the
   // interception point; others hold their positions for Phase 4.
+  // Track each chasing fielder's start position + total travel time so
+  // tickFieldPhase can ease the motion (accelerate from rest, decelerate
+  // into the catch) instead of constant-speed snapping.
   if (plan) {
     plan.fielder.state = "chasing";
     plan.fielder.targetX = plan.interceptX;
     plan.fielder.targetZ = plan.interceptZ;
+    plan.fielder.chaseStartX = plan.fielder.x;
+    plan.fielder.chaseStartZ = plan.fielder.z;
+    plan.fielder.chaseT = 0;
+    const chaseDist = Math.hypot(
+      plan.interceptX - plan.fielder.x,
+      plan.interceptZ - plan.fielder.z
+    );
+    // Total travel time at the configured run speed. easeInOutQuad
+    // briefly exceeds this if we used average speed; we pad +5% so the
+    // fielder reaches the ball at the right moment.
+    plan.fielder.chaseTotalT = (chaseDist / FIELDER_RUN_SPEED) * 1.05;
   }
 
   // Phase transition.
@@ -565,41 +579,45 @@ function startFieldPhase(g, qualityBucket) {
 function tickFieldPhase(g, dt) {
   // Ball motion
   if (g.hitBall) stepHitBall(g.hitBall, dt);
-  // Fielder motion — move toward target at run speed.
+  // Fielder motion — eased lerp from chaseStart to target over
+  // chaseTotalT seconds. easeInOutQuad: gentle acceleration out of the
+  // ready-stance + decel into the catch. Reads way better than the old
+  // constant-speed slide.
   if (g.fielders) {
     for (const f of g.fielders) {
       if (f.state !== "chasing") continue;
-      const dx = f.targetX - f.x;
-      const dz = f.targetZ - f.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 0.1) { f.x = f.targetX; f.z = f.targetZ; f.state = "fielding"; continue; }
-      const step = FIELDER_RUN_SPEED * dt;
-      const t = Math.min(1, step / dist);
-      f.x += dx * t;
-      f.z += dz * t;
+      f.chaseT = (f.chaseT || 0) + dt;
+      const total = f.chaseTotalT || 0.01;
+      const u = Math.min(1, f.chaseT / total);
+      const eased = ease(u, "easeInOutQuad");
+      f.x = f.chaseStartX + (f.targetX - f.chaseStartX) * eased;
+      f.z = f.chaseStartZ + (f.targetZ - f.chaseStartZ) * eased;
+      if (u >= 1) { f.x = f.targetX; f.z = f.targetZ; f.state = "fielding"; }
     }
   }
-  // Runner motion along the basepath.
+  // Runner motion — accumulate eased distance per leg so the runner
+  // accelerates out of home, holds top speed through the bag, decel-
+  // erates into the next. Without easing they "snap" at each corner.
   if (g.runner) {
     g.runner.pathT += dt;
-    const distTraveled = g.runner.pathT * BATTER_RUN_SPEED;
-    const pos = runnerPathPos(distTraveled, g.runner.bases);
+    const pos = runnerPathPos(g.runner.pathT * BATTER_RUN_SPEED, g.runner.bases);
     g.runner.x = pos.x;
     g.runner.z = pos.z;
   }
 }
 
 // Walk the basepath. Total distance = bases * 27.4m. Returns the
-// world (x, z) of the runner.
+// world (x, z) of the runner. Each leg is eased with easeInOutQuad so
+// the runner accelerates out of the bag, holds through the middle of
+// the leg, and decelerates into the next corner — eliminates the snap
+// at every base that pure-linear traversal produced.
 function runnerPathPos(distTraveled, totalBases) {
-  // Path waypoints — home (0,0), 1B (9, 9), 2B (0, 18), 3B (-9, 9),
-  // home (0, 0). Each leg is BASE_PATH_DIST meters.
   const waypoints = [
-    { x: 0, z: 0 },
-    { x: 9.0, z: 9.0 },
-    { x: 0, z: 18.0 },
-    { x: -9.0, z: 9.0 },
-    { x: 0, z: 0 },
+    { x: 0, z: 0 },           // home
+    { x: 9.0, z: 9.0 },       // 1B
+    { x: 0, z: 18.0 },        // 2B
+    { x: -9.0, z: 9.0 },      // 3B
+    { x: 0, z: 0 },           // home (scoring)
   ];
   const maxDist = totalBases * BASE_PATH_DIST;
   const d = Math.min(distTraveled, maxDist);
@@ -607,7 +625,10 @@ function runnerPathPos(distTraveled, totalBases) {
   for (let i = 0; i < waypoints.length - 1; i++) {
     if (remaining <= BASE_PATH_DIST) {
       const a = waypoints[i], b = waypoints[i + 1];
-      const t = remaining / BASE_PATH_DIST;
+      const tLinear = remaining / BASE_PATH_DIST;
+      // ease the SAMPLE point along the leg. Slight overall speedup
+      // from the middle but still bounded by the basepath.
+      const t = ease(tLinear, "easeInOutQuad");
       return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
     }
     remaining -= BASE_PATH_DIST;
@@ -909,8 +930,12 @@ function dragToAim(g) {
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
 // ──────────────────────────────────────────────────────────────────────
-// HUD — scoreboard strip
+// HUD — scoreboard strip. Each cell value is wrapped in a cheap "pop"
+// animation: when the rendered string changes between frames, we
+// kick the cell into a 0.40s scale-pulse (easeOutBack overshoot) so
+// changes draw the eye instead of just swapping.
 // ──────────────────────────────────────────────────────────────────────
+const HUD_POP_DUR = 0.40;
 function drawHudStrip(g) {
   const padX = 14;
   const padY = 12;
@@ -924,15 +949,28 @@ function drawHudStrip(g) {
 
   ctx.textAlign = "center";
   const cells = [
-    { label: "AWAY", value: String(g.runs.away) },
-    { label: "HOME", value: String(g.runs.home) },
-    { label: "INN",  value: `${g.half === "top" ? "T" : "B"}${g.inning}` },
-    { label: "OUTS", value: outsGlyph(g.outs) },
-    { label: "B-S",  value: `${g.count.balls}-${g.count.strikes}` },
-    { label: "BASES",value: basesGlyph(g.bases) },
+    { key: "away",  label: "AWAY", value: String(g.runs.away) },
+    { key: "home",  label: "HOME", value: String(g.runs.home) },
+    { key: "inn",   label: "INN",  value: `${g.half === "top" ? "T" : "B"}${g.inning}` },
+    { key: "outs",  label: "OUTS", value: outsGlyph(g.outs) },
+    { key: "bs",    label: "B-S",  value: `${g.count.balls}-${g.count.strikes}` },
+    { key: "bases", label: "BASES",value: basesGlyph(g.bases) },
   ];
+  // Lazy-init pop tracker. Stores last-seen value per key and a
+  // popUntil performance.now() for each freshly-changed cell.
+  if (!g._hudPop) g._hudPop = {};
   const cellW = totalW / cells.length;
+  const now = performance.now();
   for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    const prev = g._hudPop[c.key];
+    if (!prev || prev.value !== c.value) {
+      g._hudPop[c.key] = { value: c.value, popStart: now };
+    }
+    const popT = (now - g._hudPop[c.key].popStart) / 1000;   // seconds
+    const popK = popT < HUD_POP_DUR
+      ? 1 + 0.25 * (1 - ease(popT / HUD_POP_DUR, "easeOutQuint"))
+      : 1;
     const cx = padX + cellW * i;
     if (i > 0) {
       ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
@@ -941,10 +979,12 @@ function drawHudStrip(g) {
     }
     ctx.fillStyle = "rgba(190, 200, 220, 0.85)";
     ctx.font = "bold 9px ui-monospace, monospace";
-    ctx.fillText(cells[i].label, cx + cellW / 2, padY + 14);
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 16px ui-monospace, monospace";
-    ctx.fillText(cells[i].value, cx + cellW / 2, padY + 30);
+    ctx.fillText(c.label, cx + cellW / 2, padY + 14);
+    // Scale-pulse the value by drawing at a transient larger font.
+    const fontPx = Math.round(16 * popK);
+    ctx.fillStyle = popK > 1.01 ? "#ffe680" : "#fff";   // brief gold flash too
+    ctx.font = `bold ${fontPx}px ui-monospace, monospace`;
+    ctx.fillText(c.value, cx + cellW / 2, padY + 30);
   }
   ctx.textAlign = "start";
 }
