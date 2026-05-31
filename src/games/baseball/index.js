@@ -2,48 +2,79 @@
 //
 // Reachable from the main menu (not the Mini-Games hub). Uses the
 // existing MINIGAMES dispatch contract so the canvas pointer routing,
-// pause/resume, and game-over hooks all light up automatically. The
-// only main.js touchpoints are: a Baseball button on the main menu, a
-// `baseball-menu` overlay for mode + innings select, and a startBaseball
-// helper that bypasses startMinigame's level-resolution path so the
-// chosen config flows into init() cleanly.
+// pause/resume, and game-over hooks all light up automatically.
 //
-// Phase 1 (this file): plumbing only.
-//   - init({ mode, innings }) builds the runtime
-//   - update() / render() draw a placeholder first-person field
-//   - renderFinished() draws a stub FINAL panel with Play Again / Menu
-//   - handlePointer() is wired but unused until Phase 2
-//   - onPlayAgain() preserves the chosen mode + innings across replays
-//   - menuTarget tells the dispatcher to return to the MAIN menu (not
-//     the Mini-Games hub) when the player taps Menu after a game
+// State machine inside a single at-bat:
 //
-// Phases 2-5 will fill in the actual pitcher / batter / fielding / scoring
-// behind the same exported surface. See plans/smooth-exploring-wilkinson.md.
+//   presnap → aim → pitch → resolve → presnap (loop)
+//
+//   presnap   pitcher picks a pitch type (chip tap) and starts a drag
+//             to aim. Once a chip is armed AND the player has begun a
+//             drag, we transition to "aim".
+//   aim       drag in progress — the crosshair follows the finger.
+//             On pointer release, the pitch fires from the active
+//             aim point.
+//   pitch     ball is in flight from mound to plate; integrated each
+//             frame via stepPitch(). Phase 2 ends this when the ball
+//             crosses the plate plane.
+//   resolve   outcome decided. Phase 2 calls into rules.js to advance
+//             the count / outs / bases. After outcomeHoldT seconds
+//             we either flip to a new batter (presnap) or end the half-
+//             inning / game (Phase 5 wiring).
+//
+// Phase 5 will add HALF_END and GAME_END as terminal phases between
+// resolve and presnap. Phase 3 will fork the role: when the player is
+// BATTING, the pitcher state machine runs on the CPU and a parallel
+// batter input collects swing decisions.
 
 import { ctx, W, H, ease } from "../../engine/canvas.js";
 import { Sound } from "../../engine/audio.js";
 import { save, persistSave } from "../../engine/save.js";
 import {
-  fpSetCam, fpHorizonY, fpProject, fpDrawSky, fpDrawField,
-} from "../../engine/fpView.js";
+  PITCH_TYPES, pitchById, buildPitch, stepPitch, isStrike,
+  PLATE_Z, PLATE_TOP, PLATE_BOTTOM, PLATE_HALF_W, BALL_RELEASE_Y,
+} from "./pitches.js";
+import { applyPitchToCount, classifyPhase2Contact, advanceRunners } from "./rules.js";
+import { cpuBatterDecision, cpuPitcherChoice } from "./cpu.js";
+import {
+  drawPitcherView, drawPitchChips, drawPitcherPrompt, drawOutcomeBanner,
+} from "./draw.js";
 
-// Default config values. The mode-select overlay supplies these; this
-// table guards against the (unexpected) case where init() is called
-// with no config — e.g. someone wired the dispatcher's generic Play
-// Again path before onPlayAgain landed.
 const DEFAULTS = { mode: "cpu", innings: 3 };
 
+// Phase timing constants. Tuned by playtest — feel free to tweak.
+const RESOLVE_HOLD_DEFAULT = 1.10;     // generic outcome (ball/strike)
+const RESOLVE_HOLD_CONTACT = 1.40;     // contact + hit description
+const RESOLVE_HOLD_BIG     = 1.80;     // HRs / strikeouts / inning end
+// How long to wait after a pitch ball-plate crossing before deciding
+// the CPU batter's call. Long enough that the swing decision FEELS
+// like it's happening at contact, not in the resolve banner.
+const SWING_DECIDE_T = 0.05;
+
+// Outcome -> sub-text helper. Phase 5 will move the stat tracking
+// into a proper logger.
+function outcomeColor(kind) {
+  switch (kind) {
+    case "ball": return "#9fe8ff";
+    case "called-strike":
+    case "swinging-strike": return "#ff8a5b";
+    case "foul": return "#cfd6e3";
+    case "walk": return "#9fe8ff";
+    case "strikeout": return "#ff5470";
+    case "home-run": return "#f8d56a";
+    case "double":
+    case "triple":
+    case "single": return "#4ddc8c";
+    case "out": return "#ff8a5b";
+    default: return "#fff";
+  }
+}
+
 export const Baseball = {
-  // ----- MINIGAMES contract metadata. These are required so the
-  // contract sanity check at module load doesn't warn; they're not
-  // actually surfaced anywhere (baseball isn't in the Mini-Games hub).
   name: "Baseball",
   desc: "Pitch, hit, and field your way through a real ball game.",
   icon: "⚾",
   color: "#f8d56a",
-
-  // The dispatcher routes the Menu game-over button to this destination
-  // instead of the default (Mini-Games hub).
   menuTarget: "menu",
 
   init(config) {
@@ -52,145 +83,312 @@ export const Baseball = {
     const mode = (cfg.mode === "pvp") ? "pvp" : "cpu";
     return {
       gameId: "baseball",
-      // Persisted config — read by render(), onPlayAgain(), the scoreboard,
-      // and the game-end persistence step.
       mode, innings,
-      // Wall-clock timer for animations. The MINIGAMES dispatcher does NOT
-      // advance this for us; render() reads it for parallax / pulse effects.
       time: 0,
-      // Top-level state machine. Phase 1 sits on "warmup" forever; Phase 2
-      // adds PITCH / SWING / RESOLVE / HALF_END / GAME_END.
-      phase: "warmup", phaseT: 0,
-      // The dispatcher reads `g.score` as a flat number (settleMinigame
-      // pushes `g.score` into save.minigameBest and computes the default
-      // payout from it). We track runs as a {home,away} pair separately,
-      // and Phase 5 will mirror the player-team total into `score` so the
-      // legacy paths stay safe.
-      score: 0,
+      // ── Game-wide state (Phase 5 populates fully) ──
+      // Phase 2: the player is always pitching. Phase 3 adds the
+      // batter side and alternates based on inning + mode.
+      role: "pitching",
+      score: 0,                      // legacy dispatcher field (flat)
       runs: { home: 0, away: 0 },
       inning: 1, half: "top",
       outs: 0,
       count: { balls: 0, strikes: 0 },
       bases: { first: null, second: null, third: null },
-      // Per-half stats used by the game-end panel.
       stats: {
         hits: 0, homeRuns: 0,
         strikeoutsThrown: 0, strikeoutsTaken: 0,
         halvesPlayed: 0,
       },
-      // Dispatcher hooks. `finished` flips when the final-inning game
-      // ends in Phase 5; until then it stays false so the placeholder
-      // boots into the play view immediately.
       finished: false,
       finishHoldUntil: 0,
-      // Input drag state (Phase 2+).
+      // ── At-bat state machine ──
+      phase: "presnap", phaseT: 0,
+      armedPitch: null,              // selected PITCH_TYPES entry, or null
+      aimX: 0, aimY: (PLATE_TOP + PLATE_BOTTOM) / 2,
+      ball: null,                    // active pitch ball (or null)
+      pendingSwing: null,            // CPU swing decision, fires near plate
+      outcomeText: "", outcomeSub: "", outcomeColor: "#fff", outcomeHoldT: 0,
+      // ── Input drag state ──
       dragStart: null, dragNow: null,
+      // ── Hit-by-pitch HUD: ephemeral toast strip showing last result ──
+      lastOutcomeKind: null,
     };
   },
 
-  update(g, dt) {
-    g.time += dt;
-    g.phaseT += dt;
-    // Phase 1 is a placeholder loop — no game progression yet. Phase 2
-    // wires the pitcher state machine. Until then we just sit on the
-    // warmup screen so the player can see the field render.
-  },
-
-  render(g) {
-    // Camera at the pitcher's mound looking toward home plate. We set
-    // the camera Z below ground level so the plate (z=18.4) projects
-    // far enough downrange that the strike-zone box reads. Tuned to
-    // taste once the pitcher gets implemented in Phase 2.
-    fpSetCam(0);
-    drawPlaceholderField(g);
-    drawHudStrip(g);
-    drawPlaceholderCallout(g);
-  },
-
-  // Called by the MINIGAMES dispatcher when the player taps Play Again
-  // on the finished overlay. Without this hook the dispatcher would
-  // re-call startMinigame("baseball") which routes through level-id
-  // resolution — Baseball doesn't use levels, so we re-init manually
-  // and preserve the mode/innings the player chose at the start.
   onPlayAgain(prev) {
     return Baseball.init({ mode: prev.mode, innings: prev.innings });
   },
 
-  // Pointer plumbing is registered for Phase 2 onward. Phase 1 ignores
-  // input entirely (taps go nowhere on the placeholder field).
-  handlePointer(g, kind, x, y) {
-    // Phase 2+ implementation forthcoming. Recording the drag state
-    // here keeps fpProcessFlick happy if any helper accidentally peeks.
-    if (kind === "down") g.dragStart = { x, y, t: performance.now() };
-    else if (kind === "move" && g.dragStart) g.dragNow = { x, y };
-    else if (kind === "up") { g.dragStart = null; g.dragNow = null; }
+  payout(g) {
+    // Phase 5 turns this into a meaningful number based on win + margin.
+    return 0;
   },
 
-  // Phase 5 will compute a real payout based on win margin + run scored.
-  // Phase 1 returns zero so the dispatcher's settleMinigame() doesn't
-  // hand out free cash on the placeholder.
-  payout(g) { return 0; },
+  // ──────────────────────────────────────────────────────────────────
+  // INPUT
+  // ──────────────────────────────────────────────────────────────────
+  handlePointer(g, kind, x, y) {
+    if (g.finished) return;
+    // Drag tracking — used for the aim crosshair regardless of phase.
+    if (kind === "down") {
+      // Pitch chip hit-test takes priority over starting a drag.
+      if (g.phase === "presnap" || g.phase === "aim") {
+        const hit = chipHit(g, x, y);
+        if (hit) {
+          g.armedPitch = pitchById(hit.pitchId);
+          Sound.click && Sound.click();
+          // Pre-fill aim to a sensible default (top of zone, center)
+          // so a quick tap+release without much drag still launches a
+          // meaningful pitch.
+          g.aimX = 0;
+          g.aimY = (PLATE_TOP + PLATE_BOTTOM) / 2;
+          return;
+        }
+      }
+      g.dragStart = { x, y, t: performance.now() };
+      g.dragNow = { x, y };
+      // Begin aim phase only if a pitch is armed.
+      if (g.armedPitch && g.phase === "presnap") {
+        g.phase = "aim";
+        g.phaseT = 0;
+      }
+    } else if (kind === "move") {
+      if (!g.dragStart) return;
+      g.dragNow = { x, y };
+      if (g.phase === "aim") {
+        // Translate the drag delta to a plate-plane aim point. The
+        // crosshair starts at zone center; the drag biases it within
+        // a generous aim window. We allow the aim to drift OUTSIDE
+        // the strike zone so the player can intentionally throw balls.
+        const aim = dragToAim(g);
+        g.aimX = aim.x;
+        g.aimY = aim.y;
+      }
+    } else if (kind === "up") {
+      if (g.phase === "aim" && g.armedPitch) {
+        // Final-aim sample before release.
+        const aim = dragToAim(g);
+        g.aimX = aim.x;
+        g.aimY = aim.y;
+        firePitch(g);
+      }
+      g.dragStart = null;
+      g.dragNow = null;
+    }
+  },
 
-  // Used by the dispatcher's renderFinished branch — see main.js loop.
+  // ──────────────────────────────────────────────────────────────────
+  // UPDATE — per-frame tick
+  // ──────────────────────────────────────────────────────────────────
+  update(g, dt) {
+    g.time += dt;
+    g.phaseT += dt;
+
+    switch (g.phase) {
+      case "presnap":
+      case "aim":
+        // Idle — wait for input.
+        break;
+      case "pitch": {
+        // Integrate the ball. When it reaches the plate, generate a
+        // CPU batter decision; resolve happens a tick later so the
+        // ball is visibly AT the plate when the outcome locks in.
+        if (g.ball) {
+          stepPitch(g.ball, dt);
+          if (g.ball.landedAtPlate && !g.pendingSwing) {
+            g.pendingSwing = cpuBatterDecision(g.ball, g.count);
+            g.swingDecidedAt = g.phaseT;
+          }
+          // Tiny pause after the swing decision before we transition,
+          // so the ball renders at the plate for a beat.
+          if (g.pendingSwing && (g.phaseT - g.swingDecidedAt) >= SWING_DECIDE_T) {
+            resolveAtBatPhase2(g);
+          }
+        } else {
+          // Defensive — shouldn't be in pitch with no ball; revert.
+          g.phase = "presnap"; g.phaseT = 0;
+        }
+        break;
+      }
+      case "resolve": {
+        if (g.phaseT >= g.outcomeHoldT) {
+          // Phase 5 transitions to HALF_END / GAME_END here. Phase 2
+          // just loops a new batter, capped at 3 outs (and we cycle
+          // outs back to 0 without switching sides yet so the placeholder
+          // half-inning marker isn't misleading).
+          if (g.outs >= 3) {
+            // Phase 5 will switch sides. For Phase 2 we just reset outs
+            // and bases so the count cycle keeps the demo interesting.
+            g.outs = 0;
+            g.bases = { first: null, second: null, third: null };
+            g.stats.halvesPlayed += 1;
+          }
+          startNewBatter(g);
+        }
+        break;
+      }
+    }
+  },
+
+  // ──────────────────────────────────────────────────────────────────
+  // RENDER
+  // ──────────────────────────────────────────────────────────────────
+  render(g) {
+    drawPitcherView(g);
+    drawPitchChips(g, PITCH_TYPES);
+    drawPitcherPrompt(g);
+    drawOutcomeBanner(g);
+    drawHudStrip(g);
+  },
+
   renderFinished(g) {
     drawBaseballFinishedOverlay(g);
   },
 };
 
 // ──────────────────────────────────────────────────────────────────────
-// Placeholder field render — sky gradient + grass + foul lines. Just
-// enough to confirm Phase 1 plumbing works. Real composers land in
-// src/games/baseball/draw.js during Phase 2.
+// At-bat helpers
 // ──────────────────────────────────────────────────────────────────────
-function drawPlaceholderField(g) {
-  fpDrawSky("#0e1726", "#1e3454", "#3d6a48");
-  // Grass + lateral perspective lines. The fpDrawField default looks
-  // like a football field (white sidelines); for baseball we tone the
-  // lines down so they read like mown grass stripes instead.
-  fpDrawField("#3d6a48", "rgba(255,255,255,0.08)");
-  // Two foul lines from home plate (z≈0) out to the corners of the
-  // outfield. Z=0 puts the apex right at the bottom of the screen, so
-  // we anchor the lines at z=0.5 to keep the math sane.
-  drawFoulLine(-28, 95);
-  drawFoulLine( 28, 95);
-  // Pitcher's mound (~18.4 m from home, but the camera is conceptually
-  // AT the mound — Phase 2 will swap this for the catcher silhouette).
-  // Until then, draw a brown disc at the far end as a visual anchor.
-  drawMound(0, 18.4);
+
+function startNewBatter(g) {
+  g.count = { balls: 0, strikes: 0 };
+  g.phase = "presnap";
+  g.phaseT = 0;
+  g.armedPitch = null;
+  g.ball = null;
+  g.pendingSwing = null;
+  g.outcomeText = ""; g.outcomeSub = ""; g.outcomeColor = "#fff";
 }
 
-function drawFoulLine(endX, endZ) {
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
-  ctx.lineWidth = 2;
-  const a = fpProject(0, 0, 0.5);
-  const b = fpProject(endX, 0, endZ);
-  ctx.beginPath();
-  ctx.moveTo(a.sx, a.sy);
-  ctx.lineTo(b.sx, b.sy);
-  ctx.stroke();
+function firePitch(g) {
+  if (!g.armedPitch) return;
+  g.ball = buildPitch(g.armedPitch, g.aimX, g.aimY);
+  g.phase = "pitch";
+  g.phaseT = 0;
+  g.pendingSwing = null;
+  Sound.whistle && Sound.whistle();   // placeholder pitch "whoosh" — Phase 6 swaps
 }
 
-function drawMound(x, z) {
-  const c = fpProject(x, 0, z);
-  const top = fpProject(x, 0.25, z);
-  const r = Math.max(8, 70 * c.scale);
-  ctx.fillStyle = "#8a6a3a";
-  ctx.beginPath();
-  ctx.ellipse(c.sx, c.sy, r, r * 0.35, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // Rubber strip
-  ctx.fillStyle = "#dcdcdc";
-  ctx.fillRect(top.sx - r * 0.45, top.sy - 2, r * 0.9, 3);
+// Resolve a Phase-2 at-bat outcome from the CPU swing decision + the
+// pitch's plate location. Updates count/outs/bases, sets the outcome
+// banner, and transitions to "resolve".
+function resolveAtBatPhase2(g) {
+  const b = g.ball;
+  const swing = g.pendingSwing;
+  const inZone = isStrike(b.plateX, b.plateY);
+  let outcome;                  // string consumed by applyPitchToCount
+  let label, color, sub = "";
+  if (swing === "take") {
+    outcome = inZone ? "called-strike" : "ball";
+    label = inZone ? "STRIKE" : "BALL";
+    color = inZone ? outcomeColor("called-strike") : outcomeColor("ball");
+    sub   = `${b.pitch.name}  ·  ${inZone ? "in the zone" : "outside"}`;
+  } else if (swing === "swing-miss") {
+    outcome = "swinging-strike";
+    label = "SWING & MISS";
+    color = outcomeColor("swinging-strike");
+    sub = `${b.pitch.name}`;
+  } else if (swing === "swing-foul") {
+    outcome = "foul";
+    label = "FOUL BALL";
+    color = outcomeColor("foul");
+  } else {
+    // Contact — Phase 2 resolves to a hit-type roll. Phase 4 replaces
+    // this with the real ball-off-bat + fielder simulation.
+    const bucket = swing === "swing-weak" ? "weak"
+                  : swing === "swing-solid" ? "solid"
+                  : "barrel";
+    const result = classifyPhase2Contact(bucket);
+    if (result.kind === "out") {
+      g.outs += 1;
+      label = "OUT";
+      color = outcomeColor("out");
+      sub = result.label;
+    } else {
+      const runs = advanceRunners(g, result.bases);
+      g.stats.hits += 1;
+      if (result.kind === "home-run") g.stats.homeRuns += 1;
+      label = result.label;
+      color = outcomeColor(result.kind);
+      if (runs > 0) {
+        g.runs.home += runs;
+        sub = `+${runs} run${runs === 1 ? "" : "s"}`;
+        Sound.cheer && Sound.cheer(result.kind === "home-run");
+      } else {
+        sub = "Runner on base";
+      }
+    }
+    // Skip count handling — contact ends the atbat.
+    g.lastOutcomeKind = result.kind;
+    setResolve(g, label, sub, color,
+      result.kind === "home-run" ? RESOLVE_HOLD_BIG : RESOLVE_HOLD_CONTACT);
+    return;
+  }
+
+  // Non-contact branch — advance count + check for walk/strikeout.
+  const status = applyPitchToCount(g.count, outcome);
+  if (status === "strikeout") {
+    g.outs += 1;
+    g.stats.strikeoutsThrown += 1;
+    setResolve(g, "STRIKEOUT", `${g.outs} ${g.outs === 1 ? "out" : "outs"}`,
+      outcomeColor("strikeout"), RESOLVE_HOLD_BIG);
+    Sound.groan && Sound.groan();
+    g.lastOutcomeKind = "strikeout";
+  } else if (status === "walk") {
+    advanceRunners(g, 0);    // walk = forced advance only
+    setResolve(g, "WALK", "Runner on base", outcomeColor("walk"), RESOLVE_HOLD_CONTACT);
+    g.lastOutcomeKind = "walk";
+  } else {
+    setResolve(g, label, sub, color, RESOLVE_HOLD_DEFAULT);
+    g.lastOutcomeKind = outcome;
+  }
 }
 
-// HUD strip across the top — scoreboard + count + outs + base diamond.
-// Phase 1 shows zeros to confirm layout; Phase 5 wires real values.
+function setResolve(g, label, sub, color, hold) {
+  g.outcomeText = label;
+  g.outcomeSub = sub;
+  g.outcomeColor = color;
+  g.outcomeHoldT = hold;
+  g.phase = "resolve";
+  g.phaseT = 0;
+}
+
+// Pointer → pitch-chip hit-test.
+function chipHit(g, x, y) {
+  if (!g._pitchChipRects) return null;
+  for (const r of g._pitchChipRects) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r;
+  }
+  return null;
+}
+
+// Convert the player's drag to a plate-plane aim point. The drag start
+// position becomes the origin; the delta steers the aim. The zone
+// half-width / height set the gain so a comfortable thumb swipe covers
+// the whole zone without needing the full screen.
+function dragToAim(g) {
+  const dx = (g.dragNow.x - g.dragStart.x);
+  const dy = (g.dragNow.y - g.dragStart.y);
+  // 220px of drag covers a meter at the plate — feels good on a phone.
+  const gain = 1 / 220;
+  // Y is screen-down = world-down (so dragging up raises the aim).
+  return {
+    x: clamp(dx * gain, -0.55, 0.55),
+    y: clamp((PLATE_TOP + PLATE_BOTTOM) / 2 + (-dy) * gain, PLATE_BOTTOM - 0.20, PLATE_TOP + 0.20),
+  };
+}
+
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+// ──────────────────────────────────────────────────────────────────────
+// HUD — scoreboard strip
+// ──────────────────────────────────────────────────────────────────────
 function drawHudStrip(g) {
   const padX = 14;
   const padY = 12;
   const h = 38;
   const totalW = W - padX * 2;
-  // Background
   ctx.fillStyle = "rgba(11, 13, 22, 0.78)";
   ctx.fillRect(padX, padY, totalW, h);
   ctx.strokeStyle = "rgba(255, 255, 255, 0.10)";
@@ -198,7 +396,6 @@ function drawHudStrip(g) {
   ctx.strokeRect(padX, padY, totalW, h);
 
   ctx.textAlign = "center";
-  // Cells: AWAY | HOME | INN | OUTS | B-S | BASES
   const cells = [
     { label: "AWAY", value: String(g.runs.away) },
     { label: "HOME", value: String(g.runs.home) },
@@ -236,48 +433,22 @@ function basesGlyph(bases) {
        + (bases.first  ? "◆" : "◇");
 }
 
-// Centered "Phase 1" callout so the placeholder is unambiguous during
-// development. Removed in Phase 2 once the pitcher gameplay lands.
-function drawPlaceholderCallout(g) {
-  const pulse = 0.55 + 0.45 * Math.sin(g.time * 2.0);
-  ctx.textAlign = "center";
-  ctx.fillStyle = `rgba(248, 213, 106, ${pulse})`;
-  ctx.font = "bold 22px ui-monospace, monospace";
-  ctx.fillText("BASEBALL — warmup", W / 2, H * 0.46);
-  ctx.fillStyle = "rgba(207, 214, 227, 0.85)";
-  ctx.font = "bold 13px ui-monospace, monospace";
-  const modeLabel = g.mode === "pvp" ? "Pass & Play" : "vs CPU";
-  ctx.fillText(`${modeLabel}  •  ${g.innings}-inning game`, W / 2, H * 0.50);
-  ctx.fillStyle = "rgba(160, 170, 190, 0.70)";
-  ctx.font = "bold 11px ui-monospace, monospace";
-  ctx.fillText("Pitching, batting, and fielding land in Phase 2-4.", W / 2, H * 0.54);
-  ctx.fillText("Tap Esc to return to the menu.", W / 2, H * 0.565);
-  ctx.textAlign = "start";
-}
-
 // ──────────────────────────────────────────────────────────────────────
-// Game-end overlay — mirrors drawQbFinishedOverlay's structure so the
-// finale feels consistent across Declan's games. Phase 1 just shows a
-// "Coming soon" message + Play Again + Menu buttons; Phase 5 fills in
-// the real scoreboard / lifetime stats / NEW BEST badge.
+// Game-end overlay — phase 5 wires the real stats. Phase 2 reuses the
+// stub from Phase 1.
 // ──────────────────────────────────────────────────────────────────────
 function drawBaseballFinishedOverlay(g) {
   const heldFor = Math.max(0, performance.now() - ((g.finishHoldUntil || 0) - 600));
-  // Backdrop
   const bgA = Math.min(0.78, heldFor / 240 * 0.78);
   ctx.fillStyle = `rgba(7, 9, 18, ${bgA})`;
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
-
-  // FINAL header
   const titleA = Math.min(1, heldFor / 240);
   const titleEase = ease(titleA, "easeOutBack");
   const titleY = H * 0.18 - (1 - titleEase) * 22;
   ctx.fillStyle = `rgba(248, 213, 106, ${titleA})`;
   ctx.font = "bold 30px ui-monospace, monospace";
   ctx.fillText("FINAL", W / 2, titleY);
-
-  // Big score
   const scoreA = Math.min(1, Math.max(0, (heldFor - 120) / 240));
   ctx.fillStyle = `rgba(255, 230, 138, ${scoreA})`;
   ctx.font = "bold 64px ui-monospace, monospace";
@@ -285,9 +456,6 @@ function drawBaseballFinishedOverlay(g) {
   ctx.fillStyle = `rgba(190, 200, 220, ${scoreA})`;
   ctx.font = "bold 12px ui-monospace, monospace";
   ctx.fillText("AWAY            HOME", W / 2, H * 0.36);
-
-  // Buttons. The dispatcher's routeGameOverPointer reads _btnPlayAgain
-  // and _btnMenu; same convention as every other minigame.
   const bw = Math.min(190, W * 0.42);
   const bh = 56;
   const gap = 16;
