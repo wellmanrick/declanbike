@@ -22,7 +22,7 @@ import { getEquippedStats, composeStats } from "./config/stats.js";
 import { THEMES } from "./config/themes.js";
 import { LEVELS, medalForTime, medalRank, medalIcon, levelUnlocked } from "./config/levels.js";
 import { QUESTS, getQuestProgress, refreshQuestStates } from "./config/quests.js";
-import { canvas, ctx, W, H, DPR, WORLD_ZOOM, VW, VH, updateViewport, resizeCanvas, clamp, lerp, wrapAngle } from "./engine/canvas.js";
+import { canvas, ctx, W, H, DPR, WORLD_ZOOM, VW, VH, updateViewport, resizeCanvas, clamp, lerp, ease, wrapAngle } from "./engine/canvas.js";
 import { Sound } from "./engine/audio.js";
 import {
   FP_FOCAL, FP_CAMERA_H,
@@ -426,8 +426,10 @@ function updateBike(dt) {
 
   // wheel spin: 13px radius wheel, angular vel = vx / r
   b.wheelAngle = (b.wheelAngle + (b.vx / 13) * dt) % (Math.PI * 2);
-  // landing squash decays
-  if (b.landSquash > 0) b.landSquash = Math.max(0, b.landSquash - dt * 4);
+  // Landing squash — linear progress timer (~0.4s) drives a sprung
+  // easeOutBack curve at the render site (drawBike) for the
+  // compress-and-rebound feel.
+  if (b.landSquash > 0) b.landSquash = Math.max(0, b.landSquash - dt * 2.5);
   if (b.wobble > 0)     b.wobble     = Math.max(0, b.wobble - dt * 1.2);
   if (b.landingFlash) {
     b.landingFlash.time = Math.max(0, b.landingFlash.time - dt);
@@ -1938,27 +1940,33 @@ function drawLandingFlash(b) {
   const f = b && b.landingFlash;
   if (!f || !f.max) return;
   const phase = 1 - f.time / f.max;
-  const alpha = Math.max(0, 1 - phase);
-  const radius = 22 + phase * 34;
+  // Ring expansion: PERFECT overshoots subtly (easeOutBack), CLEAN/SAVE
+  // settle (easeOutCubic). Alpha fades with a long visible tail (concave)
+  // so the flash lingers instead of cutting off.
+  const expandCurve = f.label === "PERFECT" ? "easeOutBack" : "easeOutCubic";
+  const easedPhase = ease(phase, expandCurve);
+  const alpha = ease(1 - phase, "easeOutQuint");
+  const radius = 22 + easedPhase * 34;
+  const labelRise = easedPhase * 12;
 
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
   ctx.strokeStyle = f.color;
   ctx.fillStyle = f.color;
-  ctx.globalAlpha = alpha * 0.55;
+  ctx.globalAlpha = Math.min(1, alpha * 0.55);
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.arc(b.x, b.y - 15, radius, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.globalAlpha = alpha * 0.9;
+  ctx.globalAlpha = Math.min(1, alpha * 0.9);
   ctx.font = "bold 12px ui-monospace, monospace";
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
   ctx.lineWidth = 4;
   ctx.strokeStyle = "rgba(0,0,0,0.55)";
-  ctx.strokeText(f.label, b.x, b.y - 50 - phase * 12);
-  ctx.fillText(f.label, b.x, b.y - 50 - phase * 12);
+  ctx.strokeText(f.label, b.x, b.y - 50 - labelRise);
+  ctx.fillText(f.label, b.x, b.y - 50 - labelRise);
   ctx.restore();
   ctx.textAlign = "start";
   ctx.textBaseline = "alphabetic";
@@ -2304,7 +2312,9 @@ function drawBike(b, stats) {
     // Flow aura — cyan radial glow during post-landing flow window. Stacks
     // with star/shield so a perfect landing under a powerup still shows.
     if (b.flowTime > 0) {
-      const intensity = Math.min(1, b.flowTime / 1.5);
+      // Smoothstep so the aura ramps in and out instead of cutting at
+      // either end of the 1.5s window.
+      const intensity = ease(b.flowTime / 1.5, "smoothstep");
       const pulse = 1 + 0.08 * Math.sin(t * 10);
       const grad = ctx.createRadialGradient(b.x, b.y - 10, 0, b.x, b.y - 10, 46 * pulse);
       grad.addColorStop(0, `rgba(110, 231, 255, ${0.50 * intensity})`);
@@ -2348,8 +2358,14 @@ function drawBike(b, stats) {
     // air pose: rider tucks slightly
     leanY = -1;
   }
-  // squash on landing impact (decays)
-  const squash = clamp((b.landSquash || 0), 0, 1);
+  // Squash on landing impact — landSquash decays linearly (0..1 over
+  // ~0.4s). Run it through easeOutBack so the bike compresses fast on
+  // contact, springs past neutral briefly (~12% extension), then
+  // settles. Negative output is allowed so the fork can visibly extend.
+  const _sq = b.landSquash || 0;
+  const squash = _sq > 0
+    ? Math.max(-0.12, Math.min(1, 1 - ease(1 - _sq, "easeOutBack")))
+    : 0;
   const boosting = !!b.boostingPrev;
 
   ctx.save();
@@ -6852,8 +6868,13 @@ function loop(now) {
       });
     }
 
-    // shake decay
-    if (G.runtime.shake) G.runtime.shake.mag = Math.max(0, G.runtime.shake.mag - dt * 28);
+    // Shake decay — exponential so big hits drop sharply but tail out
+    // with a soft tremor instead of cutting off linearly. Floor at 0.05
+    // so tiny residuals snap to zero (otherwise we'd jiggle forever).
+    if (G.runtime.shake) {
+      const m = G.runtime.shake.mag * Math.pow(0.04, dt);
+      G.runtime.shake.mag = m < 0.05 ? 0 : m;
+    }
 
     // Powerup timer (star / magnet — shield is persistent).
     if (G.runtime.powerup && G.runtime.powerup.time > 0) {

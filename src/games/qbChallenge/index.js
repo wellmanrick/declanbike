@@ -15,7 +15,7 @@
 // Reuses src/engine/fpView.js for the perspective projection + flick
 // parsing, and src/engine/audio.js for snap / whistle / cheer / groan.
 
-import { ctx, W, H } from "../../engine/canvas.js";
+import { ctx, W, H, ease } from "../../engine/canvas.js";
 import { Sound } from "../../engine/audio.js";
 import { save } from "../../engine/save.js";
 import {
@@ -430,84 +430,116 @@ function persistRoundStats(g) {
 // Rendering
 // ──────────────────────────────────────────────────────────────────────
 
-function drawStadium(g) {
-  // Twilight sky gradient.
-  const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0.00, "#1c1b3a");
-  sky.addColorStop(0.45, "#3a2a55");
-  sky.addColorStop(0.70, "#a85a3a");
-  sky.addColorStop(1.00, "#0e0d1c");
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, W, H);
+// Stadium backdrop cache — the sky, bowl, towers, jumbotron frame, and
+// the 160-dot crowd never change between frames (only their brightness
+// does), so we render them once to two offscreen canvases and blit
+// them per frame. Collapses ~170 canvas ops per frame to ~2 drawImages.
+// Invalidates when the viewport changes size.
+let _stadiumCache = null;
 
-  // Far stadium bowl silhouette — wide curved arc at the horizon, two
-  // tiers. Drawn back-to-front so the upper tier sits behind the lower.
+function ensureStadium() {
+  if (_stadiumCache && _stadiumCache.w === W && _stadiumCache.h === H) return;
   const horizon = fpHorizonY();
   const bowlTop = horizon - 70;
   const bowlMid = horizon - 28;
 
-  // Upper tier
-  ctx.fillStyle = "#1a1530";
-  ctx.beginPath();
-  ctx.moveTo(0, bowlMid);
-  ctx.quadraticCurveTo(W * 0.5, bowlTop, W, bowlMid);
-  ctx.lineTo(W, horizon);
-  ctx.lineTo(0, horizon);
-  ctx.closePath();
-  ctx.fill();
-  // Lower tier
-  ctx.fillStyle = "#241d3e";
-  ctx.beginPath();
-  ctx.moveTo(0, horizon - 10);
-  ctx.quadraticCurveTo(W * 0.5, bowlMid + 8, W, horizon - 10);
-  ctx.lineTo(W, horizon);
-  ctx.lineTo(0, horizon);
-  ctx.closePath();
-  ctx.fill();
+  // Layer 1 — sky + bowl + towers + jumbotron frame (static dim base).
+  const dim = document.createElement("canvas");
+  dim.width = W; dim.height = H;
+  const dctx = dim.getContext("2d");
 
-  // Light towers — four orbs framing the stadium.
-  ctx.fillStyle = "rgba(255, 240, 200, 0.95)";
+  const sky = dctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0.00, "#1c1b3a");
+  sky.addColorStop(0.45, "#3a2a55");
+  sky.addColorStop(0.70, "#a85a3a");
+  sky.addColorStop(1.00, "#0e0d1c");
+  dctx.fillStyle = sky;
+  dctx.fillRect(0, 0, W, H);
+
+  // Upper bowl tier
+  dctx.fillStyle = "#1a1530";
+  dctx.beginPath();
+  dctx.moveTo(0, bowlMid);
+  dctx.quadraticCurveTo(W * 0.5, bowlTop, W, bowlMid);
+  dctx.lineTo(W, horizon);
+  dctx.lineTo(0, horizon);
+  dctx.closePath();
+  dctx.fill();
+  // Lower bowl tier
+  dctx.fillStyle = "#241d3e";
+  dctx.beginPath();
+  dctx.moveTo(0, horizon - 10);
+  dctx.quadraticCurveTo(W * 0.5, bowlMid + 8, W, horizon - 10);
+  dctx.lineTo(W, horizon);
+  dctx.lineTo(0, horizon);
+  dctx.closePath();
+  dctx.fill();
+
+  // Light towers
+  dctx.fillStyle = "rgba(255, 240, 200, 0.95)";
   for (const tx of [W * 0.10, W * 0.32, W * 0.68, W * 0.90]) {
-    ctx.beginPath(); ctx.arc(tx, bowlTop - 20, 5, 0, Math.PI * 2); ctx.fill();
-    // Tower pole
-    ctx.fillStyle = "rgba(20, 18, 35, 0.9)";
-    ctx.fillRect(tx - 1, bowlTop - 18, 2, 18);
-    ctx.fillStyle = "rgba(255, 240, 200, 0.95)";
+    dctx.beginPath(); dctx.arc(tx, bowlTop - 20, 5, 0, Math.PI * 2); dctx.fill();
+    dctx.fillStyle = "rgba(20, 18, 35, 0.9)";
+    dctx.fillRect(tx - 1, bowlTop - 18, 2, 18);
+    dctx.fillStyle = "rgba(255, 240, 200, 0.95)";
   }
 
-  // Crowd dots filling the bowl. Procedurally seeded per-frame from a
-  // fixed pattern so they twinkle but don't migrate. Brightness scales
-  // with the hype window.
-  const intensity = g.hype && g.hype.t > 0 ? g.hype.intensity : 1.0;
-  const tNow = performance.now() / 1000;
+  // Jumbotron frame (the live score draws on top each frame, in the
+  // main render path).
+  const jbW = 86, jbH = 32;
+  const jbX = W / 2 - jbW / 2, jbY = bowlTop - 4;
+  dctx.fillStyle = "#0a0a14";
+  dctx.fillRect(jbX, jbY, jbW, jbH);
+  dctx.strokeStyle = "#3a3050"; dctx.lineWidth = 1;
+  dctx.strokeRect(jbX, jbY, jbW, jbH);
+
+  // Layer 2 — crowd dots at full brightness, no twinkle. Per-frame
+  // brightness is applied via globalAlpha on the blit. The original
+  // per-dot twinkle is replaced by a global brightness oscillation
+  // (one sin call per frame instead of 160).
+  const lit = document.createElement("canvas");
+  lit.width = W; lit.height = H;
+  const lctx = lit.getContext("2d");
+  lctx.fillStyle = "rgba(255, 220, 160, 1)";
   for (let i = 0; i < 160; i++) {
-    // Hash i to a stable position inside the bowl arc.
     const r1 = (Math.sin(i * 12.9898) * 43758.5453) % 1;
     const r2 = (Math.sin(i * 78.233 + 1.7) * 43758.5453) % 1;
     const u = Math.abs(r1);
     const v = Math.abs(r2);
-    // Curve y across the bowl
     const cx = u * W;
     const arcY = bowlTop + (1 - Math.pow(u * 2 - 1, 2)) * 8;
     const cy = arcY + v * (horizon - arcY - 4) - 2;
     if (cy >= horizon) continue;
-    const twinkle = 0.55 + 0.45 * Math.sin(tNow * 3 + i);
-    const a = 0.35 * twinkle * intensity;
-    ctx.fillStyle = `rgba(255, 220, 160, ${Math.min(1, a)})`;
-    ctx.fillRect(cx, cy, 1.4, 1.4);
+    lctx.fillRect(cx, cy, 1.4, 1.4);
   }
 
-  // Jumbotron — dark rectangle with the current score in pixel-style.
-  const jbW = 86, jbH = 32;
-  const jbX = W / 2 - jbW / 2, jbY = bowlTop - 4;
-  ctx.fillStyle = "#0a0a14";
-  ctx.fillRect(jbX, jbY, jbW, jbH);
-  ctx.strokeStyle = "#3a3050"; ctx.lineWidth = 1;
-  ctx.strokeRect(jbX, jbY, jbW, jbH);
+  _stadiumCache = { w: W, h: H, dim, lit, jbX, jbY, jbW, jbH };
+}
+
+function drawStadium(g) {
+  ensureStadium();
+  // Static base: sky + bowl + towers + jumbotron frame, all in one blit.
+  ctx.drawImage(_stadiumCache.dim, 0, 0);
+  // Crowd: single drawImage with brightness modulated by a global
+  // twinkle envelope + the hype window (eased so it ramps instead of
+  // popping). One sin() per frame instead of 160.
+  const tNow = performance.now() / 1000;
+  const baseTwinkle = 0.55 + 0.45 * Math.sin(tNow * 2);
+  let hype = 1.0;
+  if (g.hype && g.hype.t > 0) {
+    const hypeT = Math.min(1, g.hype.t / 1.2);
+    hype = ease(hypeT, "easeOutQuad") * g.hype.intensity;
+  }
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, 0.35 * baseTwinkle * hype);
+  ctx.drawImage(_stadiumCache.lit, 0, 0);
+  ctx.restore();
+  // Live jumbotron score sits on the cached frame.
+  const c = _stadiumCache;
   ctx.fillStyle = "#ffb020";
   ctx.font = "bold 18px ui-monospace, monospace";
   ctx.textAlign = "center";
-  ctx.fillText(String(g.score), jbX + jbW / 2, jbY + 22);
+  ctx.fillText(String(g.score), c.jbX + c.jbW / 2, c.jbY + 22);
   ctx.textAlign = "start";
 }
 
@@ -742,7 +774,9 @@ function drawBall(b) {
     for (let i = 0; i < b.trail.length - 1; i++) {
       const tp = b.trail[i];
       const next = b.trail[i + 1];
-      const a = (i + 1) / b.trail.length;
+      // easeOutCubic — front of the trail (nearest the ball) is full
+      // brightness, tail fades quickly. Reads as a tight spiral wake.
+      const a = ease((i + 1) / b.trail.length, "easeOutCubic");
       const ang = Math.atan2(next.sy - tp.sy, next.sx - tp.sx);
       ctx.save();
       ctx.translate(tp.sx, tp.sy);
@@ -914,8 +948,11 @@ function drawQbFinishedOverlay(g) {
   ctx.textAlign = "center";
 
   // "FINAL" header in jumbotron amber, slides down on entry.
+  // Title position uses easeOutBack so it overshoots slightly and
+  // settles. Alpha stays linear so it doesn't pulse during fade-in.
   const titleA = Math.min(1, heldFor / 240);
-  const titleY = H * 0.16 - (1 - titleA) * 22;
+  const titleEase = ease(titleA, "easeOutBack");
+  const titleY = H * 0.16 - (1 - titleEase) * 22;
   ctx.fillStyle = `rgba(255, 176, 32, ${titleA})`;
   ctx.font = "bold 30px ui-monospace, monospace";
   ctx.fillText("FINAL", W / 2, titleY);
@@ -997,7 +1034,12 @@ function drawQbFinishedOverlay(g) {
   const rowY0 = cardY + 50;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const rowA = Math.min(1, Math.max(0, (heldFor - 600 - i * 110) / 220));
+    // easeInOutQuad — soft accelerate + decelerate so the row reveal
+    // doesn't snap on either end of the fade-in.
+    const rowA = ease(
+      Math.min(1, Math.max(0, (heldFor - 600 - i * 110) / 220)),
+      "easeInOutQuad"
+    );
     if (rowA <= 0) continue;
     const y = rowY0 + i * rowGap;
     // Round just set a new lifetime high? Highlight the round value in
@@ -1051,24 +1093,26 @@ function drawQbFinishedOverlay(g) {
 
 function drawQbButton(rect, label, fill, ink, alpha, pulse) {
   if (alpha <= 0) return;
+  // Drop-in eases past-and-back (easeOutBack) for a "lands and settles"
+  // feel. Alpha stays linear so the button doesn't strobe.
+  const drop = (1 - ease(alpha, "easeOutBack")) * 10;
   ctx.save();
   ctx.globalAlpha = alpha;
   let drawFill = fill;
   if (pulse) {
     const p = 0.5 + 0.5 * Math.sin(performance.now() / 220);
     const lift = Math.floor(20 * p);
-    // Hand-pulse the orange to a slightly warmer tone.
     drawFill = `rgba(${255}, ${176 + lift}, ${32 + lift}, ${alpha})`;
   }
   ctx.fillStyle = drawFill;
   ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(rect.x, rect.y + (1 - alpha) * 10, rect.w, rect.h, 12);
-  else ctx.rect(rect.x, rect.y + (1 - alpha) * 10, rect.w, rect.h);
+  if (ctx.roundRect) ctx.roundRect(rect.x, rect.y + drop, rect.w, rect.h, 12);
+  else ctx.rect(rect.x, rect.y + drop, rect.w, rect.h);
   ctx.fill();
   ctx.fillStyle = ink;
   ctx.font = "bold 18px ui-monospace, monospace";
   ctx.textAlign = "center";
-  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6 + (1 - alpha) * 10);
+  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 6 + drop);
   ctx.restore();
 }
 
