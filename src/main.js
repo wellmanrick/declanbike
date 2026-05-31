@@ -7043,10 +7043,42 @@ requestAnimationFrame(loop);
 // Register the service worker for offline / installable PWA. Only runs
 // over https (or localhost) per browser policy. Failures are silent —
 // the game still works without a SW.
+//
+// When a newer SW activates after a fresh deploy it posts an
+// "sw-updated" message; we soft-reload so the new HTML + assets
+// render immediately. Without this the user would keep seeing the
+// previously-cached shell until they manually cleared site data
+// (the cache lookup uses ignoreSearch:true, which masks the ?v=…
+// cache-buster that the deploy stamps into index.html). We hold the
+// reload when the user is mid-play to avoid yanking them out of a
+// run; once they're back on the menu the 2s poller fires it.
+let _swReloadPending = false;
+function _maybeReloadForSwUpdate() {
+  if (!_swReloadPending) return;
+  // Safe states to interrupt — anywhere the user isn't actively
+  // controlling a run. Mid-PLAY / MINIGAME we hold off.
+  if (G.state === STATE.PLAY || G.state === STATE.MINIGAME) return;
+  _swReloadPending = false;
+  // Append ?nocache=… so the SW fetch handler (which respects this
+  // sentinel) skips its cache on the final request, guaranteeing we
+  // get the new HTML even if the new SW has a bug.
+  const sep = location.search ? "&" : "?";
+  location.replace(location.pathname + location.search + sep + "nocache=" + Date.now());
+}
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   });
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e && e.data && e.data.type === "sw-updated") {
+      _swReloadPending = true;
+      _maybeReloadForSwUpdate();
+    }
+  });
+  // Cheap poller — checks the flag a couple of times a second so when
+  // the user backs out of play to the menu, the deferred reload fires
+  // promptly.
+  setInterval(_maybeReloadForSwUpdate, 500);
 }
 window.__diag && window.__diag("[boot] init complete ✓");
 // Auto-dismiss the diagnostic banner after a short delay so it doesn't
