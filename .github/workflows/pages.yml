@@ -11,6 +11,11 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  # Needed by actions/configure-pages@v5 with enablement:true to
+  # create the Pages site when it isn't already enabled on the repo.
+  # Without this, configure-pages errors out with "Resource not
+  # accessible by integration" trying to call the Pages create API.
+  administration: write
 
 concurrency:
   group: pages
