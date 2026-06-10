@@ -73,6 +73,14 @@ jobs:
           echo "Stamped build: ${BUILD_ID}"
           grep -E '\?v=' index.html || true
       - uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages on first run if it isn't already enabled.
+          # Without this, configure-pages calls the Pages API, gets a
+          # 404, and the deploy job fails fast — silently breaking
+          # every merge that ships UI changes (PRs #81-#85 all hit
+          # this). The workflow already has `pages: write` permission
+          # so enablement is allowed.
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: "."
