@@ -11,11 +11,6 @@ permissions:
   contents: read
   pages: write
   id-token: write
-  # Needed by actions/configure-pages@v5 with enablement:true to
-  # create the Pages site when it isn't already enabled on the repo.
-  # Without this, configure-pages errors out with "Resource not
-  # accessible by integration" trying to call the Pages create API.
-  administration: write
 
 concurrency:
   group: pages
@@ -77,15 +72,20 @@ jobs:
           [ -f sw.js ] && sed -i "s/__BUILD__/${BUILD_ID}/g" sw.js
           echo "Stamped build: ${BUILD_ID}"
           grep -E '\?v=' index.html || true
+      # configure-pages assumes Pages is already enabled on the repo
+      # (Settings → Pages → Source: GitHub Actions). We tried `enablement:
+      # true` (PR #86) — it failed with "Resource not accessible by
+      # integration" because GITHUB_TOKEN can't create a Pages site
+      # without `administration: write`. We then tried adding
+      # `administration: write` to the workflow permissions (PR #87) —
+      # GitHub rejected the workflow entirely at parse-time (0 jobs ran)
+      # because this private repo's token policy disallows that scope.
+      #
+      # Pages MUST be enabled by hand at
+      #   https://github.com/wellmanrick/declanbike/settings/pages
+      # (Source: GitHub Actions). After that one-time toggle the rest
+      # of this workflow runs and deploys cleanly.
       - uses: actions/configure-pages@v5
-        with:
-          # Auto-enable Pages on first run if it isn't already enabled.
-          # Without this, configure-pages calls the Pages API, gets a
-          # 404, and the deploy job fails fast — silently breaking
-          # every merge that ships UI changes (PRs #81-#85 all hit
-          # this). The workflow already has `pages: write` permission
-          # so enablement is allowed.
-          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: "."
