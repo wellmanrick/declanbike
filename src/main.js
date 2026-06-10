@@ -24,6 +24,7 @@ import { LEVELS, medalForTime, medalRank, medalIcon, levelUnlocked } from "./con
 import { QUESTS, getQuestProgress, refreshQuestStates } from "./config/quests.js";
 import { canvas, ctx, W, H, DPR, WORLD_ZOOM, VW, VH, updateViewport, resizeCanvas, clamp, lerp, ease, wrapAngle } from "./engine/canvas.js";
 import { Sound } from "./engine/audio.js";
+import { haptic, registerPressFx, drawPressFx, isTap, hitRect } from "./engine/touch.js";
 import {
   FP_FOCAL, FP_CAMERA_H,
   fpSetCam, fpHorizonY, fpProject, fpDrawSky, fpDrawField,
@@ -46,12 +47,10 @@ import {
   _setTerrainHeightFn,
 } from "./engine/juice.js";
 
-// Tiny mobile-haptic helper. No-op on iOS Safari (no Vibration API) and
-// silenced when the player has turned haptics off in their profile.
-function vibe(pattern) {
-  if (!save.prefs || save.prefs.haptics === false) return;
-  if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(pattern);
-}
+// Tiny mobile-haptic helper. Delegates to the shared touch.js so the
+// haptic preference + pattern catalogue lives in one place. Existing
+// callsites pass a raw number/array; the shared helper accepts both.
+function vibe(pattern) { haptic(pattern); }
 
 // Wire the late-bound terrain helper into juice.js so spawnLandingDust
 // can sample the ground at the bike's position.
@@ -2872,6 +2871,7 @@ function openBaseballMenu() {
     chip.__bbBound = true;
     chip.addEventListener("click", function () {
       Sound.click && Sound.click();
+      haptic("tap");
       setBaseballMenuSelection(chip.dataset.bbGroup, chip.dataset.bbValue);
     });
   });
@@ -3211,6 +3211,13 @@ function dispatchMinigamePointer(kind, e) {
 // The minigame's render() writes the button rects onto the runtime
 // (_btnNextLevel, _btnRetry, _btnLevels, _btnPlayAgain, _btnMenu);
 // this function hit-tests them and dispatches the corresponding action.
+// Every button gets the standard tap-feedback triad (haptic tick +
+// click sound + visual press ring) before dispatching.
+function _btnFeedback(rect, color) {
+  Sound.click && Sound.click();
+  haptic("tap");
+  registerPressFx(rect, color);
+}
 function routeGameOverPointer(rt, mg, kind, p) {
   if (kind !== "down") return;
   if (rt.finishHoldUntil && performance.now() < rt.finishHoldUntil) return;
@@ -3218,7 +3225,7 @@ function routeGameOverPointer(rt, mg, kind, p) {
                           && p.y >= b.y && p.y <= b.y + b.h;
   if (mg && mg.levels) {
     if (inBtn(rt._btnNextLevel)) {
-      Sound.click && Sound.click();
+      _btnFeedback(rt._btnNextLevel, "rgba(77, 220, 140, 0.85)");   // green
       const idx = mg.levels.findIndex(l => l.id === rt.level.id);
       const next = (idx >= 0 && idx + 1 < mg.levels.length) ? mg.levels[idx + 1] : null;
       const progress = (mg.progressKey && save[mg.progressKey]) || {};
@@ -3230,13 +3237,13 @@ function routeGameOverPointer(rt, mg, kind, p) {
         mg.openLevels && mg.openLevels();
       }
     } else if (inBtn(rt._btnRetry)) {
-      Sound.click && Sound.click();
+      _btnFeedback(rt._btnRetry, "rgba(255, 176, 32, 0.85)");   // amber
       const id = rt.id;
       const lvlId = rt.level.id;
       G.minigameRuntime = null;
       startMinigame(id, lvlId);
     } else if (inBtn(rt._btnLevels)) {
-      Sound.click && Sound.click();
+      _btnFeedback(rt._btnLevels);
       G.minigameRuntime = null;
       mg.openLevels && mg.openLevels();
     }
@@ -3244,6 +3251,7 @@ function routeGameOverPointer(rt, mg, kind, p) {
   }
   // Non-level games — Duck Hunt / Hoops / QB Challenge / Baseball.
   if (inBtn(rt._btnPlayAgain)) {
+    _btnFeedback(rt._btnPlayAgain, "rgba(255, 176, 32, 0.85)");   // amber
     const id = rt.id;
     settleMinigame();
     // Game-specific replay hook — Baseball uses this to preserve the
@@ -3251,7 +3259,6 @@ function routeGameOverPointer(rt, mg, kind, p) {
     // back to the generic startMinigame(id) path for games that don't
     // need anything beyond the level/no-level distinction.
     if (mg && mg.onPlayAgain) {
-      Sound.click && Sound.click();
       const next = mg.onPlayAgain(rt);
       G.minigameRuntime = next;
       G.minigameRuntime.id = id;
@@ -3261,6 +3268,7 @@ function routeGameOverPointer(rt, mg, kind, p) {
       startMinigame(id);
     }
   } else if (inBtn(rt._btnMenu)) {
+    _btnFeedback(rt._btnMenu);
     endMinigame();
   }
 }
@@ -6927,6 +6935,10 @@ function loop(now) {
           drawMinigameFinishedOverlay(G.minigameRuntime);
         }
       }
+      // Overlay any active press-feedback rings on top of whatever the
+      // game drew (mid-play UI or finished overlay). Effects expire on
+      // their own after 220ms.
+      drawPressFx();
     }
     requestAnimationFrame(loop);
     justPressed.clear();

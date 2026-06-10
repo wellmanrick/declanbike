@@ -148,7 +148,13 @@ button {
 }
 .overlay button { cursor: pointer; touch-action: manipulation; }
 button:hover { background: linear-gradient(180deg, #344066, #1f2748); transform: translateY(-1px); box-shadow: var(--shadow); }
-button:active { transform: translateY(0); }
+button:active {
+  /* Instant press feedback — scale + return to baseline Y for tactile
+     "pushed down" feel. Fires the moment the finger lands, before the
+     click event commits. */
+  transform: translateY(0) scale(0.96);
+  transition: transform 60ms ease;
+}
 button.primary { background: linear-gradient(180deg, var(--accent), #b87b00); color: #1a1206; border-color: rgba(0,0,0,0.2); font-weight: bold; }
 button.primary:hover { background: linear-gradient(180deg, #ffc640, #d49000); }
 button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
@@ -265,6 +271,12 @@ button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .bb-chip:hover {
   border-color: rgba(248, 213, 106, 0.45);
   transform: translateY(-1px);
+}
+/* Instant press feedback — fires on pointer-down so the chip moves
+   before the click event commits. Mobile users feel a real "press". */
+.bb-chip:active {
+  transform: translateY(0) scale(0.96);
+  transition: transform 60ms ease;
 }
 .bb-chip.active {
   background: linear-gradient(180deg, #f8d56a, #c79a25);

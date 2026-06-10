@@ -30,6 +30,7 @@
 import { ctx, W, H, ease } from "../../engine/canvas.js";
 import { Sound } from "../../engine/audio.js";
 import { save, persistSave } from "../../engine/save.js";
+import { haptic, registerPressFx } from "../../engine/touch.js";
 import {
   PITCH_TYPES, pitchById, buildPitch, stepPitch, isStrike,
   buildHitBall, stepHitBall,
@@ -342,6 +343,10 @@ function handlePointerPitching(g, kind, x, y) {
       if (hit) {
         g.armedPitch = pitchById(hit.pitchId);
         Sound.click && Sound.click();
+        haptic("tap");
+        // Tint the press fx with the pitch type's primary color so the
+        // tap visually links to the type that just got armed.
+        registerPressFx(hit, hexToRgba(g.armedPitch.colorPrimary, 0.85));
         g.aimX = 0;
         g.aimY = (PLATE_TOP + PLATE_BOTTOM) / 2;
         return;
@@ -391,6 +396,11 @@ function handlePointerBatting(g, kind, x, y) {
       g.swingScreenPos = { x, y };
       g.pendingSwing = "player-swing";
       g.swingAnimT = 0.40;     // matches BAT_SWING_DUR in draw.js
+      // Swing-commit haptic — fires on the tap-down edge so the player
+      // gets feedback BEFORE the swing outcome resolves. The contact
+      // bucket later layers a heavier haptic on top (HR = heavy, K =
+      // fail). resolveBatterSwing decides which.
+      haptic("click");
       resolveBatterSwing(g);
     }
   } else if (kind === "move") {
@@ -656,6 +666,15 @@ function finalizeFieldPhase(g) {
       g.score = g.runs.home;
       sub = `+${runs} run${runs === 1 ? "" : "s"}`;
       Sound.cheer && Sound.cheer(outcome.kind === "home-run");
+      // Run-scoring haptic — HRs get the big ascending success pattern,
+      // other scoring plays get the milder click. Only fires when the
+      // PLAYER team scored (in CPU mode that's HOME). PVP fires for any
+      // team since both sides are humans on the same device.
+      const playerScored = (g.mode === "pvp")
+        || (g.half === "bottom" && playerHit);
+      if (playerScored) {
+        haptic(outcome.kind === "home-run" ? "success" : "click");
+      }
     } else {
       sub = "Runner on base";
     }
@@ -809,6 +828,9 @@ function firePitch(g) {
   g.phaseT = 0;
   g.pendingSwing = null;
   Sound.whistle && Sound.whistle();   // placeholder pitch "whoosh" — Phase 6 swaps
+  // Release haptic — a single firm tick. Skipped for CPU-pitcher fires
+  // (no human just acted) by checking role.
+  if (g.role === "pitching") haptic("click");
   // PVP mode: the pitcher just fired; flip control to the batter for
   // the incoming swing. (In CPU mode the role stays as-is — the CPU
   // batter resolves itself in the update loop.) We remember the
@@ -865,6 +887,9 @@ function resolveAtBatPhase2(g) {
     setResolve(g, "STRIKEOUT", `${g.outs} ${g.outs === 1 ? "out" : "outs"}`,
       outcomeColor("strikeout"), RESOLVE_HOLD_BIG, /* endsAtBat */ true);
     Sound.groan && Sound.groan();
+    // Strikeout haptic depends on which side won: batting-side K = fail
+    // pattern; pitching-side K = success pattern.
+    haptic(g.role === "batting" ? "fail" : "success");
     g.lastOutcomeKind = "strikeout";
   } else if (status === "walk") {
     const walkRuns = advanceRunners(g, 0);
@@ -928,6 +953,17 @@ function dragToAim(g) {
 }
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+// Convert "#rrggbb" to "rgba(r, g, b, a)". Used to tint press feedback
+// to a chip's pitch-type color so the tap reads as "yes, this is now
+// armed".
+function hexToRgba(hex, alpha) {
+  const m = (hex || "#ffffff").replace("#", "");
+  const r = parseInt(m.slice(0, 2), 16) || 255;
+  const g = parseInt(m.slice(2, 4), 16) || 255;
+  const b = parseInt(m.slice(4, 6), 16) || 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha ?? 1})`;
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // HUD — scoreboard strip. Each cell value is wrapped in a cheap "pop"
