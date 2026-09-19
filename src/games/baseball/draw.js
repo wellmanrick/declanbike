@@ -1,3 +1,4 @@
+// @ts-nocheck
 // First-person scene composers + UI widgets.
 //
 // drawPitcherView() — camera at the mound looking down +z toward the

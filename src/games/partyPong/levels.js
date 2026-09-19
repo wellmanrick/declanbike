@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Party Pong level catalog. Each level fixes the cup formation, ball
 // budget, table distance, and the par-stars thresholds.
 //

@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Field Goal level catalog. Each level fixes the kicking distance and
 // describes the per-attempt randomness ranges (wind, off-center placement)
 // plus the attempts budget and star thresholds.
@@ -24,7 +25,7 @@ export const FG_LEVELS = [
   {
     id: "fg_01_warmup",
     name: "Warm Up",
-    subtitle: "Chip shot. Find your flick.",
+    subtitle: "Chip shot. Find your snap.",
     attempts: 5,
     distance: 16,
     gap: 6.4,

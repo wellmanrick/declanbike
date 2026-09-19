@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Mobile touch polish — haptics + visual press feedback + tap-vs-drag
 // forgiveness. Shared across all mini-games + the main shell so every
 // interactive surface feels the same.

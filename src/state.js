@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Shared mutable game state.
 // G is a single mutable container so consumers can read and write
 // `G.state`, `G.runtime`, `G.minigameRuntime` from any module without

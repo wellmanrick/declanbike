@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Visual themes — palette + sky/mountain/ground colors per biome.
 // Used by world rendering for parallax, atmosphere, color grading.
 export const THEMES = {

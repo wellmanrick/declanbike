@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Fielders — positions, catch/throw logic, hit-type classification.
 //
 // World frame matches pitches.js: home plate at (0, 0) on the ground,

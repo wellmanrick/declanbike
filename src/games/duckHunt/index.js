@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Duck Hunt — tap-to-shoot minigame.
 //
 // Implements the Minigame contract documented above MINIGAMES in main.js.

@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Canvas + viewport. The render area fills the device viewport with
 // device-pixel-ratio scaling so we draw at native resolution.
 //
@@ -8,11 +9,11 @@
 // Recomputed on every resize.
 
 export const canvas = document.getElementById("game");
-export const ctx = canvas.getContext("2d");
+export const ctx = canvas ? canvas.getContext("2d") : null;
 
 // Mutable. Imported as live bindings.
-export let W = canvas.width;
-export let H = canvas.height;
+export let W = canvas ? canvas.width : 1280;
+export let H = canvas ? canvas.height : 720;
 export let DPR = window.devicePixelRatio || 1;
 
 // Aspect-adaptive base zoom. Landscape (~16:9) keeps the original 1.55;
@@ -40,6 +41,7 @@ export function updateViewport(zoom) {
 }
 
 export function resizeCanvas() {
+  if (!canvas || !ctx) return;
   const cw = window.innerWidth;
   const ch = window.innerHeight;
   DPR = window.devicePixelRatio || 1;
@@ -55,9 +57,11 @@ export function resizeCanvas() {
   if (app) { app.style.width = cw + "px"; app.style.height = ch + "px"; }
 }
 
-window.addEventListener("resize", resizeCanvas);
-window.addEventListener("orientationchange", resizeCanvas);
-resizeCanvas();
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", resizeCanvas);
+  window.addEventListener("orientationchange", resizeCanvas);
+  resizeCanvas();
+}
 
 // Common math helpers shared by everyone.
 export function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }

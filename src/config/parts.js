@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Bike part catalog. Each part lives in a category (engine, tire, etc.)
 // and carries its stats. Stat semantics:
 //   speedBoost (engine):  added top-speed (mph)

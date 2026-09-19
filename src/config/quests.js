@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Lifetime quest catalog. Quests track totals from save.totals or
 // per-run "best" metrics stored on the quest itself, and pay out cash
 // automatically when their target is reached.

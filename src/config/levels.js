@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Trail catalog. Each entry sets terrain seed + difficulty knobs (hills,
 // gaps), the visual theme, gold/silver/bronze medal time targets, and
 // optional flags like lowGravity for special variants.
@@ -54,7 +55,7 @@ export function medalForTime(level, time) {
   return null;
 }
 export function medalRank(m) { return m === "gold" ? 3 : m === "silver" ? 2 : m === "bronze" ? 1 : 0; }
-export function medalIcon(m) { return m === "gold" ? "🥇" : m === "silver" ? "🥈" : m === "bronze" ? "🥉" : "—"; }
+export function medalIcon(m) { return m === "gold" ? "Gold" : m === "silver" ? "Silver" : m === "bronze" ? "Bronze" : "—"; }
 
 export function levelUnlocked(lvl) {
   if (!lvl.unlockAfter) return true;

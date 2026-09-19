@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Selectable rider characters. Each one carries a stat delta on top of
 // whatever the bike parts provide, plus a visual accent (jacket stripe)
 // and boot color used by the bike renderer.

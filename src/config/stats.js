@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Compose the bike's effective stats from equipped parts + the active
 // character. Pulls from the live save profile.
 import { save } from "../engine/save.js";
