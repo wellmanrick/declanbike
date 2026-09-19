@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Pitch catalog + ball-flight physics.
 //
 // Distances are in meters. The pitcher's mound rubber sits at z=0

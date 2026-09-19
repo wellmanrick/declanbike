@@ -1,6 +1,11 @@
 # Declan Bike — Excite Trails
 
-Side-scrolling dirt-bike + flick-sports arcade. Browser game, no server.
+Side-scrolling dirt-bike + true-flick arcade. Browser game, no server.
+
+Snap Field Goal, Hoops, Can Bash, Party Pong, and QB Challenge — power
+comes from finger speed, not how far you drag. Baseball stays drag-aim
+for batting and pitching. Ride the trails, wrench the garage, spend the
+cash.
 
 ## Run it locally
 
@@ -23,9 +28,7 @@ imports resolve the rest.
 ```
 src/
 ├─ main.js                  Entry. Bike physics, world rendering, UI flow,
-│                           mini-games, and the RAF loop. Future rounds
-│                           keep splitting this file into the directories
-│                           below.
+│                           mini-games, and the RAF loop.
 ├─ state.js                 STATE enum + G mutable runtime container.
 ├─ engine/
 │  ├─ canvas.js             Canvas + ctx + W/H/DPR + viewport + helpers
@@ -36,6 +39,8 @@ src/
 │  ├─ input.js              Keyboard + on-screen touch buttons. Synthesizes
 │  │                        a uniform key set + an `input()` view of held
 │  │                        intent. setupTouchControls() wires DOM buttons.
+│  ├─ fpView.js             First-person projection + true-flick impulse
+│  │                        (peak finger speed, snap-to-launch).
 │  ├─ rng.js                Seedable mulberry32 PRNG.
 │  ├─ save.js               Profile, localStorage-backed, with safe
 │  │                        defaults for failed reads (Safari Private).
@@ -49,6 +54,8 @@ src/
 │  ├─ themes.js             Visual themes per biome (sky/mountains/grass).
 │  ├─ levels.js             Trail catalog + medal helpers + unlock check.
 │  └─ quests.js             Lifetime quest catalog + progress + auto-claim.
+├─ games/                   Arcade modes (field goal, hoops, can bash,
+│                           party pong, QB, duck hunt, block bash, baseball).
 └─ world/
    └─ terrain.js            Procedural heightmap generator + sample
                             helpers.
@@ -66,10 +73,12 @@ src/
 - `←`/`A` (or BRAKE paddle): brake. In air: back flip.
 - `↑`/`W`: lean forward (extra rotation in air).
 - `↓`/`S`: lean back.
-- `Shift` (or ⤴): jump.
-- `Space` (or ⚡): boost.
+- `Shift`: jump.
+- `Space`: boost.
 - `M`: mute / unmute.
 - `R`: restart run. `Esc`: pause / quit.
 
-Touch devices: the on-screen ◀ BRAKE / GAS ▶ paddles + ⤴ jump + ⚡ boost
+Arcade flicks: snap toward the target. A slow drag does nothing.
+
+Touch devices: the on-screen Brake / Gas paddles + Jump + Boost
 buttons appear automatically.

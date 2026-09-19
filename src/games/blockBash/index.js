@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Block Bash — Minecraft-inspired tap-to-mine minigame.
 //
 // Implements the Minigame contract documented above MINIGAMES in main.js.

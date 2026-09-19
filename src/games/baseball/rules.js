@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Baseball rules — count handling, outs/innings advancement, and
 // hit-type classification.
 //

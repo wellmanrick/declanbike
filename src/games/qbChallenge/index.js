@@ -1,3 +1,4 @@
+// @ts-nocheck
 // QB Challenge — quarterback minigame.
 //
 // 8 plays per round. Each play:
@@ -19,7 +20,7 @@ import { ctx, W, H, ease } from "../../engine/canvas.js";
 import { Sound } from "../../engine/audio.js";
 import { save } from "../../engine/save.js";
 import {
-  fpSetCam, fpHorizonY, fpProject, fpProcessFlick, fpDrawAimArc,
+  fpSetCam, fpHorizonY, fpProject, fpProcessFlick, fpDrawAimArc, fpFlickNudge,
 } from "../../engine/fpView.js";
 import { routeSample, routePath, pickFormation, LOS_Z } from "./routes.js";
 
@@ -35,12 +36,12 @@ const SACK_OUTCOME_T = 1.6;
 const CATCH_R = 1.45;
 const BULLSEYE_R = 0.55;
 
-// Throw bands. power01 maps to vy_initial, vz_initial. Bullet is fast
-// and flat; lob is slow and high.
+// Throw bands. A hard FLAT snap is a bullet (fast, low). A lofty or
+// softer snap is a lob. True-flick: swipe speed picks the throw.
 function classifyThrow(power, upward) {
-  if (power < 0.40) return { kind: "bullet", vyScale: 6.0, vzScale: 36 };
-  if (power < 0.70) return { kind: "touch",  vyScale: 9.0, vzScale: 28 };
-  return                  { kind: "lob",     vyScale: 14.0, vzScale: 22 };
+  if (power >= 0.70 && upward < 0.88) return { kind: "bullet", vyScale: 6.0, vzScale: 36 };
+  if (power >= 0.42 && upward < 0.94) return { kind: "touch",  vyScale: 9.0, vzScale: 28 };
+  return                                  { kind: "lob",     vyScale: 14.0, vzScale: 22 };
 }
 
 // Sound throttles to keep the stadium audio from stacking when events
@@ -61,7 +62,7 @@ function groanThrottled() {
 
 export const QBChallenge = {
   name: "QB Challenge",
-  desc: "Read the routes. Lead the receiver. Beat the pocket clock.",
+  desc: "Read the routes. Snap-flick to lead the receiver. Beat the pocket.",
   icon: "🏈",
   color: "#6ee7ff",
 
@@ -155,8 +156,8 @@ export const QBChallenge = {
       return;
     }
     if (g.ball.thrown) {
-      // Discard further drag input during ball flight.
-      fpProcessFlick(g, kind, x, y);
+      // Discard leftover drag so a swipe during flight doesn't count.
+      g.dragStart = null; g.dragNow = null; g.dragHistory = null;
       return;
     }
     const flick = fpProcessFlick(g, kind, x, y);
@@ -278,12 +279,14 @@ export const QBChallenge = {
     for (const r of g.receivers) drawReceiver(r);
 
     // Ball
-    drawBall(g.ball);
+    drawBall(g.ball, g);
 
-    // Aim preview while dragging mid-play
-    if (g.phase === "live" && !g.ball.thrown) {
+    // Aim preview while winding up — live or pre-snap (so a wind-up
+    // before the snap still shows the SNAP trail).
+    if ((g.phase === "live" || g.phase === "presnap") && g.ball && !g.ball.thrown) {
       const restSX = W / 2, restSY = H * 0.84;
-      fpDrawAimArc(g, restSX, restSY, "rgba(110, 231, 255, 0.85)");
+      const tee = fpFlickNudge(g, restSX, restSY);
+      fpDrawAimArc(g, tee.x, tee.y, "rgba(110, 231, 255, 0.85)");
     }
 
     drawScoreboard(g);
@@ -754,12 +757,13 @@ function drawRoutePreview(r) {
 // screen-space from the recent trail). The laces sit on a band that
 // rolls around the long axis — modeled by sweeping the band's visible
 // length with the spin phase so it appears to wrap.
-function drawBall(b) {
+function drawBall(b, g) {
   let sx, sy, r, vertical;
   if (!b.thrown) {
-    // At rest — vertical, on a tee just below center.
-    sx = W / 2;
-    sy = H * 0.84;
+    // At rest — vertical, on a tee just below center. Nudges with the flick.
+    const tee = g ? fpFlickNudge(g, W / 2, H * 0.84) : { x: W / 2, y: H * 0.84 };
+    sx = tee.x;
+    sy = tee.y;
     r  = Math.min(72, Math.max(46, W * 0.095));
     vertical = true;
   } else {
@@ -927,7 +931,7 @@ function drawPresnapCue(g) {
   ctx.fillStyle = `rgba(255, 220, 80, ${a})`;
   ctx.font = "bold 16px ui-monospace, monospace";
   ctx.textAlign = "center";
-  ctx.fillText("Tap to snap  •  flick to throw", W / 2, H * 0.95);
+  ctx.fillText("Tap to snap  •  snap-flick to throw", W / 2, H * 0.95);
   ctx.textAlign = "start";
   ctx.restore();
 }

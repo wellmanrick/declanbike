@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Procedural Web Audio engine. No asset files.
 // - One-shot SFX (jump, pickup, gem, flip, land, perfect, crash, boost, click)
 // - Looping engine drone with throttle / boost modulation

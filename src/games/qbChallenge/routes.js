@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Parametric receiver routes for QB Challenge.
 //
 // Each route is a list of segments: `{ d: seconds, vx: m/s, vz: m/s }`.

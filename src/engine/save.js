@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Save / load for the player profile. localStorage-backed with graceful
 // fallbacks for browsers that throw on storage access (Safari Private).
 const SAVE_KEY = "declanbike.save.v1";

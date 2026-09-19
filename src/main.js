@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Game runtime entry. Imports the modular engine + config layers and
 // ties together the bike physics, world rendering, UI flow, mini-games,
 // and the main loop. Future rounds will keep splitting the chunks below
@@ -28,9 +29,9 @@ import { haptic, registerPressFx, drawPressFx, isTap, hitRect } from "./engine/t
 import {
   FP_FOCAL, FP_CAMERA_H,
   fpSetCam, fpHorizonY, fpProject, fpDrawSky, fpDrawField,
-  fpProcessFlick, fpDrawAimArc,
+  fpProcessFlick, fpDrawAimArc, fpFlickFromState, fpFlickNudge,
 } from "./engine/fpView.js";
-import { keys, justPressed, input, setupTouchControls } from "./engine/input.js";
+import { keys, justPressed, input, setupTouchControls, setHeldKeys } from "./engine/input.js";
 import { mulberry32 } from "./engine/rng.js";
 import { buildTerrain, terrainHeightAt, terrainSlopeAt, TERRAIN_DX, GROUND_BASE } from "./world/terrain.js";
 import { STATE, G } from "./state.js";
@@ -2425,12 +2426,13 @@ function updateHUD() {
   if (!G.runtime) return;
   const r = G.runtime;
   const speedMph = Math.round(r.bike.vx / 6);
-  document.getElementById("hud-speed").textContent = Math.max(0, speedMph);
+  const speedEl = document.getElementById("hud-speed");
+  if (!speedEl) return;
+  speedEl.textContent = Math.max(0, speedMph);
   document.getElementById("hud-boost").style.width = `${(r.bike.boost / r.stats.boostCap) * 100}%`;
   const healthPct = (r.bike.health / r.stats.durability) * 100;
   const healthEl = document.getElementById("hud-health");
   healthEl.style.width = `${healthPct}%`;
-  // Pulse low health.
   healthEl.parentElement.classList.toggle("low", healthPct < 35);
   document.getElementById("hud-combo").textContent = r.combo;
   document.getElementById("hud-score").textContent = r.score;
@@ -2438,12 +2440,9 @@ function updateHUD() {
   document.getElementById("hud-time").textContent = r.time.toFixed(1);
   document.getElementById("hud-dist").textContent = Math.floor(r.distance / 10);
 
-  // Retry badge: surface during crash / finished states so phone players
-  // always have a one-tap restart without opening the pause menu.
   const retryBadge = document.getElementById("retry-badge");
   if (retryBadge) retryBadge.classList.toggle("hidden", !(r.bike.crashed || r.bike.finished));
 
-  // Medal-pace bar: bike-progress fill + three medal-pace marks.
   const lvl = r.level;
   const paceBar = document.getElementById("pace-bar");
   if (paceBar && lvl && lvl.medals) {
@@ -2458,46 +2457,60 @@ function updateHUD() {
       if (!r.paceFlashed[key] && progress >= pos && pos > 1) {
         r.paceFlashed[key] = true;
         mark.classList.remove("flashed");
-        // Force reflow to restart the animation
         void mark.offsetWidth;
         mark.classList.add("flashed");
       }
     }
   }
 
-  // quest tracker — show 3 most-progressed unfinished
   const tracker = document.getElementById("quest-tracker");
-  const open = QUESTS
-    .map(q => ({ q, prog: getQuestProgress(q), done: save.quests[q.id]?.done }))
-    .filter(x => !x.done)
-    .sort((a, b) => (b.prog / b.q.target) - (a.prog / a.q.target))
-    .slice(0, 3);
-  if (open.length === 0) {
-    tracker.innerHTML = `<div class="qt-title">All quests done</div><div class="qt-row done">Champion.</div>`;
-  } else {
-    tracker.innerHTML = `<div class="qt-title">Next Quests</div>` + open.map(({ q, prog }) => {
-      return `<div class="qt-row"><span>${q.name}</span><span>${Math.min(prog, q.target)}/${q.target}</span></div>`;
-    }).join("");
+  if (tracker) {
+    const open = QUESTS
+      .map(q => ({ q, prog: getQuestProgress(q), done: save.quests[q.id]?.done }))
+      .filter(x => !x.done)
+      .sort((a, b) => (b.prog / b.q.target) - (a.prog / a.q.target))
+      .slice(0, 3);
+    const sig = open.map(({ q, prog }) => q.id + ":" + prog).join("|") || "done";
+    if (tracker.dataset.sig !== sig) {
+      tracker.dataset.sig = sig;
+      if (open.length === 0) {
+        tracker.innerHTML = `<div class="qt-title">Quests</div><div class="qt-row done">All done.</div>`;
+      } else {
+        tracker.innerHTML = `<div class="qt-title">Quests</div>` + open.map(({ q, prog }) => {
+          return `<div class="qt-row"><span>${q.name}</span><span>${Math.min(prog, q.target)}/${q.target}</span></div>`;
+        }).join("");
+      }
+    }
   }
 }
 
 //==========================================================
 // MENU / UI WIRING
 //==========================================================
+const OVERLAY_IDS = ["menu","levels","garage","quests","how","result","pause","hud","cb-levels","fg-levels","pp-levels","baseball-menu","confirm-reset"];
+
+function refreshMenuMeta() {
+  const cash = document.getElementById("menu-cash");
+  if (cash) cash.textContent = save.cash;
+}
+
 function showOnly(id) {
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","cb-levels","fg-levels","pp-levels","baseball-menu"]) {
+  for (const overlay of OVERLAY_IDS) {
     const el = document.getElementById(overlay);
     if (!el) continue;
     if (overlay === id) el.classList.remove("hidden");
     else el.classList.add("hidden");
   }
-  // Touch overlay only shown during PLAY (and only on touch devices via .show class)
+  if (id === "pause") {
+    const hud = document.getElementById("hud");
+    if (hud) hud.classList.remove("hidden");
+  }
+  if (id === "menu") refreshMenuMeta();
   const touchEl = document.getElementById("touch");
   if (touchEl) {
     if (id === "hud") touchEl.classList.remove("hidden");
     else touchEl.classList.add("hidden");
   }
-  // Music: game music during HUD, menu music elsewhere.
   if (id === "hud") Sound.startMusic("game");
   else if (id === "pause") { /* keep current track playing */ }
   else Sound.startMusic("menu");
@@ -2530,30 +2543,35 @@ function objectiveProgressText(objective, runtime = null) {
   if (!runtime) return objective.label;
   const value = objectiveValue(objective.metric, runtime);
   const suffix = objective.metric === "airtime" || objective.metric === "longestAir" ? "s" : objective.metric === "topSpeed" ? " mph" : "";
-  return `${objectiveDone(objective, runtime) ? "✓" : "○"} ${objective.label} (${value}${suffix}/${objective.target}${suffix})`;
+  return `${objectiveDone(objective, runtime) ? "Done" : "Open"} ${objective.label} (${value}${suffix}/${objective.target}${suffix})`;
 }
 
 function buildLevelGrid() {
   const grid = document.getElementById("level-grid");
   grid.innerHTML = "";
   for (const lvl of LEVELS) {
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
     const unlocked = levelUnlocked(lvl);
     card.className = "level-card" + (unlocked ? "" : " locked");
     const best = save.best[lvl.id];
     const themeName = THEMES[lvl.theme]?.name || "—";
-    const medal = best?.medal ? medalIcon(best.medal) : "";
     card.innerHTML = `
-      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name} ${medal}</div>
-      <div class="lc-meta">${themeName} • ${"★".repeat(lvl.difficulty)}${"☆".repeat(5 - lvl.difficulty)} • ${lvl.length}m${lvl.lowGravity ? " • Low-G" : ""}</div>
+      <div class="lc-kicker">${themeName} · ${lvl.difficulty}/5${lvl.lowGravity ? " · Low-G" : ""}</div>
+      <div class="lc-name">${lvl.name}</div>
       <div class="lc-best">${best && best.completed
-        ? `Best: ${best.score} pts • ${best.time.toFixed(1)}s`
-        : "Not completed"}</div>
-      <div class="lc-meta">🥇 ${lvl.medals.gold}s &nbsp; 🥈 ${lvl.medals.silver}s &nbsp; 🥉 ${lvl.medals.bronze}s</div>
-      ${lvl.objective ? `<div class="lc-objective">🎯 ${objectiveProgressText(lvl.objective)}</div>` : ""}
+        ? `Best ${best.score} pts · ${best.time.toFixed(1)}s${best.medal ? " · " + medalIcon(best.medal) : ""}`
+        : (unlocked ? "Not ridden yet" : "Locked")}</div>
+      <div class="lc-medals">
+        <span class="medal gold">Gold ${lvl.medals.gold}s</span>
+        <span class="medal silver">Silver ${lvl.medals.silver}s</span>
+        <span class="medal bronze">Bronze ${lvl.medals.bronze}s</span>
+      </div>
+      ${lvl.objective ? `<div class="lc-objective">${objectiveProgressText(lvl.objective)}</div>` : ""}
       <div class="lc-meta">${lvl.desc}</div>
     `;
     if (unlocked) card.addEventListener("click", () => startRun(lvl.id));
+    else card.disabled = true;
     grid.appendChild(card);
   }
 }
@@ -2667,14 +2685,13 @@ function drawGaragePreview() {
   g.clearRect(0, 0, c.width, c.height);
   // bg
   const grad = g.createLinearGradient(0, 0, 0, c.height);
-  grad.addColorStop(0, "#1d2540");
-  grad.addColorStop(1, "#0c1020");
+  grad.addColorStop(0, "#2a221c");
+  grad.addColorStop(1, "#12100e");
   g.fillStyle = grad;
   g.fillRect(0, 0, c.width, c.height);
-  // floor
-  g.fillStyle = "#101828";
+  g.fillStyle = "#161310";
   g.fillRect(0, c.height - 60, c.width, 60);
-  g.fillStyle = "#1a2238";
+  g.fillStyle = "#2a241e";
   for (let x = 0; x < c.width; x += 24) g.fillRect(x, c.height - 60, 1, 60);
 
   const stats = getEquippedStats();
@@ -2684,10 +2701,9 @@ function drawGaragePreview() {
   drawStaticBike(g, stats);
   g.restore();
 
-  // engine name
   const engine = partById(save.equipped.engine);
-  g.fillStyle = "#ffb020";
-  g.font = "bold 16px ui-monospace";
+  g.fillStyle = "#d4a06a";
+  g.font = "600 16px Figtree, sans-serif";
   g.fillText(engine.name, 16, 28);
 }
 function drawStaticBike(g, stats) {
@@ -2716,8 +2732,10 @@ function buildQuests() {
   const list = document.getElementById("quests-list");
   list.innerHTML = "";
   for (const id of Object.keys(MINIGAMES)) {
+    if (id === "baseball") continue;
     const mg = MINIGAMES[id];
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "quest-card minigame-card";
     card.style.borderLeft = `4px solid ${mg.color}`;
     let summary;
@@ -2750,11 +2768,11 @@ function buildQuests() {
     }
     card.innerHTML = `
       <div>
-        <div class="qc-name">${mg.icon || "🎯"}  ${mg.name}</div>
+        <div class="qc-name">${mg.name}</div>
         <div class="qc-desc">${mg.desc}</div>
         <div class="qc-desc">${summary}</div>
       </div>
-      <div class="qc-reward">${id === "can_bash" || id === "field_goal" || id === "party_pong" ? "Levels ▶" : "Play ▶"}</div>
+      <div class="qc-reward">${id === "can_bash" || id === "field_goal" || id === "party_pong" ? "Levels" : "Play"}</div>
     `;
     card.addEventListener("click", () => {
       if (id === "can_bash") openCanBashLevels();
@@ -2780,7 +2798,8 @@ function buildCanBashLevelGrid() {
     const unlocked = isCanLevelUnlocked(progress, lvl.id);
     const rec = progress[lvl.id];
     const stars = (rec && rec.stars) || 0;
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "level-card" + (unlocked ? "" : " locked");
     card.style.setProperty("--i", idx);
     const starsHtml =
@@ -2790,7 +2809,7 @@ function buildCanBashLevelGrid() {
       `<span${stars >= 3 ? "" : ' class="empty"'}>★</span>` +
       `</span>`;
     card.innerHTML = `
-      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
+      <div class="lc-name">${lvl.name}</div>
       <div class="lc-meta">${lvl.balls} ball${lvl.balls === 1 ? "" : "s"} • ${lvl.formation.type}</div>
       <div class="lc-best">${lvl.subtitle}</div>
       ${starsHtml}
@@ -2828,7 +2847,8 @@ function buildFieldGoalLevelGrid() {
     const unlocked = isFgLevelUnlocked(progress, lvl.id);
     const rec = progress[lvl.id];
     const stars = (rec && rec.stars) || 0;
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "level-card" + (unlocked ? "" : " locked");
     card.style.setProperty("--i", idx);
     const starsHtml =
@@ -2839,7 +2859,7 @@ function buildFieldGoalLevelGrid() {
       `</span>`;
     const yards = Math.round(lvl.distance * 1.094);
     card.innerHTML = `
-      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
+      <div class="lc-name">${lvl.name}</div>
       <div class="lc-meta">${yards} yd • ${lvl.attempts} kick${lvl.attempts === 1 ? "" : "s"} • wind ±${lvl.windRange}</div>
       <div class="lc-best">${lvl.subtitle}</div>
       ${starsHtml}
@@ -2932,7 +2952,8 @@ function buildPartyPongLevelGrid() {
     const unlocked = isPpLevelUnlocked(progress, lvl.id);
     const rec = progress[lvl.id];
     const stars = (rec && rec.stars) || 0;
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "level-card" + (unlocked ? "" : " locked");
     card.style.setProperty("--i", idx);
     const starsHtml =
@@ -2942,7 +2963,7 @@ function buildPartyPongLevelGrid() {
       `<span${stars >= 3 ? "" : ' class="empty"'}>★</span>` +
       `</span>`;
     card.innerHTML = `
-      <div class="lc-name">${unlocked ? "" : "🔒 "}${lvl.name}</div>
+      <div class="lc-name">${lvl.name}</div>
       <div class="lc-meta">${lvl.balls} ball${lvl.balls === 1 ? "" : "s"} • ${lvl.rack.type}</div>
       <div class="lc-best">${lvl.subtitle}</div>
       ${starsHtml}
@@ -2960,7 +2981,7 @@ function showResult(completed, extra) {
   const titleEl = document.getElementById("result-title");
   const body = document.getElementById("result-body");
   if (extra && extra.wipeout) {
-    titleEl.textContent = `💥 Wiped Out — ${r.level.name}`;
+    titleEl.textContent = `Wiped Out — ${r.level.name}`;
   } else if (completed) {
     titleEl.textContent = `Trail Complete — ${r.level.name}`;
   } else {
@@ -2995,7 +3016,7 @@ function showResult(completed, extra) {
   }
   if (completed && save.best[r.level.id]?.medal) {
     const m = save.best[r.level.id].medal;
-    html += `<div class="row bonus"><span>Medal</span><span>${medalIcon(m)} ${m.toUpperCase()}</span></div>`;
+    html += `<div class="row bonus"><span>Medal</span><span>${medalIcon(m)}</span></div>`;
   }
   html += `<div class="row total"><span>Cash earned</span><span>+$${r.cashEarned}</span></div>`;
   html += `<div class="row"><span>Wallet</span><span>$${save.cash}</span></div>`;
@@ -3018,19 +3039,36 @@ function bindMenuActions() {
       case "baseball": openBaseballMenu(); break;
       case "baseball-start": startBaseballFromMenu(); break;
       case "baseball-back": G.state = STATE.MENU; showOnly("menu"); break;
-      case "resume": G.state = STATE.PLAY; showOnly("hud"); break;
+      case "resume": G.state = STATE.PLAY; showOnly("hud"); Sound.startEngine && Sound.startEngine(); break;
       case "retry":
         if (G.runtime) startRun(G.runtime.level.id);
         break;
       case "abandon":
         if (G.runtime) abandonRun();
         break;
-      case "reset":
-        if (confirm("Wipe save? You'll lose cash, parts, and quest progress.")) {
-          resetSave();
-          persistSave();
-          pushToast("Save reset.", "red");
+      case "reset": showOnly("confirm-reset"); break;
+      case "reset-yes":
+        resetSave();
+        persistSave();
+        refreshMenuMeta();
+        pushToast("Save wiped.", "red");
+        G.state = STATE.MENU;
+        showOnly("menu");
+        break;
+      case "reset-no": G.state = STATE.MENU; showOnly("menu"); break;
+      case "mute": {
+        Sound.ensure();
+        const muted = Sound.toggleMute();
+        const muteBtn = document.getElementById("mute-btn");
+        if (muteBtn) {
+          muteBtn.classList.toggle("muted", muted);
+          muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
         }
+        pushToast(muted ? "Muted" : "Sound on", muted ? "red" : "green", 700);
+        break;
+      }
+      case "pause":
+        if (G.state === STATE.PLAY) { G.state = STATE.PAUSE; showOnly("pause"); Sound.stopEngine && Sound.stopEngine(); }
         break;
     }
   }
@@ -3066,8 +3104,9 @@ try {
 // MINI-GAMES
 //==========================================================
 // Each mini-game is a small self-contained module that owns its G.state and
-// renders to the main canvas. They share a flick-style input (drag + release
-// to launch) routed through canvas pointer events.
+// renders to the main canvas. They share a true-flick input (snap-swipe to
+// launch — power from finger speed, direction from the swipe) routed
+// through canvas pointer events.
 
 //==========================================================
 // MINIGAME CONTRACT
@@ -3130,7 +3169,7 @@ function startMinigame(id, levelId) {
   G.minigameRuntime._mg = mg;
   G.state = STATE.MINIGAME;
   // Hide every overlay (and the touch UI). The canvas is the whole screen.
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels","pp-levels","baseball-menu"]) {
+  for (const overlay of OVERLAY_IDS.concat(["touch"])) {
     const el = document.getElementById(overlay);
     if (el) el.classList.add("hidden");
   }
@@ -3147,7 +3186,7 @@ function startBaseball(mode, innings) {
   G.minigameRuntime.id = "baseball";
   G.minigameRuntime._mg = Baseball;
   G.state = STATE.MINIGAME;
-  for (const overlay of ["menu","levels","garage","quests","how","result","pause","hud","touch","cb-levels","fg-levels","pp-levels","baseball-menu"]) {
+  for (const overlay of OVERLAY_IDS.concat(["touch"])) {
     const el = document.getElementById(overlay);
     if (el) el.classList.add("hidden");
   }
@@ -3277,29 +3316,56 @@ canvas.addEventListener("pointermove", (e) => dispatchMinigamePointer("move", e)
 canvas.addEventListener("pointerup",   (e) => dispatchMinigamePointer("up",   e));
 canvas.addEventListener("pointercancel",(e) => dispatchMinigamePointer("up",  e));
 
-// First-person flick helpers (projection, sky/field, flick parsing, aim
-// arc) live in ./engine/fpView.js — shared by Field Goal, Hoops, and
-// QB Challenge. Re-imported above with the rest of the engine modules.
+// QA hook — used by the in-sandbox browser pass to verify snap-flick
+// without fighting synthetic PointerEvent quirks. Harmless in play.
+window.__flickQA = {
+  peek() {
+    const g = G.minigameRuntime;
+    if (!g) return { ok: false, state: G.state };
+    const b = g.ball || {};
+    return {
+      ok: true, state: G.state, id: g.id,
+      flying: !!(b.kicked || b.thrown || b.released),
+      drag: !!g.dragStart,
+      hist: (g.dragHistory || []).length,
+      miss: !!(g.flickMiss && performance.now() < g.flickMiss.until),
+      score: g.score || 0,
+    };
+  },
+  async snap(dx = 0, dy = -0.42, dur = 90) {
+    const g = G.minigameRuntime;
+    const mg = g && (g._mg || MINIGAMES[g.id]);
+    if (!g || !mg || !mg.handlePointer) return { ok: false, err: "no game" };
+    const x0 = W / 2, y0 = H * 0.88;
+    const x1 = x0 + dx * W, y1 = y0 + dy * H;
+    const steps = 8;
+    mg.handlePointer(g, "down", x0, y0);
+    for (let i = 1; i <= steps; i++) {
+      await new Promise((r) => setTimeout(r, dur / steps));
+      const t = i / steps;
+      mg.handlePointer(g, "move", x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+    }
+    await new Promise((r) => setTimeout(r, dur / steps));
+    mg.handlePointer(g, "up", x1, y1);
+    await new Promise((r) => setTimeout(r, 80));
+    return window.__flickQA.peek();
+  },
+  async dragSlow() {
+    return window.__flickQA.snap(0, -0.35, 900);
+  },
+};
+
+// First-person flick helpers (projection, sky/field, velocity-based
+// snap-flick parsing, aim trail) live in ./engine/fpView.js — shared
+// by Field Goal, Hoops, Can Bash, Party Pong, and QB Challenge.
 
 
 //----------------------------------------------------------
 // FIELD GOAL KICK (first-person flick)
 //----------------------------------------------------------
-// Read the current drag state without consuming it (fpProcessFlick
-// clears dragStart on "up"). Returns the same flick descriptor
-// fpProcessFlick would, or null if the drag hasn't crossed the
-// release threshold yet. Used by render() to preview the kick.
+// Live preview of the current SNAP (does not consume the gesture).
 function fgFlickPreview(state) {
-  if (!state.dragStart || !state.dragNow) return null;
-  const sx = state.dragStart.x, sy = state.dragStart.y;
-  const ex = state.dragNow.x,   ey = state.dragNow.y;
-  const dx = ex - sx, dy = ey - sy;
-  const dist = Math.hypot(dx, dy);
-  if (dy > -25 || dist < 60) return null;
-  const power = Math.min(1, dist / 360);
-  const lateral = Math.max(-1, Math.min(1, dx / Math.max(60, -dy)));
-  const upward = -dy / dist;
-  return { power, lateral, upward };
+  return fpFlickFromState(state, { launch: false });
 }
 
 // Forward-simulate the kick that would result from the current drag
@@ -3335,7 +3401,7 @@ function fgPredictTrajectory(g, flick) {
 
 const FieldGoal = {
   name: "Field Goal Kick",
-  desc: "Flick UP from the ball to kick. Curve with the angle. Mind the wind.",
+  desc: "Snap-flick the kick. Speed is power. Angle curves the ball.",
   icon: "🏈",
   color: "#4ddc8c",
   // Minigame interface — see contract above MINIGAMES.
@@ -4288,48 +4354,35 @@ const FieldGoal = {
       ctx.stroke();
     }
 
-    // Aim preview — when the ball is at rest, originate from its fixed
-    // bottom-of-screen sprite position. Once kicked, switch to perspective.
+    // Aim preview — originate from the (nudged) tee. Finger trail + SNAP
+    // meter always; predicted trajectory only once the swipe is actually
+    // a flick, so we never teach "hold until green".
     const restSX = W / 2;
     const restSY = H * 0.84;
     const restR  = Math.min(72, Math.max(48, W * 0.10));
-    // Aim guide. While the drag has crossed the release threshold the
-    // guide draws the *real* predicted trajectory by forward-simulating
-    // the kick physics; otherwise it falls back to the schematic arc
-    // helper so the player still gets feedback during a soft drag.
+    const tee = (!g.ball.kicked) ? fpFlickNudge(g, restSX, restSY) : { x: restSX, y: restSY, power: 0 };
     if (!g.ball.kicked) {
+      fpDrawAimArc(g, tee.x, tee.y);
       const preview = fgFlickPreview(g);
-      if (preview) {
+      if (preview && preview.power > 0.22) {
         const path = fgPredictTrajectory(g, preview);
         if (path.length >= 2) {
-          // Trail color brightens with power so a strong flick feels louder.
-          const alpha = 0.55 + 0.40 * preview.power;
+          const alpha = 0.40 + 0.45 * preview.power;
           ctx.strokeStyle = `rgba(255, 220, 80, ${alpha})`;
           ctx.lineWidth = 3;
           ctx.setLineDash([7, 6]);
           ctx.beginPath();
-          ctx.moveTo(restSX, restSY);
+          ctx.moveTo(tee.x, tee.y);
           for (const pt of path) ctx.lineTo(pt.sx, pt.sy);
           ctx.stroke();
           ctx.setLineDash([]);
-          // Endpoint reticle so the player can read the projected impact.
           const last = path[path.length - 1];
           ctx.strokeStyle = `rgba(255, 220, 80, ${alpha + 0.1})`;
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.arc(last.sx, last.sy, 8, 0, Math.PI * 2);
           ctx.stroke();
-          // Power bar (top-right). Mirrors fpDrawAimArc's so the read is
-          // consistent across mini-games.
-          ctx.fillStyle = "rgba(0,0,0,0.4)";
-          ctx.fillRect(W - 130, 20, 110, 10);
-          ctx.fillStyle = "#ffb020";
-          ctx.fillRect(W - 130, 20, 110 * preview.power, 10);
-        } else {
-          fpDrawAimArc(g, restSX, restSY);
         }
-      } else {
-        fpDrawAimArc(g, restSX, restSY);
       }
     }
 
@@ -4366,7 +4419,7 @@ const FieldGoal = {
     const b = g.ball;
     let bx, by, r, vertical;
     if (!b.kicked) {
-      bx = restSX; by = restSY; r = restR; vertical = true;
+      bx = tee.x; by = tee.y; r = restR; vertical = true;
     } else {
       const proj = fpProject(b.x, b.y, b.z);
       bx = proj.sx; by = proj.sy; r = Math.max(6, 22 * proj.scale);
@@ -4472,7 +4525,7 @@ const FieldGoal = {
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Flick UP toward the goal — angle curves the kick", W/2, H * 0.95);
+      ctx.fillText("Snap-flick UP at the posts — speed is power, not drag", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
     ctx.restore();
@@ -4548,7 +4601,7 @@ function ppCupScreenPos(g, c) {
 
 const PartyPong = {
   name: "Party Pong Flick",
-  desc: "Flick the ball. Sink the cups. Clear the rack.",
+  desc: "Snap-flick the ball. Sink the cups. Clear the rack.",
   icon: "🍺",
   color: "#7d5dff",
   // Minigame interface — see contract above MINIGAMES.
@@ -4821,11 +4874,16 @@ const PartyPong = {
       ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Ball — at rest pre-throw, in flight after.
+    // Ball — at rest pre-throw (nudged with the flick), in flight after.
+    const restX = W / 2;
+    const restY = H * PP_BALL_REST_Y_R;
+    const tee = !b.thrown ? fpFlickNudge(g, restX, restY) : null;
     if (!b.gone) {
       const ballR = Math.min(20, Math.max(12, W * 0.04));
+      const drawX = b.thrown ? b.sx : tee.x;
+      const drawY = b.thrown ? b.sy : tee.y;
       ctx.save();
-      ctx.translate(b.sx, b.sy);
+      ctx.translate(drawX, drawY);
       ctx.rotate(b.thrown ? b.angle : 0);
       ctx.shadowColor = b.fire ? "#ff7722" : "#fff";
       ctx.shadowBlur = b.fire ? 22 : 10;
@@ -4843,25 +4901,25 @@ const PartyPong = {
       ctx.beginPath(); ctx.moveTo(-ballR * 0.85, 0); ctx.lineTo(ballR * 0.85, 0); ctx.stroke();
       ctx.restore();
     }
-    // Aim guide — dashed predicted trajectory while dragging.
+    // Aim guide — finger trail + SNAP meter, plus a predicted path once
+    // the swipe is actually a flick.
     if (!b.thrown) {
+      const originX = tee ? tee.x : restX;
+      const originY = tee ? tee.y : restY;
+      fpDrawAimArc(g, originX, originY, "rgba(125, 93, 255, 0.9)");
       const preview = fgFlickPreview(g);
-      if (preview) {
+      if (preview && preview.power > 0.22) {
         const path = ppPredictTrajectory(g, preview);
         if (path.length >= 2) {
-          const alpha = 0.55 + 0.40 * preview.power;
+          const alpha = 0.45 + 0.40 * preview.power;
           ctx.strokeStyle = `rgba(180, 230, 255, ${alpha})`;
           ctx.lineWidth = 3;
           ctx.setLineDash([7, 6]);
           ctx.beginPath();
-          ctx.moveTo(W / 2, H * PP_BALL_REST_Y_R);
+          ctx.moveTo(originX, originY);
           for (const pt of path) ctx.lineTo(pt.sx, pt.sy);
           ctx.stroke();
           ctx.setLineDash([]);
-          ctx.fillStyle = "rgba(0,0,0,0.4)";
-          ctx.fillRect(W - 130, 20, 110, 10);
-          ctx.fillStyle = "#7d5dff";
-          ctx.fillRect(W - 130, 20, 110 * preview.power, 10);
         }
       }
     }
@@ -4900,7 +4958,7 @@ const PartyPong = {
       ctx.fillStyle = "rgba(255,255,255,0.7)";
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Flick UP to throw — angle for power and arc", W/2, H * 0.95);
+      ctx.fillText("Snap-flick at the cups — speed is power, not drag", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
     ctx.restore();
@@ -5121,7 +5179,7 @@ function cbJuice(g, opts) {
 //----------------------------------------------------------
 const CanBash = {
   name: "Can Bash",
-  desc: "Flick UP at the can stack. Knock 'em all down. 3 throws.",
+  desc: "Snap-flick at the can stack. Knock 'em all down.",
   icon: "🥎",
   color: "#ff5a3a",
   // ---- Minigame interface: level metadata ----
@@ -5395,89 +5453,15 @@ const CanBash = {
     if (g.finished) return;
     if (!g.ball) CanBash.resetBall(g);
     if (g.ball.thrown) return;
-    const now = performance.now();
-    if (kind === "down") {
-      g.dragStart = { x, y, t: now };
-      g.dragNow = { x, y };
-      g.dragHistory = [{ x, y, t: now }];
-      return;
-    }
-    if (kind === "move" && g.dragStart) {
-      g.dragNow = { x, y };
-      g.dragHistory.push({ x, y, t: now });
-      // Keep only recent history (last 200ms) so the velocity sample
-      // tracks how fast the finger is moving RIGHT NOW.
-      const cutoff = now - 200;
-      while (g.dragHistory.length > 0 && g.dragHistory[0].t < cutoff) {
-        g.dragHistory.shift();
-      }
-      return;
-    }
-    if (kind !== "up" || !g.dragStart) return;
-
-    // Release: where the finger landed is the AIM point. How fast the
-    // finger was moving over the last ~100ms is the POWER.
-    const hist = g.dragHistory || [];
-    let fingerSpeed = 0; // px/s
-    if (hist.length >= 2) {
-      const last = hist[hist.length - 1];
-      const cutoff = now - 110;
-      const start = hist.find(p => p.t >= cutoff) || hist[0];
-      const dt = (last.t - start.t) / 1000;
-      if (dt > 0.005) {
-        fingerSpeed = Math.hypot(last.x - start.x, last.y - start.y) / dt;
-      }
-    }
-    g.dragStart = null; g.dragNow = null; g.dragHistory = null;
-
-    // Aim mapping. The release POSITION on screen — not the drag
-    // direction — drives both yaw and the target row. Inverse-project
-    // the release point through the FP camera so the spot the finger
-    // landed maps to a world target at the table's depth (z = tableZ).
-    //
-    // This is what the player intuits: "release at the bottom row" hits
-    // the bottom row, "release at the apex" hits the apex. Drag length
-    // and finger speed only set power, not aim height.
-    const ballSX = W / 2;
-    const ballSY = H * 0.84;
-    if (y > ballSY - 40) return;                              // must release above the ball
-
-    // Power from finger speed. ~600 px/s = soft, ~2400 px/s = full.
-    const power = Math.max(0.18, Math.min(1, fingerSpeed / 2200));
+    const flick = fpProcessFlick(g, kind, x, y);
+    if (!flick) return;
+    const { power, lateral, upward } = flick;
+    // True flick: direction of the snap aims, speed is power. A hard
+    // snap (needed for lead cans) comes from finger speed, not a long
+    // drag. Loft follows how vertical the swipe was.
     const speed = 11 + power * 23;                            // 11 → 34 m/s
-
-    // Inverse-project screen Y at z=tableZ to a world Y. The FP camera
-    // formula is sy = horizonY + (CAMERA_H − y) · focal / z, so:
-    //   y = CAMERA_H − (sy − horizonY) · z / focal
-    const horizonY = H * 0.55;                                // matches fpHorizonY()
-    const tableZ = 10;
-    const projY = 1.6 - (y - horizonY) * tableZ / 600;
-    // Clamp to plausible can-row span so wild releases bias to the top
-    // or bottom row instead of overshooting the stack.
-    const target_y = Math.max(0.6, Math.min(4.0, projY));
-
-    // Lateral aim from horizontal screen position. Center → straight,
-    // far-left/right → ±45° yaw.
-    const yaw = Math.max(-1, Math.min(1, (x - ballSX) / (W * 0.4))) * (Math.PI / 4);
-    // Quadratic in u = tan(loft):  A·u² − B·u + (A + Δy) = 0
-    //   A = g·Δz² / (speed² · cos²(yaw))   (gravity drop term)
-    //   B = Δz / cos(yaw)                  (forward travel)
-    //   Δy = target_y − y0                 (height gain over the throw)
-    const dz = 7;                                             // z=3 → z=10
-    const dy0 = target_y - 0.4;                               // ball y0 = 0.4
-    const cosYaw = Math.max(0.6, Math.cos(yaw));
-    const A = (4.9 * dz * dz) / (speed * speed * cosYaw * cosYaw);
-    const B = dz / cosYaw;
-    const disc = B * B - 4 * A * (A + dy0);
-    let loft;
-    if (disc < 0) {
-      // Target unreachable at this speed — fall back to the apex of the
-      // achievable parabola (max range, slightly short).
-      loft = Math.atan(B / (2 * A));
-    } else {
-      const u = (B - Math.sqrt(disc)) / (2 * A);              // direct shot (smaller root)
-      loft = Math.atan(Math.max(0.07, u));                    // ~4° floor for visible arc
-    }
+    const yaw = lateral * (Math.PI / 4);
+    const loft = 0.12 + upward * 0.55;                        // ~7° → ~38°
     g.ball.vz = speed * Math.cos(loft) * Math.cos(yaw);
     g.ball.vy = speed * Math.sin(loft);
     g.ball.vx = speed * Math.cos(loft) * Math.sin(yaw);
@@ -5871,11 +5855,12 @@ const CanBash = {
     const restSX = W / 2;
     const restSY = H * 0.84;
     const restR  = Math.min(64, Math.max(40, W * 0.085));
-    if (!g.ball.thrown) fpDrawAimArc(g, restSX, restSY, "rgba(255, 90, 80, 0.85)");
+    const tee = !g.ball.thrown ? fpFlickNudge(g, restSX, restSY) : { x: restSX, y: restSY };
+    if (!g.ball.thrown) fpDrawAimArc(g, tee.x, tee.y, "rgba(255, 90, 80, 0.85)");
     const b = g.ball;
     let bx, by, br;
     if (!b.thrown) {
-      bx = restSX; by = restSY; br = restR;
+      bx = tee.x; by = tee.y; br = restR;
     } else {
       const bp = fpProject(b.x, b.y, b.z);
       bx = bp.sx; by = bp.sy; br = Math.max(5, 18 * bp.scale);
@@ -5980,7 +5965,7 @@ const CanBash = {
     if (!b.thrown && !g.dragStart) {
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Flick UP at the cans — angle bends the throw", W/2, H * 0.95);
+      ctx.fillText("Snap-flick at the cans — speed is power. Lead needs a HARD snap.", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
     ctx.restore(); // matches the save() at the top of render() (shake)
@@ -5990,16 +5975,7 @@ const CanBash = {
 // Duck Hunt now lives in src/games/duckHunt/index.js — imported above.
 
 function hoopsFlickPreview(state) {
-  if (!state.dragStart || !state.dragNow) return null;
-  const sx = state.dragStart.x, sy = state.dragStart.y;
-  const ex = state.dragNow.x,   ey = state.dragNow.y;
-  const dx = ex - sx, dy = ey - sy;
-  const dist = Math.hypot(dx, dy);
-  if (dy > -25 || dist < 60) return null;
-  const power = Math.min(1, dist / 360);
-  const lateral = Math.max(-1, Math.min(1, dx / Math.max(60, -dy)));
-  const upward = -dy / dist;
-  return { power, lateral, upward };
+  return fpFlickFromState(state, { launch: false });
 }
 
 function hoopsPredictTrajectory(g, flick) {
@@ -6035,7 +6011,7 @@ function hoopsPredictTrajectory(g, flick) {
 //----------------------------------------------------------
 const Hoops = {
   name: "Hoops",
-  desc: "Flick the basketball at the rim. Free throws, threes, and deep bombs from random spots.",
+  desc: "Snap-flick the basketball. Speed is power. Banks count.",
   icon: "🏀",
   color: "#ff7a2c",
   init() {
@@ -6386,33 +6362,31 @@ const Hoops = {
       ctx.fillText(`Swish ${g.swishes}  Bank ${g.bankShots}  Close ${g.closeCalls}`, 16, statY);
     }
 
-    // Aim preview
+    // Aim preview — trail + SNAP meter always; predicted path only
+    // once the swipe is actually a flick (no hold-to-green aiming).
     const restSX = W / 2, restSY = H * 0.84;
     const restR = Math.min(56, Math.max(38, W * 0.075));
+    const tee = !g.ball.released ? fpFlickNudge(g, restSX, restSY) : { x: restSX, y: restSY };
     if (!g.ball.released) {
-      fpDrawAimArc(g, restSX, restSY, "rgba(255, 122, 44, 0.85)");
+      fpDrawAimArc(g, tee.x, tee.y, "rgba(255, 122, 44, 0.85)");
       const preview = hoopsFlickPreview(g);
-      if (preview) {
+      if (preview && preview.power > 0.22) {
         const pred = hoopsPredictTrajectory(g, preview);
-        ctx.strokeStyle = pred.make ? "rgba(77, 220, 140, 0.95)" : "rgba(255, 255, 255, 0.62)";
-        ctx.lineWidth = pred.make ? 5 : 3;
+        ctx.strokeStyle = pred.make ? "rgba(77, 220, 140, 0.85)" : "rgba(255, 255, 255, 0.50)";
+        ctx.lineWidth = pred.make ? 4 : 3;
         ctx.setLineDash(pred.make ? [] : [10, 9]);
         ctx.beginPath();
-        pred.pts.forEach((pt, i) => { if (i === 0) ctx.moveTo(pt.sx, pt.sy); else ctx.lineTo(pt.sx, pt.sy); });
+        ctx.moveTo(tee.x, tee.y);
+        pred.pts.forEach((pt) => { ctx.lineTo(pt.sx, pt.sy); });
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = pred.make ? "#4ddc8c" : "rgba(0,0,0,0.65)";
-        ctx.font = "bold 13px ui-monospace, monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(pred.make ? "GREEN RELEASE" : "Adjust power / angle", W / 2, H * 0.78);
-        ctx.textAlign = "start";
       }
     }
 
     // Basketball
     const b = g.ball;
     let bx, by, r;
-    if (!b.released) { bx = restSX; by = restSY; r = restR; }
+    if (!b.released) { bx = tee.x; by = tee.y; r = restR; }
     else {
       const proj = fpProject(b.x, b.y, b.z);
       bx = proj.sx; by = proj.sy; r = Math.max(5, 18 * proj.scale);
@@ -6464,7 +6438,7 @@ const Hoops = {
       ctx.fillStyle = "rgba(0,0,0,0.65)";
       ctx.font = "bold 14px ui-monospace, monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Flick UP at the rim — green preview can swish, glass banks count too", W/2, H * 0.95);
+      ctx.fillText("Snap-flick at the rim — speed is power. Banks count too", W/2, H * 0.95);
       ctx.textAlign = "start";
     }
   },
@@ -7046,12 +7020,22 @@ function onLoseFocus() {
 document.addEventListener("visibilitychange", () => { if (document.hidden) onLoseFocus(); });
 window.addEventListener("blur", onLoseFocus);
 
+window.__controlsTest = {
+  getYaw: () => (G.runtime && G.runtime.bike ? G.runtime.bike.angle : 0),
+  getSpeed: () => (G.runtime && G.runtime.bike ? G.runtime.bike.vx : 0),
+  setKeys: (codes) => setHeldKeys(codes || []),
+};
+
 // Boot
 window.__diag && window.__diag("[boot] entering boot block");
 showOnly("menu");
 setupTouchControls();
 refreshQuestStates();
+refreshMenuMeta();
 requestAnimationFrame(loop);
+
+window.__diag && window.__diag("[boot] init complete");
+
 // Register the service worker for offline / installable PWA. Only runs
 // over https (or localhost) per browser policy. Failures are silent —
 // the game still works without a SW.
@@ -7092,14 +7076,3 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
   // promptly.
   setInterval(_maybeReloadForSwUpdate, 500);
 }
-window.__diag && window.__diag("[boot] init complete ✓");
-// Auto-dismiss the diagnostic banner after a short delay so it doesn't
-// clutter the menu once everything is healthy. Tap the banner to keep it.
-setTimeout(function () {
-  var d = document.getElementById("__diag");
-  if (d && !d.dataset.pin) d.parentNode && d.parentNode.removeChild(d);
-}, 4000);
-document.addEventListener("click", function (e) {
-  var d = document.getElementById("__diag");
-  if (d && d.contains(e.target)) d.dataset.pin = "1";
-});

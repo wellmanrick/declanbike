@@ -1,3 +1,4 @@
+// @ts-nocheck
 // CPU opponents — batter (Phase 2) and pitcher (Phase 3).
 //
 // Difficulty knobs live here so the game's tuning is in one place.

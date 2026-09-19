@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Declan Baseball — top-level baseball game.
 //
 // Reachable from the main menu (not the Mini-Games hub). Uses the

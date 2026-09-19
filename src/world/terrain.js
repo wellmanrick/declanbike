@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Procedural terrain generator. Each level seeds a deterministic
 // heightmap of dirt, ramps, gaps, decorative props, collectibles,
 // obstacles (rocks/logs/tires), hazards (oil/mud/fire/springs),

@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Keyboard + touch button input. Synthesizes a uniform key set so the
 // game logic doesn't care whether a press came from a hardware key or
 // an on-screen button.
@@ -31,6 +32,15 @@ export function input() {
   };
 }
 
+export function setHeldKeys(codes) {
+  keys.clear();
+  justPressed.clear();
+  for (const code of codes) {
+    keys.add(code);
+    justPressed.add(code);
+  }
+}
+
 const isTouchDevice = (("ontouchstart" in window) || (navigator.maxTouchPoints > 0));
 
 export function setupTouchControls() {
@@ -41,8 +51,9 @@ export function setupTouchControls() {
   const muteBtn = document.getElementById("mute-btn");
   if (muteBtn) {
     const updateMuteUi = () => {
-      muteBtn.textContent = Sound.isMuted() ? "🔇" : "♪";
       muteBtn.classList.toggle("muted", Sound.isMuted());
+      muteBtn.setAttribute("aria-pressed", Sound.isMuted() ? "true" : "false");
+      muteBtn.setAttribute("aria-label", Sound.isMuted() ? "Unmute" : "Mute");
     };
     updateMuteUi();
     muteBtn.addEventListener("click", (e) => {

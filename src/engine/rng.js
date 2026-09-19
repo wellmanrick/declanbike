@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Deterministic pseudo-random number generator. Mulberry32 — seedable so
 // procedurally-generated trails always look the same per level seed.
 export function mulberry32(seed) {

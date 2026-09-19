@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Juice helpers — toasts (DOM popups), particle spawners, floating
 // world text. Pure helpers; rely on the run-time game state for the
 // active particle / text lists.

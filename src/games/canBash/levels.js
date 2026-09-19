@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Can Bash level catalog. Each level is a small data record describing
 // the can formation, ball budget, and the par-star thresholds.
 //
@@ -35,7 +36,7 @@ export const CAN_LEVELS = [
   {
     id: "cb_01_warmup",
     name: "Warm Up",
-    subtitle: "A small stack to find your flick.",
+    subtitle: "A small stack to find your snap.",
     balls: 3,
     formation: { type: "pyramid", rows: 3 },
     parStars: { 3: 1, 2: 2, 1: 3 },
